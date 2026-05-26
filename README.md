@@ -4,7 +4,7 @@
 
 Niouzou is a self-hostable news aggregator with a mobile-first swipe interface inspired by TikTok and Tinder. Swipe through articles, and the system quietly learns what you like — surfacing only what's relevant to you.
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/OuApps/niouzou)
 ![Licence](https://img.shields.io/badge/licence-Apache%202.0%20%2B%20Commons%20Clause-blue)
 
 ---

@@ -1,0 +1,78 @@
+[build]
+builder = "dockerfile"
+
+[[services]]
+name = "postgres"
+image = "postgres:17"
+
+[services.postgres.variables]
+POSTGRES_DB = "niouzou"
+POSTGRES_USER = "niouzou"
+
+[services.postgres.volumes]
+data = "/var/lib/postgresql/data"
+
+[[services]]
+name = "miniflux"
+image = "miniflux/miniflux:2.1.0"
+
+[services.miniflux.variables]
+DATABASE_URL = "${{ postgres.DATABASE_URL }}?sslmode=disable"
+RUN_MIGRATIONS = "1"
+CREATE_ADMIN = "1"
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "changeme"
+
+[services.miniflux.ports]
+public = { port = 8080, startPort = 8080 }
+
+[[services]]
+name = "api"
+build = { dockerfile = "api/Dockerfile" }
+
+[services.api.variables]
+DATABASE_URL = "${{ postgres.DATABASE_URL }}"
+MINIFLUX_URL = "http://miniflux:8080"
+MINIFLUX_API_KEY = "${{ secrets.MINIFLUX_API_KEY }}"
+JWT_SECRET = "${{ secrets.JWT_SECRET }}"
+
+[services.api.ports]
+public = { port = 8000, startPort = 8000 }
+
+[[services]]
+name = "pwa"
+build = { dockerfile = "pwa/Dockerfile" }
+
+[services.pwa.variables]
+VITE_API_URL = "${{ api.PUBLIC_URL }}"
+
+[services.pwa.ports]
+public = { port = 3000, startPort = 3000 }
+
+[[services]]
+name = "cron-fetch"
+build = { dockerfile = "api/Dockerfile" }
+startCommand = "python -m niouzou.crons.fetch"
+
+[services.cron-fetch.variables]
+DATABASE_URL = "${{ postgres.DATABASE_URL }}"
+MINIFLUX_URL = "http://miniflux:8080"
+MINIFLUX_API_KEY = "${{ secrets.MINIFLUX_API_KEY }}"
+
+[[services]]
+name = "cron-enrich"
+build = { dockerfile = "api/Dockerfile" }
+startCommand = "python -m niouzou.crons.enrich"
+
+[services.cron-enrich.variables]
+DATABASE_URL = "${{ postgres.DATABASE_URL }}"
+OPENROUTER_API_KEY = "${{ secrets.OPENROUTER_API_KEY }}"
+OPENROUTER_MODEL = "${{ secrets.OPENROUTER_MODEL }}"
+
+[[services]]
+name = "cron-refresh-weights"
+build = { dockerfile = "api/Dockerfile" }
+startCommand = "python -m niouzou.crons.refresh_weights"
+
+[services.cron-refresh-weights.variables]
+DATABASE_URL = "${{ postgres.DATABASE_URL }}"
