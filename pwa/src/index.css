@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+/* ── Design System Tokens ── */
+:root {
+  --bg-base: #0c1018;
+
+  --blob-orange: #f4a261;
+  --blob-cyan: #48cae4;
+  --blob-yellow: #f9c74f;
+
+  --accent: #f4a261;
+  --accent-subtle: rgba(244, 162, 97, 0.10);
+  --accent-border: rgba(244, 162, 97, 0.40);
+  --accent-text: #fcd9b6;
+
+  --action-like: rgba(72, 202, 228, 0.85);
+  --action-dislike: rgba(248, 113, 113, 0.70);
+  --action-save: rgba(249, 199, 79, 0.70);
+
+  --glass-bg: rgba(255, 255, 255, 0.07);
+  --glass-border: rgba(255, 255, 255, 0.11);
+  --glass-blur: 24px;
+
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.65);
+  --text-tertiary: rgba(255, 255, 255, 0.30);
+  --text-disabled: rgba(255, 255, 255, 0.20);
+
+  --divider: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Base ── */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  min-height: 100dvh;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: 'Satoshi', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
+  overflow-x: hidden;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Blob Background ── */
+.bg-blobs {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(65px);
+  opacity: 0.45;
+  will-change: transform;
+  animation: blobMove 22s ease-in-out infinite alternate;
+}
+
+.blob-1 {
+  width: 360px; height: 360px;
+  background: var(--blob-orange);
+  top: -80px; left: -60px;
+  animation-duration: 24s;
+}
+.blob-2 {
+  width: 320px; height: 320px;
+  background: var(--blob-cyan);
+  bottom: -40px; right: -50px;
+  animation-duration: 19s;
+  animation-delay: -7s;
+}
+
+@keyframes blobMove {
+  0%   { transform: translate(0, 0) scale(1); }
+  33%  { transform: translate(25px, -18px) scale(1.07); }
+  66%  { transform: translate(-18px, 28px) scale(0.94); }
+  100% { transform: translate(12px, 8px) scale(1.03); }
+}
+
+/* ── Glass surfaces ── */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.glass-sm {
+  background: var(--glass-bg);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* ── Utility: hide scrollbar ── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Skeleton loading ── */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 50%, rgba(255,255,255,0.06) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Pull-to-refresh indicator ── */
+.pull-indicator {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  margin-left: -20px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  color: var(--accent-text);
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+/* ── Touch optimization ── */
+* { -webkit-tap-highlight-color: transparent; }

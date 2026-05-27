@@ -1,0 +1,254 @@
+import { useParams, useNavigate } from 'react-router-dom'
+import { ArrowLeft, ThumbsUp, ThumbsDown, Bookmark, BookmarkCheck, ExternalLink } from 'lucide-react'
+import { BlobBackground } from '../components/BlobBackground'
+import { ScoreBadge } from '../components/ScoreBadge'
+import { KeywordTag } from '../components/KeywordTag'
+import { formatTimeAgo } from '../hooks/useTimeAgo'
+import { getMockArticleDetail } from '../mocks/articles'
+import { useFeedbackStore } from '../store/feedback'
+
+export const ArticleDetail = () => {
+  const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const article = getMockArticleDetail(id ?? '')
+  const feedbacks = useFeedbackStore((s) => s.feedbacks)
+  const setFeedback = useFeedbackStore((s) => s.setFeedback)
+  const removeFeedback = useFeedbackStore((s) => s.removeFeedback)
+
+  const isSaved = id ? feedbacks[id] === 'save' : false
+
+  const toggleSave = () => {
+    if (!id) return
+    if (isSaved) {
+      removeFeedback(id)
+    } else {
+      setFeedback(id, 'save')
+    }
+  }
+
+  if (!article) {
+    return (
+      <div className="h-dvh overflow-y-auto relative">
+        <BlobBackground />
+        <div className="relative z-10 flex items-center justify-center" style={{ minHeight: '100dvh' }}>
+          <p style={{ color: 'var(--text-secondary)' }}>Article not found</p>
+        </div>
+      </div>
+    )
+  }
+
+  const bullets = article.summary_executive
+    ? article.summary_executive
+        .split('\n')
+        .map((l) => l.replace(/^-\s*/, '').trim())
+        .filter(Boolean)
+    : null
+
+  return (
+    <div className="h-dvh overflow-y-auto relative">
+      <BlobBackground />
+
+      {/* Header image */}
+      <div className="relative z-10" style={{ height: 220, overflow: 'hidden' }}>
+        {article.og_image_url ? (
+          <img
+            src={article.og_image_url}
+            alt=""
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              background: 'linear-gradient(135deg, rgba(244,162,97,0.3), rgba(72,202,228,0.3))',
+            }}
+          />
+        )}
+        {/* Gradient overlay */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'linear-gradient(transparent 40%, var(--bg-base) 100%)',
+          }}
+        />
+        {/* Back button */}
+        <button
+          onClick={() => navigate(-1)}
+          aria-label="Back"
+          style={{
+            position: 'absolute',
+            top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+            left: 12,
+            background: 'rgba(12, 16, 24, 0.6)',
+            backdropFilter: 'blur(8px)',
+            border: 'none',
+            borderRadius: '50%',
+            width: 36,
+            height: 36,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-primary)',
+            cursor: 'pointer',
+          }}
+        >
+          <ArrowLeft size={18} />
+        </button>
+        {/* Score badge */}
+        <div style={{ position: 'absolute', top: 'calc(env(safe-area-inset-top, 0px) + 12px)', right: 12 }}>
+          <ScoreBadge score={article.relevance_score} />
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="relative z-10" style={{ padding: '0 20px 100px', marginTop: -20 }}>
+        {/* Source + date */}
+        <div
+          className="flex items-center gap-2"
+          style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 10 }}
+        >
+          <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{article.source.name}</span>
+          <span>·</span>
+          <span>{formatTimeAgo(article.published_at)}</span>
+        </div>
+
+        <h1
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            lineHeight: 1.35,
+            margin: '0 0 16px',
+          }}
+        >
+          {article.title}
+        </h1>
+
+        {/* Executive summary */}
+        {bullets && (
+          <div
+            className="glass-sm"
+            style={{ borderRadius: 16, padding: '14px 16px', marginBottom: 16 }}
+          >
+            <h4
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: '0.8px',
+                color: 'var(--accent-text)',
+                margin: '0 0 10px',
+              }}
+            >
+              Key takeaways
+            </h4>
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {bullets.map((b, i) => (
+                <li
+                  key={i}
+                  style={{
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                    color: 'var(--text-secondary)',
+                    marginBottom: 6,
+                  }}
+                >
+                  {b}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Summary */}
+        <p
+          style={{
+            fontSize: 13,
+            lineHeight: 1.65,
+            color: 'var(--text-secondary)',
+            marginBottom: 16,
+          }}
+        >
+          {article.summary_short}
+        </p>
+
+        {/* Keywords */}
+        {article.keywords && article.keywords.length > 0 && (
+          <div className="flex flex-wrap gap-1.5" style={{ marginBottom: 20 }}>
+            {article.keywords.map((kw) => (
+              <KeywordTag key={kw} term={kw} />
+            ))}
+          </div>
+        )}
+
+        {/* Read full article */}
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-center gap-2"
+          style={{
+            display: 'flex',
+            width: '100%',
+            padding: '14px 0',
+            borderRadius: 16,
+            background: 'var(--accent)',
+            color: '#0c1018',
+            fontSize: 14,
+            fontWeight: 600,
+            textDecoration: 'none',
+            marginBottom: 16,
+          }}
+        >
+          Read full article
+          <ExternalLink size={16} />
+        </a>
+
+        {/* Action buttons */}
+        <div className="flex justify-center items-center gap-8">
+          <button
+            aria-label="Dislike"
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 8,
+              borderRadius: '50%',
+              cursor: 'pointer',
+              color: 'var(--action-dislike)',
+            }}
+          >
+            <ThumbsDown size={24} />
+          </button>
+          <button
+            onClick={toggleSave}
+            aria-label={isSaved ? 'Unsave' : 'Save'}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 8,
+              borderRadius: '50%',
+              cursor: 'pointer',
+              color: isSaved ? 'var(--action-save)' : 'var(--text-secondary)',
+            }}
+          >
+            {isSaved ? <BookmarkCheck size={24} /> : <Bookmark size={24} />}
+          </button>
+          <button
+            aria-label="Like"
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 8,
+              borderRadius: '50%',
+              cursor: 'pointer',
+              color: 'var(--action-like)',
+            }}
+          >
+            <ThumbsUp size={24} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

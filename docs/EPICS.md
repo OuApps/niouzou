@@ -81,6 +81,8 @@
 **Acceptance criteria**:
 - `summary_executive` renders as bullet list
 - `summary_executive` section hidden gracefully when null
+- Save/unsave toggle on bookmark button: filled icon + yellow when saved, outline when not
+- Content scrolls so action buttons below the fold are reachable
 
 ---
 
@@ -91,6 +93,7 @@
 
 **Acceptance criteria**:
 - Empty state visible and styled consistently
+- Saved list updates reactively when articles are saved/unsaved from ArticleDetail
 
 ---
 
