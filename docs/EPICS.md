@@ -397,6 +397,8 @@ api/
 - `Dockerfile` for PWA (Nginx serving Vite build)
 - Images optimised (multi-stage builds, minimal base images)
 
+> **Note from Epic 3**: `bcrypt` is pinned to `4.0.1` in `pyproject.toml` (to suppress a passlib warning). Verify this version builds cleanly in the Docker image — it installs fine locally on Python 3.14 arm64 but has not been tested in a container yet.
+
 ---
 
 #### E6-S2 — Docker Compose
@@ -405,11 +407,13 @@ api/
 - All config via `.env` (template: `.env.example`)
 - Cron jobs use `restart: unless-stopped` with sleep loops
 - One-shot `migrate` service (same image as `api`, `command: alembic upgrade head`, `restart: "no"`); `api` and cron services depend on it via `depends_on: condition: service_completed_successfully` so migrations run exactly once before the app starts
+- Add a dedicated test database service (e.g. `postgres-test`) so `pytest` never runs against the dev/prod database. `conftest.py` currently TRUNCATEs 8 tables at the start of every DB test — running it against a database with real data would destroy it.
 
 **Acceptance criteria**:
 - `docker compose up` from a clean machine starts all services
 - Alembic migrations run automatically once (via the `migrate` service) before `api` accepts traffic
 - App accessible at `localhost:3000`
+- `pytest` targets the test database, not the dev database
 
 ---
 
@@ -426,6 +430,11 @@ api/
 - `LICENSE` file: Apache 2.0 + Commons Clause
 - `README.md`: what is Niouzou, self-hosting quickstart, Railway deploy button, env var reference, screenshot
 - `docs/` folder committed with all architecture documents
+- README must document the following known MVP limitations:
+  - **Refresh tokens non-revocable**: JWTs are stateless, valid for 30 days, no blacklist. A logout or compromised token cannot be invalidated before expiry.
+  - **Miniflux feed deduplication is global**: if two users add the same RSS URL, Miniflux deduplicates at the feed level — the second `POST /sources` may return an error or the existing feed. Articles from a shared feed are only ingested under the first user's source. Harmless in single-user setups.
+  - **Relevance scores frozen at enrichment**: a user who registers after an article was enriched has no `relevance_score` for it and will never see it in their feed (unless a backfill is run — see Epic 5 open item).
+  - **`RANDOM_SURFACE_RATE` + keyset pagination**: with `SCORE_THRESHOLD > 0`, the random branch is re-evaluated on every request, so pages may be unstable. With the default `SCORE_THRESHOLD = 0.0`, the feed is 100% deterministic.
 
 **Acceptance criteria**:
 - README self-hosting instructions tested on a clean machine
