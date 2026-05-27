@@ -7,6 +7,7 @@ sits at the root for load balancers and the Docker/Railway healthcheck.
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from niouzou.errors import (
@@ -26,6 +27,15 @@ from niouzou.routers import (
 )
 
 app = FastAPI(title="Niouzou API", version="0.1.0")
+
+# Allow the PWA (any origin in dev, tighten in prod via CORS_ORIGINS env var)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.add_exception_handler(APIError, api_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
