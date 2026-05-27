@@ -2,15 +2,17 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { useAuthStore } from '../store/auth'
+import { login, ApiError } from '../api'
 
 export const Login = () => {
   const navigate = useNavigate()
-  const setAuth = useAuthStore((s) => s.setAuth)
+  const sync = useAuthStore((s) => s.sync)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({})
+  const [errors, setErrors] = useState<{ email?: string; password?: string; form?: string }>({})
+  const [submitting, setSubmitting] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const newErrors: typeof errors = {}
     if (!email.trim()) newErrors.email = 'Email is required'
@@ -19,8 +21,22 @@ export const Login = () => {
       setErrors(newErrors)
       return
     }
-    setAuth('fake-jwt-token-' + Date.now(), email)
-    navigate('/')
+    setSubmitting(true)
+    try {
+      await login(email.trim(), password)
+      sync()
+      navigate('/', { replace: true })
+    } catch (err) {
+      const message =
+        err instanceof ApiError && err.status === 401
+          ? 'Invalid email or password'
+          : err instanceof ApiError
+            ? err.message
+            : 'Something went wrong. Please try again.'
+      setErrors({ form: message })
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -50,7 +66,7 @@ export const Login = () => {
               value={email}
               onChange={(e) => {
                 setEmail(e.target.value)
-                setErrors((prev) => ({ ...prev, email: undefined }))
+                setErrors((prev) => ({ ...prev, email: undefined, form: undefined }))
               }}
               style={{
                 width: '100%',
@@ -78,7 +94,7 @@ export const Login = () => {
               value={password}
               onChange={(e) => {
                 setPassword(e.target.value)
-                setErrors((prev) => ({ ...prev, password: undefined }))
+                setErrors((prev) => ({ ...prev, password: undefined, form: undefined }))
               }}
               style={{
                 width: '100%',
@@ -99,8 +115,22 @@ export const Login = () => {
             )}
           </div>
 
+          {errors.form && (
+            <p
+              style={{
+                fontSize: 12,
+                color: 'var(--action-dislike)',
+                marginBottom: 12,
+                textAlign: 'center',
+              }}
+            >
+              {errors.form}
+            </p>
+          )}
+
           <button
             type="submit"
+            disabled={submitting}
             style={{
               width: '100%',
               padding: '14px 0',
@@ -110,11 +140,12 @@ export const Login = () => {
               border: 'none',
               fontSize: 14,
               fontWeight: 600,
-              cursor: 'pointer',
+              cursor: submitting ? 'default' : 'pointer',
+              opacity: submitting ? 0.6 : 1,
               marginBottom: 16,
             }}
           >
-            Sign in
+            {submitting ? 'Signing in…' : 'Sign in'}
           </button>
 
           <p className="text-center" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>

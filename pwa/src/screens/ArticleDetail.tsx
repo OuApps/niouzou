@@ -3,39 +3,85 @@ import { ArrowLeft, ThumbsUp, ThumbsDown, Bookmark, BookmarkCheck, ExternalLink 
 import { BlobBackground } from '../components/BlobBackground'
 import { ScoreBadge } from '../components/ScoreBadge'
 import { KeywordTag } from '../components/KeywordTag'
+import { Spinner } from '../components/Spinner'
+import { ErrorState } from '../components/ErrorState'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
-import { getMockArticleDetail } from '../mocks/articles'
+import { useApiData } from '../hooks/useApiData'
 import { useFeedbackStore } from '../store/feedback'
+import { getArticle, postFeedback } from '../api'
+import type { FeedbackAction } from '../types/api'
 
 export const ArticleDetail = () => {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const article = getMockArticleDetail(id ?? '')
-  const feedbacks = useFeedbackStore((s) => s.feedbacks)
-  const setFeedback = useFeedbackStore((s) => s.setFeedback)
-  const removeFeedback = useFeedbackStore((s) => s.removeFeedback)
+  const { data: article, loading, error, reload } = useApiData(() => getArticle(id!), [id])
 
-  const isSaved = id ? feedbacks[id] === 'save' : false
+  const storeFeedbacks = useFeedbackStore((s) => s.feedbacks)
+  const setFeedback = useFeedbackStore((s) => s.setFeedback)
+
+  // Current action, derived: this session's optimistic store overlay wins over
+  // the server value — no effect, no duplicated state.
+  const override = id ? storeFeedbacks[id] : undefined
+  const action: FeedbackAction | null = override ?? article?.feedback?.action ?? null
+
+  const apply = (next: FeedbackAction) => {
+    if (!id) return
+    setFeedback(id, next)
+    postFeedback(id, next).catch(() => {})
+  }
 
   const toggleSave = () => {
     if (!id) return
-    if (isSaved) {
-      removeFeedback(id)
-    } else {
-      setFeedback(id, 'save')
-    }
+    // No unsave endpoint — 'skip' is the neutral action that drops it from /saved.
+    apply(action === 'save' ? 'skip' : 'save')
   }
 
-  if (!article) {
+  if (loading) {
     return (
       <div className="h-dvh overflow-y-auto relative">
         <BlobBackground />
         <div className="relative z-10 flex items-center justify-center" style={{ minHeight: '100dvh' }}>
-          <p style={{ color: 'var(--text-secondary)' }}>Article not found</p>
+          <Spinner size={32} />
         </div>
       </div>
     )
   }
+
+  if (error || !article) {
+    return (
+      <div className="h-dvh overflow-y-auto relative">
+        <BlobBackground />
+        <button
+          onClick={() => navigate(-1)}
+          aria-label="Back"
+          style={{
+            position: 'absolute',
+            top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+            left: 12,
+            zIndex: 20,
+            background: 'rgba(12, 16, 24, 0.6)',
+            backdropFilter: 'blur(8px)',
+            border: 'none',
+            borderRadius: '50%',
+            width: 36,
+            height: 36,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-primary)',
+            cursor: 'pointer',
+          }}
+        >
+          <ArrowLeft size={18} />
+        </button>
+        <div className="relative z-10 flex items-center justify-center" style={{ minHeight: '100dvh' }}>
+          <ErrorState message={error ?? 'Article not found'} onRetry={reload} />
+        </div>
+      </div>
+    )
+  }
+
+  const isSaved = action === 'save'
 
   const bullets = article.summary_executive
     ? article.summary_executive
@@ -208,6 +254,7 @@ export const ArticleDetail = () => {
         {/* Action buttons */}
         <div className="flex justify-center items-center gap-8">
           <button
+            onClick={() => apply('dislike')}
             aria-label="Dislike"
             style={{
               background: 'none',
@@ -215,7 +262,7 @@ export const ArticleDetail = () => {
               padding: 8,
               borderRadius: '50%',
               cursor: 'pointer',
-              color: 'var(--action-dislike)',
+              color: action === 'dislike' ? 'var(--action-dislike)' : 'var(--text-secondary)',
             }}
           >
             <ThumbsDown size={24} />
@@ -235,6 +282,7 @@ export const ArticleDetail = () => {
             {isSaved ? <BookmarkCheck size={24} /> : <Bookmark size={24} />}
           </button>
           <button
+            onClick={() => apply('like')}
             aria-label="Like"
             style={{
               background: 'none',
@@ -242,7 +290,7 @@ export const ArticleDetail = () => {
               padding: 8,
               borderRadius: '50%',
               cursor: 'pointer',
-              color: 'var(--action-like)',
+              color: action === 'like' ? 'var(--action-like)' : 'var(--text-secondary)',
             }}
           >
             <ThumbsUp size={24} />

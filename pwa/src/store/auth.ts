@@ -1,23 +1,20 @@
 import { create } from 'zustand'
+import { tokens } from '../api/http'
 
 interface AuthState {
   token: string | null
   email: string | null
-  setAuth: (token: string, email: string) => void
+  /** Mirror in-memory state from localStorage after an API login/register. */
+  sync: () => void
   logout: () => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  token: localStorage.getItem('niouzou_token'),
-  email: localStorage.getItem('niouzou_email'),
-  setAuth: (token, email) => {
-    localStorage.setItem('niouzou_token', token)
-    localStorage.setItem('niouzou_email', email)
-    set({ token, email })
-  },
+  token: tokens.access(),
+  email: tokens.email(),
+  sync: () => set({ token: tokens.access(), email: tokens.email() }),
   logout: () => {
-    localStorage.removeItem('niouzou_token')
-    localStorage.removeItem('niouzou_email')
+    tokens.clear()
     set({ token: null, email: null })
   },
 }))

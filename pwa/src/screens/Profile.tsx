@@ -2,27 +2,43 @@ import { useNavigate } from 'react-router-dom'
 import { Rss, LogOut, ChevronRight } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
+import { Spinner } from '../components/Spinner'
+import { useApiData } from '../hooks/useApiData'
 import { useAuthStore } from '../store/auth'
+import { getKeywords, getSaved, getSources } from '../api'
 
 export const Profile = () => {
   const navigate = useNavigate()
   const email = useAuthStore((s) => s.email) ?? 'user@example.com'
   const logout = useAuthStore((s) => s.logout)
 
+  // Real counts from the existing endpoints (no dedicated /me/stats endpoint).
+  const { data: stats, loading } = useApiData(
+    async () => {
+      const [saved, keywords, sources] = await Promise.all([getSaved(), getKeywords(), getSources()])
+      return {
+        saved: saved.articles.length,
+        keywords: keywords.keywords.length,
+        sources: sources.sources.length,
+      }
+    },
+    [],
+  )
+
   const initials = email
     .split('@')[0]
     .slice(0, 2)
     .toUpperCase()
 
-  const stats = [
-    { label: 'Read', value: 142 },
-    { label: 'Liked', value: 67 },
-    { label: 'Sources', value: 4 },
+  const statRows = [
+    { label: 'Saved', value: stats?.saved },
+    { label: 'Keywords', value: stats?.keywords },
+    { label: 'Sources', value: stats?.sources },
   ]
 
   const handleSignOut = () => {
     logout()
-    navigate('/login')
+    navigate('/login', { replace: true })
   }
 
   return (
@@ -65,13 +81,15 @@ export const Profile = () => {
 
         {/* Stats */}
         <div className="flex gap-3 w-full" style={{ maxWidth: 320, marginBottom: 32 }}>
-          {stats.map((s) => (
+          {statRows.map((s) => (
             <div
               key={s.label}
               className="glass-sm flex-1 flex flex-col items-center"
               style={{ borderRadius: 16, padding: '14px 8px' }}
             >
-              <span style={{ fontSize: 18, fontWeight: 600, marginBottom: 2 }}>{s.value}</span>
+              <span style={{ fontSize: 18, fontWeight: 600, marginBottom: 2, minHeight: 24 }}>
+                {loading ? <Spinner size={14} /> : (s.value ?? '—')}
+              </span>
               <span style={{ fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 {s.label}
               </span>

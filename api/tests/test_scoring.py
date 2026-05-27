@@ -84,9 +84,18 @@ def test_idf_downweights_terms_common_across_corpus():
 
 
 def test_pipeline_selects_tfidf_without_api_key(monkeypatch):
-    from niouzou import config
+    from niouzou.config import Settings
+    import niouzou.scoring.pipeline as pipeline_module
 
-    config.get_settings.cache_clear()
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Patch get_settings in the pipeline module — pydantic-settings also reads
+    # from .env so delenv alone is not enough when a .env file is present, and
+    # pipeline.py holds its own reference to get_settings via a direct import.
+    fake_settings = Settings(
+        database_url="postgresql://x",
+        miniflux_url="http://x",
+        miniflux_api_key="x",
+        jwt_secret="x",
+        openrouter_api_key=None,
+    )
+    monkeypatch.setattr(pipeline_module, "get_settings", lambda: fake_settings)
     assert isinstance(Pipeline()._select_scorer(), TFIDFScorer)
-    config.get_settings.cache_clear()

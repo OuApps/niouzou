@@ -25,7 +25,10 @@ class Settings(BaseSettings):
 
     # --- Optional (sensible defaults) ---
     openrouter_api_key: str | None = None
-    openrouter_model: str = "mistralai/mistral-small"
+    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # Per-request timeout for OpenRouter calls; free models can be slow.
+    openrouter_timeout: float = 60.0
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5
@@ -34,6 +37,8 @@ class Settings(BaseSettings):
 
     # Max entries pulled from Miniflux per cron_fetch run.
     miniflux_fetch_batch_size: int = 100
+    # Max pending articles enriched per cron_enrich run.
+    enrich_batch_size: int = 50
 
     @property
     def sqlalchemy_url(self) -> str:

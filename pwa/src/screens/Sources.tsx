@@ -3,42 +3,75 @@ import { ArrowLeft, Trash2, Plus, Rss } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { EmptyState } from '../components/EmptyState'
-import { MOCK_SOURCES } from '../mocks/articles'
+import { Spinner } from '../components/Spinner'
+import { ErrorState } from '../components/ErrorState'
+import { useApiData } from '../hooks/useApiData'
+import { addSource, deleteSource, getSources, ApiError } from '../api'
 import type { SourceFull } from '../types/api'
 
 export const Sources = () => {
   const navigate = useNavigate()
-  const [sources, setSources] = useState<SourceFull[]>(MOCK_SOURCES)
+  const { data, loading, error, reload } = useApiData(() => getSources(), [])
   const [newUrl, setNewUrl] = useState('')
   const [urlError, setUrlError] = useState('')
+  const [adding, setAdding] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  // Optimistic overlays over the fetched list (no effect copying into state).
+  const [added, setAdded] = useState<SourceFull[]>([])
+  const [removed, setRemoved] = useState<Set<string>>(new Set())
 
-  const handleAdd = () => {
+  const sources: SourceFull[] = [
+    ...(data?.sources ?? []).filter((s) => !removed.has(s.id)),
+    ...added.filter((s) => !removed.has(s.id)),
+  ]
+
+  const handleAdd = async () => {
     setUrlError('')
-    if (!newUrl.startsWith('http')) {
+    const url = newUrl.trim()
+    if (!url.startsWith('http')) {
       setUrlError('URL must start with http')
       return
     }
-    if (sources.some((s) => s.url === newUrl)) {
+    if (sources.some((s) => s.url === url)) {
       setUrlError('Source already exists')
       return
     }
-    const newSource: SourceFull = {
-      id: `s${Date.now()}`,
-      name: new URL(newUrl).hostname.replace('www.', ''),
-      url: newUrl,
-      created_at: new Date().toISOString(),
+    setAdding(true)
+    try {
+      const created = await addSource(url)
+      setAdded((prev) => [...prev, created])
+      setNewUrl('')
+    } catch (err) {
+      setUrlError(
+        err instanceof ApiError && err.status === 409
+          ? 'This source already exists'
+          : err instanceof ApiError
+            ? err.message
+            : 'Could not add this source. Please try again.',
+      )
+    } finally {
+      setAdding(false)
     }
-    setSources((prev) => [...prev, newSource])
-    setNewUrl('')
   }
 
-  const handleDelete = (id: string) => {
-    if (confirmDelete === id) {
-      setSources((prev) => prev.filter((s) => s.id !== id))
-      setConfirmDelete(null)
-    } else {
+  const handleDelete = async (id: string) => {
+    if (confirmDelete !== id) {
       setConfirmDelete(id)
+      return
+    }
+    setConfirmDelete(null)
+    setRemoved((prev) => new Set(prev).add(id)) // optimistic
+    try {
+      await deleteSource(id)
+      // Also purge from `added` so a source created-then-deleted this session
+      // doesn't reappear after a reload (removed keeps filtering server data).
+      setAdded((prev) => prev.filter((s) => s.id !== id))
+    } catch {
+      setRemoved((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      }) // restore on failure
     }
   }
 
@@ -83,7 +116,7 @@ export const Sources = () => {
                 setNewUrl(e.target.value)
                 setUrlError('')
               }}
-              onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+              onKeyDown={(e) => e.key === 'Enter' && !adding && handleAdd()}
               style={{
                 flex: 1,
                 padding: '10px 12px',
@@ -97,13 +130,15 @@ export const Sources = () => {
             />
             <button
               onClick={handleAdd}
+              disabled={adding}
               style={{
                 padding: '10px 14px',
                 borderRadius: 10,
                 background: 'var(--accent)',
                 color: '#0c1018',
                 border: 'none',
-                cursor: 'pointer',
+                cursor: adding ? 'default' : 'pointer',
+                opacity: adding ? 0.6 : 1,
                 fontWeight: 600,
                 fontSize: 13,
                 display: 'flex',
@@ -111,7 +146,7 @@ export const Sources = () => {
                 gap: 4,
               }}
             >
-              <Plus size={16} />
+              {adding ? <Spinner size={14} /> : <Plus size={16} />}
               Add
             </button>
           </div>
@@ -123,7 +158,13 @@ export const Sources = () => {
         </div>
 
         {/* Sources list */}
-        {sources.length === 0 ? (
+        {loading ? (
+          <div className="flex justify-center" style={{ paddingTop: 40 }}>
+            <Spinner size={30} />
+          </div>
+        ) : error ? (
+          <ErrorState message={error} onRetry={reload} />
+        ) : sources.length === 0 ? (
           <EmptyState
             icon={Rss}
             title="No sources"

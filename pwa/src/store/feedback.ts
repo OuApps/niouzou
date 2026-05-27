@@ -1,27 +1,28 @@
 import { create } from 'zustand'
 import type { FeedbackAction } from '../types/api'
-import { MOCK_SAVED } from '../mocks/articles'
 
+/**
+ * Optimistic, in-memory overlay of the feedback the user has given this
+ * session. The API is the source of truth (POST /feedback persists it); this
+ * store just lets the save toggle stay consistent across navigation without a
+ * refetch. Starts empty — seeded from the server's `feedback` where available.
+ */
 interface FeedbackState {
   feedbacks: Record<string, FeedbackAction>
   setFeedback: (articleId: string, action: FeedbackAction) => void
   removeFeedback: (articleId: string) => void
 }
 
-const initialFeedbacks: Record<string, FeedbackAction> = {}
-for (const article of MOCK_SAVED) {
-  initialFeedbacks[article.id] = 'save'
-}
-
 export const useFeedbackStore = create<FeedbackState>((set) => ({
-  feedbacks: initialFeedbacks,
+  feedbacks: {},
   setFeedback: (articleId, action) =>
     set((state) => ({
       feedbacks: { ...state.feedbacks, [articleId]: action },
     })),
   removeFeedback: (articleId) =>
     set((state) => {
-      const { [articleId]: _, ...rest } = state.feedbacks
+      const rest = { ...state.feedbacks }
+      delete rest[articleId]
       return { feedbacks: rest }
     }),
 }))

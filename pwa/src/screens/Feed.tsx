@@ -1,34 +1,37 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSprings, animated, to } from '@react-spring/web'
 import { useDrag } from '@use-gesture/react'
 import { ThumbsDown, Bookmark, ThumbsUp } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { ArticleCard } from '../components/ArticleCard'
-import { MOCK_ARTICLES } from '../mocks/articles'
+import { Spinner } from '../components/Spinner'
+import { ErrorState } from '../components/ErrorState'
 import { useFeedbackStore } from '../store/feedback'
+import { getFeed, postFeedback, postImpression, ApiError } from '../api'
+import type { FeedArticle, FeedbackAction } from '../types/api'
 
 const SWIPE_THRESHOLD = 100
 const SWIPE_UP_THRESHOLD = 80
+const SWIPE_DOWN_THRESHOLD = 80
 const PULL_THRESHOLD = 80
-
-const from = (_i: number) => ({
-  x: 0,
-  y: 0,
-  scale: 1,
-  rot: 0,
-  opacity: 1,
-})
-
-const to_idle = (gone: Set<number>) => (i: number) =>
-  gone.has(i)
-    ? { x: 0, y: -600, scale: 0.8, rot: 0, opacity: 0 }
-    : { x: 0, y: 0, scale: 1, rot: 0, opacity: 1 }
+const PAGE_SIZE = 20
+// Start loading the next page when this many cards remain ahead of the user.
+const PREFETCH_AHEAD = 5
 
 export const Feed = () => {
+  const [articles, setArticles] = useState<FeedArticle[]>([])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const loadingMoreRef = useRef(false) // re-entrancy guard (not read during render)
+
   const [gone] = useState(() => new Set<number>())
   const [currentIndex, setCurrentIndex] = useState(0)
-  const articles = MOCK_ARTICLES
+  const impressed = useRef(new Set<string>())
   const setFeedback = useFeedbackStore((s) => s.setFeedback)
 
   // Pull-to-refresh state
@@ -37,37 +40,103 @@ export const Feed = () => {
   const touchStartY = useRef(0)
   const isPulling = useRef(false)
 
-  const [springs, api] = useSprings(articles.length, (i) => ({
-    ...to_idle(gone)(i),
-    from: from(i),
+  const [springs, api] = useSprings(articles.length, () => ({
+    x: 0,
+    y: 0,
+    scale: 1,
+    rot: 0,
+    opacity: 1,
   }))
 
-  const resetFeed = useCallback(() => {
-    gone.clear()
-    setCurrentIndex(0)
-    api.start(() => ({
-      x: 0,
-      y: 0,
-      scale: 1,
-      rot: 0,
-      opacity: 1,
-      immediate: true,
-    }))
-  }, [api, gone])
+  // ── Data loading ───────────────────────────────────────────────────────────
+
+  // First page (and pull-to-refresh / retry re-fetches via reloadKey). State is
+  // only set from the resolved promise, never synchronously in the effect body.
+  useEffect(() => {
+    let active = true
+    getFeed(undefined, PAGE_SIZE)
+      .then((page) => {
+        if (!active) return
+        gone.clear()
+        impressed.current.clear()
+        setArticles(page.articles)
+        setCursor(page.next_cursor)
+        setHasMore(page.has_more)
+        setCurrentIndex(0)
+        setStatus('ready')
+      })
+      .catch((e) => {
+        if (!active) return
+        setErrorMsg(e instanceof ApiError ? e.message : 'Could not load your feed.')
+        setStatus('error')
+      })
+    return () => {
+      active = false
+    }
+  }, [reloadKey, gone])
+
+  const refresh = useCallback(() => {
+    setStatus('loading')
+    setErrorMsg('')
+    setReloadKey((k) => k + 1)
+  }, [])
+
+  const loadMore = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMore || !cursor) return
+    loadingMoreRef.current = true
+    setLoadingMore(true)
+    try {
+      const page = await getFeed(cursor, PAGE_SIZE)
+      setArticles((prev) => [...prev, ...page.articles])
+      setCursor(page.next_cursor)
+      setHasMore(page.has_more)
+    } catch {
+      // Silent: the user can keep swiping what's loaded; a retry fires on the
+      // next dismiss. Surfacing an inline error mid-deck would be jarring.
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMore(false)
+    }
+  }, [cursor, hasMore])
+
+  // Infinite scroll: prefetch as the user nears the end of the loaded deck.
+  // Deferred a tick so the fetch's setState doesn't run synchronously here.
+  useEffect(() => {
+    if (status === 'ready' && hasMore && currentIndex >= articles.length - PREFETCH_AHEAD) {
+      const t = setTimeout(loadMore, 0)
+      return () => clearTimeout(t)
+    }
+  }, [currentIndex, articles.length, hasMore, status, loadMore])
+
+  // Impression: record the top card as soon as it is displayed (once each).
+  useEffect(() => {
+    const top = articles[currentIndex]
+    if (!top || impressed.current.has(top.id)) return
+    impressed.current.add(top.id)
+    postImpression(top.id).catch(() => {
+      // Non-critical: a missed impression only risks re-showing later.
+    })
+  }, [articles, currentIndex])
+
+  // ── Swiping ──────────────────────────────────────────────────────────────
 
   const dismiss = useCallback(
-    (index: number, dir: 'left' | 'right' | 'up') => {
+    (index: number, dir: 'left' | 'right' | 'up' | 'down') => {
+      const article = articles[index]
+      if (!article) return
       gone.add(index)
 
-      const articleId = articles[index].id
-      if (dir === 'right') setFeedback(articleId, 'like')
-      else if (dir === 'left') setFeedback(articleId, 'dislike')
-      else if (dir === 'up') setFeedback(articleId, 'save')
+      // right=like, left=dislike, up=skip, down=save
+      const action: FeedbackAction =
+        dir === 'right' ? 'like' : dir === 'left' ? 'dislike' : dir === 'down' ? 'save' : 'skip'
+      setFeedback(article.id, action)
+      // Optimistic: the card is already flying off; persist in the background.
+      postFeedback(article.id, action).catch(() => {})
 
       api.start((i) => {
         if (i !== index) return
         const x = dir === 'left' ? -500 : dir === 'right' ? 500 : 0
-        const y = dir === 'up' ? -600 : 0
+        const y = dir === 'up' ? -600 : dir === 'down' ? 600 : 0
         const rot = dir === 'left' ? -15 : dir === 'right' ? 15 : 0
         return {
           x,
@@ -88,11 +157,13 @@ export const Feed = () => {
       const triggerRight = mx > SWIPE_THRESHOLD || (vx > 0.5 && dx > 0)
       const triggerLeft = mx < -SWIPE_THRESHOLD || (vx > 0.5 && dx < 0)
       const triggerUp = my < -SWIPE_UP_THRESHOLD || (vy > 0.5 && dy < 0)
+      const triggerDown = my > SWIPE_DOWN_THRESHOLD || (vy > 0.5 && dy > 0)
 
       if (!active) {
         if (triggerRight) return dismiss(index, 'right')
         if (triggerLeft) return dismiss(index, 'left')
         if (triggerUp) return dismiss(index, 'up')
+        if (triggerDown) return dismiss(index, 'down')
 
         api.start((i) => {
           if (i !== index) return
@@ -117,29 +188,35 @@ export const Feed = () => {
     { filterTaps: true },
   )
 
-  // Pull-to-refresh handlers
+  // ── Pull-to-refresh ────────────────────────────────────────────────────────
+  // Derived here (before touch handlers) so handleTouchMove can close over it.
+  const deckEmpty = currentIndex >= articles.length
+
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartY.current = e.touches[0].clientY
     isPulling.current = false
   }, [])
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    // When cards are present, swipe-down is the "save" gesture handled by the
+    // card gesture recogniser — don't let it also trigger pull-to-refresh.
+    if (status === 'ready' && !deckEmpty) return
     const dy = e.touches[0].clientY - touchStartY.current
     if (dy > 0 && window.scrollY === 0) {
       isPulling.current = true
       setPulling(true)
       setPullY(Math.min(dy * 0.5, 120))
     }
-  }, [])
+  }, [status, deckEmpty])
 
   const handleTouchEnd = useCallback(() => {
     if (isPulling.current && pullY > PULL_THRESHOLD) {
-      resetFeed()
+      refresh()
     }
     setPullY(0)
     setPulling(false)
     isPulling.current = false
-  }, [pullY, resetFeed])
+  }, [pullY, refresh])
 
   const pullProgress = Math.min(pullY / PULL_THRESHOLD, 1)
 
@@ -186,11 +263,19 @@ export const Feed = () => {
         className="relative z-10 flex-1 flex items-center justify-center"
         style={{ padding: '0 20px', minHeight: 460 }}
       >
-        {currentIndex >= articles.length ? (
-          <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-            <p style={{ fontSize: 32, marginBottom: 12 }}>You are all caught up</p>
-            <p>Check back later for new articles</p>
-          </div>
+        {status === 'loading' ? (
+          <Spinner size={32} />
+        ) : status === 'error' ? (
+          <ErrorState message={errorMsg} onRetry={refresh} />
+        ) : deckEmpty ? (
+          hasMore || loadingMore ? (
+            <Spinner size={32} />
+          ) : (
+            <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+              <p style={{ fontSize: 32, marginBottom: 12 }}>You are all caught up</p>
+              <p>Check back later for new articles</p>
+            </div>
+          )
         ) : (
           springs.map((props, i) => {
             if (i < currentIndex || gone.has(i)) return null
@@ -212,7 +297,7 @@ export const Feed = () => {
                   touchAction: 'none',
                 }}
               >
-                {/* Swipe tint overlays */}
+                {/* Swipe tint overlays: right=cyan(like) left=red(dislike) down=yellow(save) */}
                 <animated.div
                   style={{
                     position: 'absolute',
@@ -220,13 +305,12 @@ export const Feed = () => {
                     borderRadius: 28,
                     zIndex: 10,
                     pointerEvents: 'none',
-                    background: props.x.to((x) =>
-                      x > 30
-                        ? `rgba(72, 202, 228, ${Math.min(Math.abs(x) / 300, 0.25)})`
-                        : x < -30
-                          ? `rgba(248, 113, 113, ${Math.min(Math.abs(x) / 300, 0.25)})`
-                          : 'transparent',
-                    ),
+                    background: to([props.x, props.y], (x, y) => {
+                      if (x > 30) return `rgba(72, 202, 228, ${Math.min(Math.abs(x) / 300, 0.25)})`
+                      if (x < -30) return `rgba(248, 113, 113, ${Math.min(Math.abs(x) / 300, 0.25)})`
+                      if (y > 30) return `rgba(249, 199, 79, ${Math.min(Math.abs(y) / 300, 0.25)})`
+                      return 'transparent'
+                    }),
                   }}
                 />
                 <ArticleCard article={articles[i]} />
@@ -237,7 +321,7 @@ export const Feed = () => {
       </div>
 
       {/* Action buttons */}
-      {currentIndex < articles.length && (
+      {status === 'ready' && !deckEmpty && (
         <div
           className="relative z-10 flex justify-center items-center gap-8"
           style={{ padding: '12px 0 24px' }}
@@ -258,7 +342,7 @@ export const Feed = () => {
             <ThumbsDown size={26} />
           </button>
           <button
-            onClick={() => dismiss(currentIndex, 'up')}
+            onClick={() => dismiss(currentIndex, 'down')}
             aria-label="Save"
             style={{
               background: 'none',

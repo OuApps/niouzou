@@ -3,13 +3,24 @@ import { Pencil, Check, SlidersHorizontal } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { EmptyState } from '../components/EmptyState'
-import { MOCK_KEYWORDS } from '../mocks/articles'
+import { Spinner } from '../components/Spinner'
+import { ErrorState } from '../components/ErrorState'
+import { useApiData } from '../hooks/useApiData'
+import { getKeywords, patchKeyword } from '../api'
 import type { KeywordWeight } from '../types/api'
 
 export const Keywords = () => {
-  const [keywords, setKeywords] = useState<KeywordWeight[]>(MOCK_KEYWORDS)
+  const { data, loading, error, reload } = useApiData(() => getKeywords(), [])
   const [editingTerm, setEditingTerm] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  // Optimistic weight overrides (term → weight) layered over the fetched data,
+  // so we never copy the API response into local state via an effect.
+  const [overrides, setOverrides] = useState<Record<string, number>>({})
+
+  const keywords: KeywordWeight[] = (data?.keywords ?? []).map((k) =>
+    k.term in overrides ? { ...k, weight: overrides[k.term] } : k,
+  )
 
   const positive = keywords.filter((k) => k.weight > 0).sort((a, b) => b.weight - a.weight)
   const negative = keywords.filter((k) => k.weight < 0).sort((a, b) => a.weight - b.weight)
@@ -20,17 +31,29 @@ export const Keywords = () => {
     setEditValue(String(kw.weight))
   }
 
-  const confirmEdit = () => {
+  const confirmEdit = async () => {
     if (editingTerm === null) return
+    const term = editingTerm
     const newWeight = parseFloat(editValue)
     if (isNaN(newWeight)) {
       setEditingTerm(null)
       return
     }
-    setKeywords((prev) =>
-      prev.map((k) => (k.term === editingTerm ? { ...k, weight: newWeight } : k)),
-    )
+    setOverrides((prev) => ({ ...prev, [term]: newWeight })) // optimistic
     setEditingTerm(null)
+    setSaving(true)
+    try {
+      const updated = await patchKeyword(term, newWeight)
+      setOverrides((prev) => ({ ...prev, [term]: updated.weight }))
+    } catch {
+      setOverrides((prev) => {
+        const rest = { ...prev }
+        delete rest[term]
+        return rest
+      }) // revert on failure
+    } finally {
+      setSaving(false)
+    }
   }
 
   const renderRow = (kw: KeywordWeight) => {
@@ -128,6 +151,7 @@ export const Keywords = () => {
             />
             <button
               onClick={confirmEdit}
+              disabled={saving}
               style={{
                 background: 'none',
                 border: 'none',
@@ -173,7 +197,13 @@ export const Keywords = () => {
       </header>
 
       <div className="relative z-10 flex-1" style={{ padding: '8px 16px 90px' }}>
-        {keywords.length === 0 ? (
+        {loading ? (
+          <div className="flex justify-center" style={{ paddingTop: 60 }}>
+            <Spinner size={30} />
+          </div>
+        ) : error ? (
+          <ErrorState message={error} onRetry={reload} />
+        ) : keywords.length === 0 ? (
           <EmptyState
             icon={SlidersHorizontal}
             title="No keywords yet"

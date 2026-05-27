@@ -10,6 +10,7 @@
 | EPIC 4 | PWA — API integration | EPIC 1, EPIC 3 |
 | EPIC 5 | AI enrichment | EPIC 2, EPIC 3 |
 | EPIC 6 | Packaging & open source | EPIC 3, EPIC 4, EPIC 5 |
+| EPIC 7 | PWA polish & follow-up | EPIC 4 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -57,7 +58,8 @@
 - Card structure: og:image (placeholder), source badge, score badge (%), title, summary_short, keyword tags, meta (time ago · read time)
 - Swipe right → like (card flies right, cyan tint)
 - Swipe left → dislike (card flies left, red tint)
-- Swipe up → skip (card flies up)
+- Swipe up → skip (card flies up, neutral — article dismissed without feedback)
+- Swipe down → save (card flies down, yellow tint)
 - Tap card → navigate to `/articles/:id`
 - Action buttons (dislike / save / like) trigger same animations as swipe
 - Next card appears from below with subtle scale-up animation
@@ -408,12 +410,14 @@ api/
 - Cron jobs use `restart: unless-stopped` with sleep loops
 - One-shot `migrate` service (same image as `api`, `command: alembic upgrade head`, `restart: "no"`); `api` and cron services depend on it via `depends_on: condition: service_completed_successfully` so migrations run exactly once before the app starts
 - Add a dedicated test database service (e.g. `postgres-test`) so `pytest` never runs against the dev/prod database. `conftest.py` currently TRUNCATEs 8 tables at the start of every DB test — running it against a database with real data would destroy it.
+- Configure Miniflux admin account via env vars (`MINIFLUX_ADMIN_USERNAME`, `MINIFLUX_ADMIN_PASSWORD`) so the first `docker compose up` provisions the account automatically — no manual UI step required. Miniflux supports this via its [built-in env var provisioning](https://miniflux.app/docs/configuration.html#create-admin-user). The API key creation still requires a one-time manual step after the first boot (or a `RUN_MIGRATIONS=1` + admin API call — evaluate during implementation).
 
 **Acceptance criteria**:
 - `docker compose up` from a clean machine starts all services
 - Alembic migrations run automatically once (via the `migrate` service) before `api` accepts traffic
 - App accessible at `localhost:3000`
 - `pytest` targets the test database, not the dev database
+- Miniflux admin account created automatically on first boot (no manual UI step)
 
 ---
 
@@ -439,3 +443,79 @@ api/
 **Acceptance criteria**:
 - README self-hosting instructions tested on a clean machine
 - Licence file present and correct
+
+---
+
+## EPIC 7 — PWA Polish & Follow-up
+
+**Goal**: Address known MVP limitations flagged during Epic 4 code review. None are blockers for launch but should be resolved before the app is widely shared.
+
+> These items were consciously deferred during Epic 4 to keep scope manageable.
+> They are collected here so nothing is forgotten.
+
+### Stories
+
+#### E7-S1 — `/me` endpoint + real Profile stats
+
+**Problem**: The Profile screen computes stats (Saved / Keywords / Sources) from the first page of each list endpoint — not the real total. Email is stored from the login form, not from the server.
+
+**Work**:
+- Add `GET /me` endpoint returning `{ email, saved_count, keyword_count, source_count }` (real DB `COUNT`s)
+- Update `Profile.tsx` to use `/me` instead of the three parallel calls
+- Store email from `/me` response (not from the login form input)
+
+---
+
+#### E7-S2 — Infinite scroll on Saved & Keywords
+
+**Problem**: `getSaved()` and `getKeywords()` only fetch the first page. Users with many saved articles or many keywords see a truncated list.
+
+**Work**:
+- Add infinite scroll / "load more" button to `Saved.tsx` (follow next_cursor from the API)
+- Add infinite scroll / "load more" button to `Keywords.tsx` (follow next_cursor)
+
+---
+
+#### E7-S3 — `manually_overridden` visual indicator on Keywords
+
+**Problem**: When a user manually edits a keyword weight, the `PATCH /keywords/:term` response sets `manually_overridden = true` server-side (so `cron_refresh_weights` skips it). The PWA gives no visual feedback that the weight is pinned.
+
+**Work**:
+- Show a small lock icon (or distinct style) on `KeywordWeight` rows where `manually_overridden = true`
+- The flag is available in the `PATCH` response — store it in the `overrides` map alongside `weight`
+
+---
+
+#### E7-S4 — Feedback fire-and-forget: add minimal retry on network error
+
+**Problem**: `postFeedback(...).catch(() => {})` silently drops feedback if the server is unreachable. The card is gone, the preference is lost.
+
+**Work** (scope-limited):
+- On network error (`ApiError.code === 'network_error'`), queue the payload in `localStorage` and retry once on the next successful API call (any endpoint returning 200)
+- Not a full offline queue — just a one-shot retry to survive a brief connection blip
+
+---
+
+#### E7-S5 — Saved screen: optimistic insert when saving from Feed
+
+**Problem**: An article saved via swipe/button in the Feed does not appear in the Saved screen until pull-to-refresh. Articles unsaved from the detail view disappear immediately (via the `feedbacks` store overlay).
+
+**Work**:
+- Extend `feedbackStore` or add a `savedStore` that also holds the full `FeedArticle` object when `action === 'save'`
+- `Saved.tsx` merges this session-saved list on top of the server response (same pattern as the existing unsave filter)
+
+---
+
+#### E7-S6 — Multi-user: same RSS feed subscribed by two users
+
+**Problem**: Miniflux is a single shared instance with one set of admin credentials (`MINIFLUX_API_KEY`). If two Niouzou users add the same RSS URL:
+1. The second `POST /sources` call fails with `bad_request` — `miniflux.create_feed()` returns a 422 because the feed already exists.
+2. Even if it succeeded, `cron_fetch`'s `feed_id → source_id` mapping is not multi-valued: only one user's source would receive articles.
+
+This is a non-issue for single-user self-hosting (the documented primary use case) but blocks any shared deployment.
+
+**Work**:
+- In `SourcesService._register_in_miniflux`: catch the 422 from Miniflux, retrieve the existing feed id via `GET /v1/feeds` filtered by URL, and return it instead of failing.
+- In `cron_fetch._source_id_by_feed`: change the dict to `dict[int, list[str]]` (feed_id → list of source_ids) and insert articles for every matching source.
+
+**Note**: The documented MVP limitation in E6-S4 ("Miniflux feed deduplication is global") should be removed from the README once this story is done.

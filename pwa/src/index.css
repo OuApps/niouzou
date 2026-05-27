@@ -135,5 +135,18 @@ html, body, #root {
   pointer-events: none;
 }
 
+/* ── Spinner ── */
+.spinner {
+  display: inline-block;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Touch optimization ── */
 * { -webkit-tap-highlight-color: transparent; }
