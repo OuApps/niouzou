@@ -1,19 +1,18 @@
 # Niouzou API
 
-Python 3.11 / FastAPI backend. Python and dependencies are managed with
+Python 3.14 / FastAPI backend. Python and dependencies are managed with
 [`uv`](https://docs.astral.sh/uv/).
 
 ## Setup
 
 ```bash
 cd api
-uv python install 3.11   # uv manages the interpreter (see .python-version)
+uv python install 3.14   # uv manages the interpreter (see .python-version)
 uv sync                  # create .venv and install deps (incl. dev group)
 ```
 
 Configuration comes from environment variables (see `../.env.example`). The
-only required vars for Epic 2 are `DATABASE_URL`, `MINIFLUX_URL`,
-`MINIFLUX_API_KEY`.
+required vars are `DATABASE_URL`, `MINIFLUX_URL`, `MINIFLUX_API_KEY`, `JWT_SECRET`.
 
 ## Local dev stack (Postgres + Miniflux)
 

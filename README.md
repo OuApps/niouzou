@@ -45,27 +45,33 @@ Most news readers show you everything. Algorithms from big platforms show you wh
 
 ## Quickstart — Self-hosting
 
-**Requirements**: Docker and Docker Compose installed.
+> **Note**: the production `docker-compose.yml` (repo root) is coming in Epic 6.
+> Until then, use the dev setup in `api/README.md` to run the stack locally.
+
+**Requirements**: Docker, Docker Compose, [`uv`](https://docs.astral.sh/uv/), Node.js.
 
 ```bash
 # 1. Clone the repo
 git clone https://github.com/yourname/niouzou.git
 cd niouzou
 
-# 2. Configure
-cp .env.example .env
-# Edit .env — set JWT_SECRET at minimum
-# Add OPENROUTER_API_KEY to enable AI summaries (optional)
+# 2. Start Postgres + Miniflux
+cd api && docker compose -f docker-compose.dev.yml up -d
 
-# 3. Start
-docker compose up -d
+# 3. Run migrations
+uv run alembic upgrade head
 
-# 4. Open
-# PWA   → http://localhost:3000
-# Admin → http://localhost:8080 (Miniflux)
+# 4. Start the API (set env vars first — see Environment Variables below)
+uv run uvicorn niouzou.main:app --reload   # → http://localhost:8000
+
+# 5. Start the PWA (separate terminal)
+cd ../pwa && npm install && npm run dev    # → http://localhost:5173
 ```
 
-That's it. Create an account, add your first RSS source, and start swiping.
+Create an account, add your first RSS source, and start swiping.
+
+> The one-command `docker compose up` experience (port 3000) will be available
+> once Epic 6 ships the production Compose file.
 
 ---
 
