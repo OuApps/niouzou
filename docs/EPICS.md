@@ -333,12 +333,21 @@ api/
 
 **Goal**: `cron_enrich` calls OpenRouter to generate summaries and extract keywords. Scoring pipeline switches to `AIKeywordScorer` when key is present.
 
+> **Already scaffolded in Epic 3** (do not rebuild — wire into these):
+> - `niouzou.scoring` is complete: `BaseScorer`, `TFIDFScorer` (working extraction + scoring), `ScoringPipeline` (config-based scorer selection + 0.0–1.0 sigmoid normalisation), unit-tested.
+> - `niouzou.scoring.ai_keyword.AIKeywordScorer` exists as a **stub**: its `score()` is inherited and works; only `extract_keywords()` raises `NotImplementedError` — that body is E5-S3. The pipeline *already selects it* when `OPENROUTER_API_KEY` is set.
+> - `niouzou.services.scoring_service.ScoringService` is the DB bridge: `extract_and_store_keywords(article)` (writes `article_keywords`) and `score_article_for_user(article_id, user_id)` (writes `article_relevance_scores`). `cron_enrich` must call these — the scoring/persistence logic is NOT to be reimplemented in the cron.
+
 ### Stories
 
 #### E5-S1 — `cron_enrich` — content extraction
 - `newspaper4k` fetches and extracts clean content from article URL
 - Fallback to RSS content if fetch fails
 - Stores extracted content in `articles.content`
+
+> **From Epic 3**: after content is stored, the no-AI path calls
+> `ScoringService.extract_and_store_keywords` then `score_article_for_user`
+> (per user) — both already implemented and tested.
 
 ---
 
@@ -354,12 +363,22 @@ api/
 - LLM output parsed as JSON without error
 - Malformed LLM response retried once, then falls back to TF-IDF
 
+> **Open item for Epic 5**: scoring is per-user and frozen at enrichment, so the
+> cron must loop over the article's relevant users when writing
+> `article_relevance_scores`. A user who registers *after* an article was
+> enriched has no score for it and won't see it in their feed — decide whether
+> Epic 5 needs a backfill pass for new users / pre-existing articles.
+
 ---
 
 #### E5-S3 — `AIKeywordScorer`
 - Replaces `TFIDFScorer` when `OPENROUTER_API_KEY` is present
 - Uses LLM-extracted keyword salience × user `keyword_weights`
 - `ScoringPipeline` auto-selects correct scorer based on config
+
+> **From Epic 3**: selection logic and `score()` already done. This story is
+> just implementing `AIKeywordScorer.extract_keywords()` (currently raises
+> `NotImplementedError`) to parse the LLM JSON into `ScoredKeyword`s.
 
 **Acceptance criteria**:
 - Switching `OPENROUTER_API_KEY` on/off changes active scorer
@@ -385,15 +404,18 @@ api/
 - Services: `postgres`, `miniflux`, `api`, `pwa`, `cron_fetch`, `cron_enrich`, `cron_refresh_weights`
 - All config via `.env` (template: `.env.example`)
 - Cron jobs use `restart: unless-stopped` with sleep loops
+- One-shot `migrate` service (same image as `api`, `command: alembic upgrade head`, `restart: "no"`); `api` and cron services depend on it via `depends_on: condition: service_completed_successfully` so migrations run exactly once before the app starts
 
 **Acceptance criteria**:
 - `docker compose up` from a clean machine starts all services
+- Alembic migrations run automatically once (via the `migrate` service) before `api` accepts traffic
 - App accessible at `localhost:3000`
 
 ---
 
 #### E6-S3 — Railway config
 - `railway.toml` declaring all services
+- API service runs `alembic upgrade head` as its pre-deploy / release command, so migrations apply once per deploy (after build, before the new version takes traffic) — never at per-replica startup
 - "Deploy on Railway" button in README
 - Env var documentation per service
 

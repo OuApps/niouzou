@@ -2,6 +2,18 @@ import type { FeedArticle, ArticleDetail, SavedArticle, KeywordWeight, SourceFul
 
 export const MOCK_ARTICLES: FeedArticle[] = [
   {
+    id: '1a2b3c4d-0000-4000-8000-000000000000',
+    title: 'Introducing Niouzou: The Privacy-First News Aggregator You Actually Own',
+    summary_short: 'Tired of algorithmic feeds and data harvesting? Niouzou is a self-hosted news reader with AI-powered summaries that learns your interests without selling your data. Swipe right for what you love, left for what you don\'t.',
+    og_image_url: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400"><rect width="800" height="400" fill="%230c1018"/><g transform="translate(400,200)"><text x="0" y="0" font-size="88" font-weight="900" font-family="system-ui, -apple-system, sans-serif" fill="%23ffffff" text-anchor="middle" dominant-baseline="central" letter-spacing="-2">Niouzou</text></g></svg>',
+    url: 'https://github.com/OuApps/niouzou',
+    source: { id: 's5', name: 'Niouzou' },
+    published_at: '2026-05-27T10:00:00Z',
+    relevance_score: 0.95,
+    keywords: ['privacy', 'news aggregator', 'open source', 'rss', 'self-hosted'],
+    read_time_minutes: 5,
+  },
+  {
     id: '1a2b3c4d-0001-4000-8000-000000000001',
     title: 'Why Rust is eating the world of systems programming',
     summary_short: 'Rust adoption has surged 40% in the last year as major tech companies migrate critical infrastructure. Memory safety without garbage collection is proving irresistible for performance-sensitive applications.',
@@ -107,11 +119,13 @@ export function getMockArticleDetail(id: string): ArticleDetail | undefined {
     source: { ...feed.source, url: feed.url },
     summary_executive:
       id === MOCK_ARTICLES[0].id
-        ? '- Rust adoption up 40% year-over-year in systems programming\n- Mozilla, Google, and Microsoft now use Rust in production kernels\n- Memory safety guarantees eliminate entire classes of CVEs\n- Zero-cost abstractions mean no runtime performance penalty\n- Cargo ecosystem now has over 120,000 crates'
+        ? '- Self-hosted news reader: no ads, no tracking, no algorithms\n- Swipe interface learns your preferences from your reading behavior\n- TFIDFscorer + optional AI enrichment via OpenRouter\n- One-click RSS source management, supports Miniflux integration\n- Mobile-first PWA with full offline support\n- Apache 2.0 + Commons Clause: free to self-host, not to commercialize'
         : id === MOCK_ARTICLES[1].id
-          ? '- Network latency between services adds 50-200ms per request chain\n- Debugging distributed transactions requires specialized tooling\n- Operational overhead grows linearly with service count\n- Several teams migrating back to modular monoliths\n- Key insight: start monolith, extract only when proven necessary'
-          : null,
-    enriched_at: '2026-05-26T09:00:00Z',
+          ? '- Rust adoption up 40% year-over-year in systems programming\n- Mozilla, Google, and Microsoft now use Rust in production kernels\n- Memory safety guarantees eliminate entire classes of CVEs\n- Zero-cost abstractions mean no runtime performance penalty\n- Cargo ecosystem now has over 120,000 crates'
+          : id === MOCK_ARTICLES[2].id
+            ? '- Network latency between services adds 50-200ms per request chain\n- Debugging distributed transactions requires specialized tooling\n- Operational overhead grows linearly with service count\n- Several teams migrating back to modular monoliths\n- Key insight: start monolith, extract only when proven necessary'
+            : null,
+    enriched_at: '2026-05-27T10:00:00Z',
     feedback: null,
     keywords: feed.keywords,
   }
@@ -136,6 +150,7 @@ export const MOCK_KEYWORDS: KeywordWeight[] = [
 ]
 
 export const MOCK_SOURCES: SourceFull[] = [
+  { id: 's5', name: 'Niouzou', url: 'https://github.com/OuApps/niouzou', created_at: '2026-05-27T00:00:00Z' },
   { id: 's1', name: 'The Pragmatic Engineer', url: 'https://newsletter.pragmaticengineer.com/feed', created_at: '2026-01-01T00:00:00Z' },
   { id: 's2', name: 'InfoQ', url: 'https://feed.infoq.com/', created_at: '2026-01-15T00:00:00Z' },
   { id: 's3', name: 'Simon Willison', url: 'https://simonwillison.net/atom/everything/', created_at: '2026-02-01T00:00:00Z' },

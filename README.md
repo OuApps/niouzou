@@ -9,7 +9,11 @@ Niouzou is a self-hostable news aggregator with a mobile-first swipe interface i
 
 ---
 
-![Niouzou feed screenshot](docs/assets/screenshot.png)
+## Screenshots
+
+| | | | |
+|---|---|---|---|
+| ![Feed](docs/assets/screen_1.png) | ![Article detail](docs/assets/screen_2.png) | ![Saved](docs/assets/screen_3.png) | ![Keywords](docs/assets/screen_4.png) |
 
 ---
 
@@ -121,9 +125,9 @@ No black box. You can inspect and edit every keyword weight in the Keywords tab.
 See [`docs/EPICS.md`](docs/EPICS.md) for the full breakdown.
 
 - [x] Architecture & design system
-- [ ] EPIC 1 — PWA UI & navigation
-- [ ] EPIC 2 — Foundations & ingestion
-- [ ] EPIC 3 — API & basic scoring
+- [x] EPIC 1 — PWA UI & navigation
+- [x] EPIC 2 — Foundations & ingestion
+- [X] EPIC 3 — API & basic scoring
 - [ ] EPIC 4 — PWA API integration
 - [ ] EPIC 5 — AI enrichment
 - [ ] EPIC 6 — Packaging & open source

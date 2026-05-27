@@ -1,0 +1,58 @@
+# Local development stack for Epic 2 verification.
+# Brings up the Niouzou Postgres + a Miniflux instance (with its own Postgres).
+# The full production compose lives at the repo root (Epic 6).
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Then run migrations and cron_fetch from the host:
+#   uv run alembic upgrade head
+#   uv run python -m niouzou.crons.fetch
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: niouzou
+      POSTGRES_PASSWORD: niouzou
+      POSTGRES_DB: niouzou
+    ports:
+      - "5432:5432"
+    volumes:
+      - niouzou_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U niouzou"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  miniflux_db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: miniflux
+      POSTGRES_PASSWORD: miniflux
+      POSTGRES_DB: miniflux
+    volumes:
+      - miniflux_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miniflux"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  miniflux:
+    image: miniflux/miniflux:latest
+    depends_on:
+      miniflux_db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://miniflux:miniflux@miniflux_db/miniflux?sslmode=disable
+      RUN_MIGRATIONS: "1"
+      CREATE_ADMIN: "1"
+      ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-adminpassword}
+
+volumes:
+  niouzou_db:
+  miniflux_db:
