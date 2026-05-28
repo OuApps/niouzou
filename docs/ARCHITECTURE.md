@@ -196,15 +196,27 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 ## Deployment
 
 ### Railway (SaaS)
-- One Railway project, one service per component
+- One Railway project, one service per component (`railway.toml` at repo root)
 - Services communicate via Railway internal network
-- Cron jobs configured in Railway dashboard
+- `alembic upgrade head` runs as the API's pre-deploy command — migrations
+  apply once per deploy, never at per-replica startup
+- Cron jobs use Railway's `cronSchedule` (the cron scripts are one-shot, so no
+  sleep loop is needed there)
 - Domain: `niouzou.tutus.ovh` (during development)
 
 ### Docker Compose (self-hosted)
-- Single `docker-compose.yml` at repo root
-- References official Miniflux and PostgreSQL images
-- All configuration via `.env` file
+- `docker-compose.yml` at repo root — one-command stack
+- A single Postgres instance hosts both the `niouzou` and `miniflux` databases
+  (the `miniflux` user/db are created by `infra/postgres-init/`)
+- One-shot `migrate` service runs Alembic before `api` accepts traffic
+- One-shot `miniflux_bootstrap` mints Miniflux's API key automatically and
+  drops it into a shared volume; `api` + `cron_fetch` pick it up at start via
+  the image's entrypoint — no manual UI step
+- Cron jobs wrap the one-shot scripts in a sleep loop (`restart: unless-stopped`)
+- All configuration via `.env` (template: `.env.example`)
+- `docker-compose.test.yml` is a separate file providing a tmpfs Postgres on
+  port `5433` for the pytest suite, so the main stack stays lean and tests
+  never touch real data
 
 ---
 
@@ -212,16 +224,24 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | ✅ | PostgreSQL connection string |
+| `DATABASE_URL` | ✅ | PostgreSQL connection string (built from `POSTGRES_*` inside compose) |
 | `MINIFLUX_URL` | ✅ | Miniflux instance URL |
-| `MINIFLUX_API_KEY` | ✅ | Miniflux API key |
+| `MINIFLUX_API_KEY` | ✅ | Miniflux API key. Auto-provisioned by `miniflux_bootstrap` in compose; required only when deploying outside (e.g. Railway), where it must be set as a secret |
 | `JWT_SECRET` | ✅ | Secret for JWT signing |
+| `MINIFLUX_ADMIN_USERNAME` | ⚙️ compose | Admin user provisioned by Miniflux on first boot (default: `admin`) |
+| `MINIFLUX_ADMIN_PASSWORD` | ⚙️ compose | Admin password (default: `adminpassword`) |
+| `MINIFLUX_DB_PASSWORD` | ⚙️ compose | Password for the `miniflux` user inside the shared Postgres (default: `miniflux`) |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | ⚙️ compose | App database credentials (defaults: `niouzou`/`niouzou`/`niouzou`) |
 | `OPENROUTER_API_KEY` | ❌ | Enables AI enrichment and scoring |
-| `OPENROUTER_MODEL` | ❌ | Model to use (default: `mistralai/mistral-small`) |
+| `OPENROUTER_MODEL` | ❌ | Model to use (default: `nvidia/nemotron-3-super-120b-a12b:free`) |
 | `SCORE_THRESHOLD` | ❌ | Minimum relevance_score to surface article (default: `0.0`) |
 | `RANDOM_SURFACE_RATE` | ❌ | % of random articles in feed (default: `0.05`) |
+| `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
+| `MAX_KEYWORDS_PER_ARTICLE` | ❌ | Cap on keywords stored per article — applied after extraction (default: `6`) |
 | `CRON_FETCH_INTERVAL` | ❌ | Fetch interval in minutes (default: `15`) |
 | `CRON_ENRICH_INTERVAL` | ❌ | Enrichment interval in minutes (default: `30`) |
+| `CRON_REFRESH_INTERVAL` | ❌ | Keyword-weight recompute interval in minutes (default: `1440` — daily) |
+| `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`) |
 
 ---
 

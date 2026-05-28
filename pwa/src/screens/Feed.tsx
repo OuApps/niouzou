@@ -19,6 +19,68 @@ const PAGE_SIZE = 20
 // Start loading the next page when this many cards remain ahead of the user.
 const PREFETCH_AHEAD = 5
 
+// E7-S8 — empty-state threshold relaxation. The PWA doesn't know the server's
+// SCORE_THRESHOLD, so the first step-down offer assumes 0.5 and decrements from
+// there. State resets on full page reload.
+const SCORE_STEP = 0.1
+const INITIAL_OFFER_FLOOR = 0.4
+
+function formatScore(value: number): string {
+  return value <= 0 ? '0' : value.toFixed(1)
+}
+
+function EmptyDeck({
+  currentFloor,
+  onLower,
+}: {
+  currentFloor: number | null
+  onLower: (next: number) => void
+}) {
+  // Next step-down offer: from the active floor when set, else from the
+  // initial heuristic offer. Once the floor reaches 0, there's nothing more
+  // to relax — show the resigned variant.
+  const nextOffer =
+    currentFloor === null
+      ? INITIAL_OFFER_FLOOR
+      : Math.max(currentFloor - SCORE_STEP, 0)
+  const atZero = currentFloor !== null && currentFloor <= 0
+  const showAllOffer = nextOffer === 0 && !atZero
+
+  return (
+    <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+      <p style={{ fontSize: 28, marginBottom: 8, color: 'var(--text-primary)' }}>
+        Vous avez tout lu !
+      </p>
+      {atZero ? (
+        <p>Revenez plus tard pour de nouveaux articles.</p>
+      ) : (
+        <>
+          <p style={{ marginBottom: 16 }}>
+            Pas envie d&apos;attendre ? Élargissez le filtre.
+          </p>
+          <button
+            onClick={() => onLower(nextOffer)}
+            style={{
+              padding: '10px 16px',
+              borderRadius: 20,
+              border: '1px solid var(--accent-border)',
+              background: 'var(--accent-subtle)',
+              color: 'var(--accent-text)',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {showAllOffer
+              ? 'Voir tous les articles (score ≥ 0)'
+              : `Voir les articles avec score ≥ ${formatScore(nextOffer)}`}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 export const Feed = () => {
   const [articles, setArticles] = useState<FeedArticle[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
@@ -27,6 +89,9 @@ export const Feed = () => {
   const [errorMsg, setErrorMsg] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
+  // null = use server default. When the user opts into the relaxed empty
+  // state, this becomes the active min_score override.
+  const [minScore, setMinScore] = useState<number | null>(null)
   const loadingMoreRef = useRef(false) // re-entrancy guard (not read during render)
 
   const [gone] = useState(() => new Set<number>())
@@ -54,7 +119,7 @@ export const Feed = () => {
   // only set from the resolved promise, never synchronously in the effect body.
   useEffect(() => {
     let active = true
-    getFeed(undefined, PAGE_SIZE)
+    getFeed(undefined, PAGE_SIZE, minScore ?? undefined)
       .then((page) => {
         if (!active) return
         gone.clear()
@@ -73,7 +138,7 @@ export const Feed = () => {
     return () => {
       active = false
     }
-  }, [reloadKey, gone])
+  }, [reloadKey, gone, minScore])
 
   const refresh = useCallback(() => {
     setStatus('loading')
@@ -86,7 +151,7 @@ export const Feed = () => {
     loadingMoreRef.current = true
     setLoadingMore(true)
     try {
-      const page = await getFeed(cursor, PAGE_SIZE)
+      const page = await getFeed(cursor, PAGE_SIZE, minScore ?? undefined)
       setArticles((prev) => [...prev, ...page.articles])
       setCursor(page.next_cursor)
       setHasMore(page.has_more)
@@ -97,7 +162,7 @@ export const Feed = () => {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [cursor, hasMore])
+  }, [cursor, hasMore, minScore])
 
   // Infinite scroll: prefetch as the user nears the end of the loaded deck.
   // Deferred a tick so the fetch's setState doesn't run synchronously here.
@@ -129,7 +194,9 @@ export const Feed = () => {
       // right=like, left=dislike, up=skip, down=save
       const action: FeedbackAction =
         dir === 'right' ? 'like' : dir === 'left' ? 'dislike' : dir === 'down' ? 'save' : 'skip'
-      setFeedback(article.id, action)
+      // Pass the full article so the Saved screen can show it immediately
+      // (E7-S11). The store stashes it only when action === 'save'.
+      setFeedback(article.id, action, article)
       // Optimistic: the card is already flying off; persist in the background.
       postFeedback(article.id, action).catch(() => {})
 
@@ -258,6 +325,34 @@ export const Feed = () => {
         </svg>
       </div>
 
+      {/* Active relaxed-threshold pill */}
+      {minScore !== null && (
+        <div
+          className="relative z-10 flex justify-center"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 12px)' }}
+        >
+          <button
+            onClick={() => {
+              setStatus('loading')
+              setMinScore(null)
+            }}
+            aria-label="Reset to default score threshold"
+            style={{
+              padding: '4px 10px',
+              borderRadius: 20,
+              border: '1px solid var(--accent-border)',
+              background: 'var(--accent-subtle)',
+              color: 'var(--accent-text)',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Score ≥ {formatScore(minScore)} · réinitialiser
+          </button>
+        </div>
+      )}
+
       {/* Card stack */}
       <div
         className="relative z-10 flex-1 flex items-center justify-center"
@@ -271,29 +366,42 @@ export const Feed = () => {
           hasMore || loadingMore ? (
             <Spinner size={32} />
           ) : (
-            <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-              <p style={{ fontSize: 32, marginBottom: 12 }}>You are all caught up</p>
-              <p>Check back later for new articles</p>
-            </div>
+            <EmptyDeck
+              currentFloor={minScore}
+              onLower={(next) => {
+                setStatus('loading')
+                setMinScore(next)
+              }}
+            />
           )
         ) : (
           springs.map((props, i) => {
-            if (i < currentIndex || gone.has(i)) return null
+            // Only render the top card + the one immediately behind it. The
+            // glass background is translucent on purpose, so stacking 3+ cards
+            // makes text bleed through (E1-S2 regression).
+            if (i < currentIndex || i > currentIndex + 1 || gone.has(i)) return null
+            const isPeek = i === currentIndex + 1
 
             return (
               <animated.div
                 key={articles[i].id}
-                {...bind(i)}
+                {...(isPeek ? {} : bind(i))}
                 style={{
                   position: 'absolute',
                   width: '100%',
                   maxWidth: 360,
                   zIndex: articles.length - i,
-                  transform: to(
-                    [props.x, props.y, props.rot, props.scale],
-                    (x, y, r, s) => `translate3d(${x}px,${y}px,0) rotate(${r}deg) scale(${s})`,
-                  ),
-                  opacity: props.opacity,
+                  // Peek sits slightly behind + scaled down. Pointer events off
+                  // so the gesture binder only fires on the top card.
+                  transform: isPeek
+                    ? 'translate3d(0, 8px, 0) scale(0.96)'
+                    : to(
+                        [props.x, props.y, props.rot, props.scale],
+                        (x, y, r, s) =>
+                          `translate3d(${x}px,${y}px,0) rotate(${r}deg) scale(${s})`,
+                      ),
+                  opacity: isPeek ? 0.6 : props.opacity,
+                  pointerEvents: isPeek ? 'none' : 'auto',
                   touchAction: 'none',
                 }}
               >

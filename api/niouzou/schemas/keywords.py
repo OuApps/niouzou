@@ -12,6 +12,7 @@ class KeywordOut(BaseModel):
     weight: float
     like_count: int
     dislike_count: int
+    manually_overridden: bool
     updated_at: datetime
 
 
@@ -22,4 +23,12 @@ class KeywordsResponse(BaseModel):
 
 
 class KeywordPatch(BaseModel):
-    weight: float
+    """Partial update for a keyword weight.
+
+    - ``weight`` alone: pin the weight (sets ``manually_overridden = True``).
+    - ``manually_overridden: false`` alone: clear the pin, keep the weight.
+    - Both: caller-controlled override of pin state and weight.
+    """
+
+    weight: float | None = None
+    manually_overridden: bool | None = None

@@ -1,0 +1,18 @@
+# node_modules is reinstalled inside the build stage from the lockfile.
+node_modules
+dist
+dist-ssr
+
+# Local env files — VITE_API_URL is injected as a build arg instead.
+.env
+.env.*
+
+# VCS / editor / OS noise.
+.git
+.gitignore
+Dockerfile
+.dockerignore
+*.log
+.DS_Store
+.vscode
+.idea

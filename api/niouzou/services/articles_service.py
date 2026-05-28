@@ -2,11 +2,18 @@
 
 import uuid
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from niouzou.deps import SessionDep
 from niouzou.errors import not_found
-from niouzou.models import Article, ArticleFeedback, ArticleRelevanceScore, Source
+from niouzou.models import (
+    Article,
+    ArticleFeedback,
+    ArticleKeyword,
+    ArticleRelevanceScore,
+    Source,
+)
 from niouzou.schemas.articles import (
     ArticleDetail,
     ArticleFeedbackInfo,
@@ -19,6 +26,21 @@ class ArticlesService:
         self.session = session
 
     async def get(self, user_id: uuid.UUID, article_id: uuid.UUID) -> ArticleDetail:
+        keywords_subq = (
+            select(
+                func.array_agg(
+                    aggregate_order_by(
+                        ArticleKeyword.term,
+                        ArticleKeyword.salience.desc(),
+                        ArticleKeyword.term.asc(),
+                    )
+                )
+            )
+            .where(ArticleKeyword.article_id == Article.id)
+            .correlate(Article)
+            .scalar_subquery()
+        )
+
         row = (
             await self.session.execute(
                 select(
@@ -27,8 +49,10 @@ class ArticlesService:
                     Source.name.label("source_name"),
                     Source.url.label("source_url"),
                     ArticleRelevanceScore.relevance_score,
+                    ArticleRelevanceScore.scorer,
                     ArticleFeedback.action,
                     ArticleFeedback.updated_at.label("feedback_updated_at"),
+                    keywords_subq.label("keywords"),
                 )
                 .join(Source, Source.id == Article.source_id)
                 .outerjoin(
@@ -72,5 +96,7 @@ class ArticlesService:
             published_at=article.published_at,
             enriched_at=article.enriched_at,
             relevance_score=row.relevance_score,
+            scorer=row.scorer,
             feedback=feedback,
+            keywords=list(row.keywords or []),
         )

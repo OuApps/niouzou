@@ -78,7 +78,7 @@ export const ArticleCard = ({ article, style }: ArticleCardProps) => {
           {article.source.name}
         </span>
         <div style={{ position: 'absolute', top: 10, right: 10 }}>
-          <ScoreBadge score={article.relevance_score} />
+          <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
         </div>
       </div>
 
@@ -114,12 +114,15 @@ export const ArticleCard = ({ article, style }: ArticleCardProps) => {
           {article.summary_short}
         </p>
 
-        {/* Keywords */}
+        {/* Keywords — top 3 by salience; rest collapsed into "+N". */}
         {article.keywords && article.keywords.length > 0 && (
           <div className="flex flex-wrap gap-1.5" style={{ marginBottom: 10 }}>
-            {article.keywords.map((kw) => (
+            {article.keywords.slice(0, 3).map((kw) => (
               <KeywordTag key={kw} term={kw} />
             ))}
+            {article.keywords.length > 3 && (
+              <KeywordTag term={`+${article.keywords.length - 3}`} />
+            )}
           </div>
         )}
 

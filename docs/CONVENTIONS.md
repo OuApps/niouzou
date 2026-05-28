@@ -16,8 +16,11 @@ niouzou/
 ├── LICENSE
 ├── README.md
 ├── .env.example
-├── docker-compose.yml
+├── docker-compose.yml         ← self-hosting stack
+├── docker-compose.test.yml    ← throwaway Postgres for pytest
 ├── railway.toml
+├── infra/
+│   └── postgres-init/         ← creates the miniflux DB on first boot
 ├── docs/
 │   ├── PRD.md
 │   ├── ARCHITECTURE.md
@@ -28,6 +31,7 @@ niouzou/
 │   └── CONVENTIONS.md
 ├── api/
 │   ├── Dockerfile
+│   ├── docker-entrypoint.sh   ← promotes /secrets/miniflux_api_key into env
 │   ├── pyproject.toml
 │   └── niouzou/
 │       ├── main.py

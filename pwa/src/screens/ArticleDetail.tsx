@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, ThumbsUp, ThumbsDown, Bookmark, BookmarkCheck, ExternalLink } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
@@ -9,7 +10,7 @@ import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { useApiData } from '../hooks/useApiData'
 import { useFeedbackStore } from '../store/feedback'
 import { getArticle, postFeedback } from '../api'
-import type { FeedbackAction } from '../types/api'
+import type { FeedArticle, FeedbackAction } from '../types/api'
 
 export const ArticleDetail = () => {
   const { id } = useParams<{ id: string }>()
@@ -19,15 +20,49 @@ export const ArticleDetail = () => {
   const storeFeedbacks = useFeedbackStore((s) => s.feedbacks)
   const setFeedback = useFeedbackStore((s) => s.setFeedback)
 
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
   // Current action, derived: this session's optimistic store overlay wins over
   // the server value — no effect, no duplicated state.
   const override = id ? storeFeedbacks[id] : undefined
   const action: FeedbackAction | null = override ?? article?.feedback?.action ?? null
 
-  const apply = (next: FeedbackAction) => {
-    if (!id) return
-    setFeedback(id, next)
-    postFeedback(id, next).catch(() => {})
+  const apply = async (next: FeedbackAction) => {
+    if (!id || submitting) return
+    setSubmitError(null)
+    // Stash a FeedArticle-shaped projection when saving so the Saved screen
+    // can show it immediately (E7-S11). Other actions just clear the stash.
+    const asFeedArticle: FeedArticle | undefined =
+      next === 'save' && article
+        ? {
+            id: article.id,
+            title: article.title,
+            summary_short: article.summary_short ?? '',
+            og_image_url: article.og_image_url,
+            url: article.url,
+            source: { id: article.source.id, name: article.source.name },
+            published_at: article.published_at ?? '',
+            relevance_score: article.relevance_score ?? 0,
+            scorer: article.scorer,
+            keywords: article.keywords ?? [],
+          }
+        : undefined
+    setFeedback(id, next, asFeedArticle)
+    setSubmitting(true)
+    try {
+      await postFeedback(id, next)
+      // Like/dislike from detail: return to the previous screen so the user
+      // can keep swiping without an extra tap. Save keeps them on the article.
+      if (next === 'like' || next === 'dislike') {
+        navigate(-1)
+        return
+      }
+    } catch {
+      setSubmitError("Couldn't save your feedback. Please try again.")
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const toggleSave = () => {
@@ -144,7 +179,7 @@ export const ArticleDetail = () => {
         </button>
         {/* Score badge */}
         <div style={{ position: 'absolute', top: 'calc(env(safe-area-inset-top, 0px) + 12px)', right: 12 }}>
-          <ScoreBadge score={article.relevance_score} />
+          <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
         </div>
       </div>
 
@@ -219,11 +254,22 @@ export const ArticleDetail = () => {
           {article.summary_short}
         </p>
 
-        {/* Keywords */}
+        {/* Keywords — scrollable row so long lists don't break the layout. */}
         {article.keywords && article.keywords.length > 0 && (
-          <div className="flex flex-wrap gap-1.5" style={{ marginBottom: 20 }}>
+          <div
+            className="flex gap-1.5"
+            style={{
+              marginBottom: 20,
+              overflowX: 'auto',
+              flexWrap: 'nowrap',
+              scrollbarWidth: 'none',
+              paddingBottom: 2,
+            }}
+          >
             {article.keywords.map((kw) => (
-              <KeywordTag key={kw} term={kw} />
+              <span key={kw} style={{ flexShrink: 0 }}>
+                <KeywordTag term={kw} />
+              </span>
             ))}
           </div>
         )}
@@ -250,6 +296,20 @@ export const ArticleDetail = () => {
           Read full article
           <ExternalLink size={16} />
         </a>
+
+        {submitError && (
+          <div
+            role="alert"
+            style={{
+              fontSize: 12,
+              color: 'var(--action-dislike)',
+              textAlign: 'center',
+              marginBottom: 12,
+            }}
+          >
+            {submitError}
+          </div>
+        )}
 
         {/* Action buttons */}
         <div className="flex justify-center items-center gap-8">

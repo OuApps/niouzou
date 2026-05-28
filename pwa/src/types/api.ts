@@ -12,6 +12,8 @@ export interface SourceFull {
   created_at: string
 }
 
+export type Scorer = 'tfidf' | 'ai_keyword'
+
 export interface FeedArticle {
   id: string
   title: string
@@ -21,6 +23,7 @@ export interface FeedArticle {
   source: SourceRef
   published_at: string
   relevance_score: number
+  scorer?: Scorer | null
   keywords?: string[]
   read_time_minutes?: number
 }
@@ -36,6 +39,7 @@ export interface ArticleDetail {
   published_at: string
   enriched_at: string | null
   relevance_score: number
+  scorer?: Scorer | null
   feedback: { action: FeedbackAction; updated_at: string } | null
   keywords?: string[]
 }
@@ -49,6 +53,7 @@ export interface KeywordWeight {
   weight: number
   like_count: number
   dislike_count: number
+  manually_overridden: boolean
   updated_at: string
 }
 

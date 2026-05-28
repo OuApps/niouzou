@@ -2,7 +2,7 @@
 name = "niouzou"
 version = "0.1.0"
 description = "Self-hostable, mobile-first news aggregator with a swipe interface"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

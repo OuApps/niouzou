@@ -15,13 +15,27 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from niouzou.config import get_settings
 from niouzou.models import Article, ArticleKeyword, ArticleRelevanceScore, KeywordWeight
 from niouzou.scoring import ScoredKeyword, ScoringPipeline
 
 
 class ScoringService:
-    def __init__(self, pipeline: ScoringPipeline | None = None) -> None:
+    def __init__(
+        self,
+        pipeline: ScoringPipeline | None = None,
+        *,
+        max_keywords_per_article: int | None = None,
+    ) -> None:
         self.pipeline = pipeline or ScoringPipeline()
+        # Cap applied at the persistence boundary so it covers both TF-IDF and
+        # AI extractors uniformly (E7-S5). Defaults to the env-driven setting;
+        # tests override via the kwarg.
+        self.max_keywords_per_article = (
+            max_keywords_per_article
+            if max_keywords_per_article is not None
+            else get_settings().max_keywords_per_article
+        )
 
     async def extract_and_store_keywords(
         self, session: AsyncSession, article: Article
@@ -33,6 +47,10 @@ class ScoringService:
         """
         text = " ".join(filter(None, [article.title, article.content]))
         keywords = self.pipeline.extract_keywords(text)
+        # Top-N by salience; ties broken by the scorer's own ordering.
+        keywords = sorted(keywords, key=lambda k: -k.salience)[
+            : self.max_keywords_per_article
+        ]
         if not keywords:
             return []
 
@@ -86,12 +104,18 @@ class ScoringService:
 
         score = self.pipeline.relevance(keywords, user_weights)
 
+        scorer_name = self.pipeline.scorer_name
         await session.execute(
             pg_insert(ArticleRelevanceScore)
-            .values(article_id=article_id, user_id=user_id, relevance_score=score)
+            .values(
+                article_id=article_id,
+                user_id=user_id,
+                relevance_score=score,
+                scorer=scorer_name,
+            )
             .on_conflict_do_update(
                 index_elements=["article_id", "user_id"],
-                set_={"relevance_score": score},
+                set_={"relevance_score": score, "scorer": scorer_name},
             )
         )
         return score

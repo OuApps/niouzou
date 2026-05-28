@@ -20,6 +20,11 @@ class FeedArticle(BaseModel):
     source: SourceRef
     published_at: datetime | None
     relevance_score: float
+    # "tfidf" or "ai_keyword" when known, null for pre-E7-S7 rows.
+    scorer: str | None = None
+    # Top keywords sorted by salience DESC (E7-S10). Empty list when the article
+    # has no extracted keywords yet (e.g. pending enrichment).
+    keywords: list[str] = []
 
 
 class FeedResponse(BaseModel):

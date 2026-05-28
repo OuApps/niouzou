@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bookmark } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
@@ -8,23 +8,85 @@ import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
-import { useApiData } from '../hooks/useApiData'
 import { useFeedbackStore } from '../store/feedback'
-import { getSaved } from '../api'
+import { getSaved, ApiError } from '../api'
+import type { SavedArticle } from '../types/api'
 
 const PULL_THRESHOLD = 80
+const PAGE_SIZE = 20
 
 export const Saved = () => {
   const navigate = useNavigate()
-  const { data, loading, error, reload } = useApiData(() => getSaved(), [])
-  // Hide rows the user unsaved this session (no refetch needed).
+  const [articles, setArticles] = useState<SavedArticle[]>([])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const loadingMoreRef = useRef(false)
+
+  // Session overlay: hide unsaved rows, prepend optimistically-saved articles.
   const feedbacks = useFeedbackStore((s) => s.feedbacks)
+  const sessionSaved = useFeedbackStore((s) => s.savedArticles)
 
-  const articles = (data?.articles ?? []).filter(
-    (a) => !(a.id in feedbacks) || feedbacks[a.id] === 'save',
-  )
+  // ── Initial load + reload ──────────────────────────────────────────────────
+  useEffect(() => {
+    let active = true
+    setStatus('loading')
+    getSaved(undefined, PAGE_SIZE)
+      .then((page) => {
+        if (!active) return
+        setArticles(page.articles)
+        setCursor(page.next_cursor)
+        setHasMore(page.has_more)
+        setStatus('ready')
+      })
+      .catch((e) => {
+        if (!active) return
+        setErrorMsg(e instanceof ApiError ? e.message : 'Something went wrong.')
+        setStatus('error')
+      })
+    return () => {
+      active = false
+    }
+  }, [reloadKey])
 
-  // Pull-to-refresh
+  const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+
+  const loadMore = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMore || !cursor) return
+    loadingMoreRef.current = true
+    setLoadingMore(true)
+    try {
+      const page = await getSaved(cursor, PAGE_SIZE)
+      setArticles((prev) => [...prev, ...page.articles])
+      setCursor(page.next_cursor)
+      setHasMore(page.has_more)
+    } catch {
+      // Silent: user can keep scrolling what's loaded.
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMore(false)
+    }
+  }, [cursor, hasMore])
+
+  // ── Infinite scroll: load next page when sentinel is in view ──────────────
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const node = sentinelRef.current
+    if (!node || !hasMore || status !== 'ready') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore()
+      },
+      { rootMargin: '200px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasMore, status, loadMore])
+
+  // ── Pull-to-refresh ────────────────────────────────────────────────────────
   const [pullY, setPullY] = useState(0)
   const [pulling, setPulling] = useState(false)
   const touchStartY = useRef(0)
@@ -52,6 +114,17 @@ export const Saved = () => {
   }, [pullY, reload])
 
   const pullProgress = Math.min(pullY / PULL_THRESHOLD, 1)
+
+  // ── Merge session overlay over server response ────────────────────────────
+  // Hide rows the user unsaved this session, and prepend session-saved articles
+  // not yet present in the server page (E7-S11).
+  const serverIds = new Set(articles.map((a) => a.id))
+  const sessionExtras = Object.values(sessionSaved)
+    .filter((a) => !serverIds.has(a.id))
+    .sort((a, b) => b.saved_at.localeCompare(a.saved_at))
+  const visibleArticles = [...sessionExtras, ...articles].filter(
+    (a) => !(a.id in feedbacks) || feedbacks[a.id] === 'save',
+  )
 
   return (
     <div
@@ -100,13 +173,13 @@ export const Saved = () => {
       </header>
 
       <div className="relative z-10 flex-1" style={{ padding: '8px 16px 90px' }}>
-        {loading ? (
+        {status === 'loading' ? (
           <div className="flex justify-center" style={{ paddingTop: 60 }}>
             <Spinner size={30} />
           </div>
-        ) : error ? (
-          <ErrorState message={error} onRetry={reload} />
-        ) : articles.length === 0 ? (
+        ) : status === 'error' ? (
+          <ErrorState message={errorMsg} onRetry={reload} />
+        ) : visibleArticles.length === 0 ? (
           <EmptyState
             icon={Bookmark}
             title="No saved articles"
@@ -114,7 +187,7 @@ export const Saved = () => {
           />
         ) : (
           <div className="flex flex-col gap-3">
-            {articles.map((article) => (
+            {visibleArticles.map((article) => (
               <button
                 key={article.id}
                 onClick={() => navigate(`/articles/${article.id}`)}
@@ -146,7 +219,7 @@ export const Saved = () => {
                     style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 4 }}
                   >
                     <span>{article.source.name}</span>
-                    <ScoreBadge score={article.relevance_score} />
+                    <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
                   </div>
                   <h3
                     style={{
@@ -168,6 +241,16 @@ export const Saved = () => {
                 </div>
               </button>
             ))}
+            {/* Infinite scroll sentinel */}
+            {hasMore && (
+              <div
+                ref={sentinelRef}
+                className="flex justify-center"
+                style={{ padding: '8px 0 24px' }}
+              >
+                {loadingMore && <Spinner size={22} />}
+              </div>
+            )}
           </div>
         )}
       </div>

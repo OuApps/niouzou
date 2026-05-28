@@ -31,4 +31,8 @@ class ArticleDetail(BaseModel):
     enriched_at: datetime | None
     # Null when the article has not been scored for this user yet.
     relevance_score: float | None
+    # "tfidf" or "ai_keyword" when known, null for unscored / legacy rows.
+    scorer: str | None = None
     feedback: ArticleFeedbackInfo | None
+    # All keywords sorted by salience DESC (E7-S10). Empty list when unenriched.
+    keywords: list[str] = []

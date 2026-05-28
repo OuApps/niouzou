@@ -51,6 +51,7 @@ async def _insert_articles(
             "url": e.url,
             "title": e.title,
             "content": e.content,
+            "og_image_url": e.og_image_url,
             "published_at": e.published_at,
             "status": STATUS_PENDING,
         }

@@ -11,6 +11,7 @@ turning the LLM's JSON reply into ``ScoredKeyword`` objects.
 from collections.abc import Sequence
 
 from niouzou.scoring.base import BaseScorer, ScoredKeyword
+from niouzou.scoring.stopwords import is_meaningful_term
 from niouzou.services.openrouter_client import OpenRouterClient, OpenRouterError
 
 # Cap the article text sent to the model: the lede carries the topic, and
@@ -28,6 +29,8 @@ _SYSTEM = (
 
 
 class AIKeywordScorer(BaseScorer):
+    name = "ai_keyword"
+
     def __init__(
         self,
         client: OpenRouterClient | None = None,
@@ -79,12 +82,20 @@ class AIKeywordScorer(BaseScorer):
         keywords: list[ScoredKeyword] = []
         seen: set[str] = set()
         for item in items:
-            term = str(item["term"]).strip().lower()
+            try:
+                term = str(item["term"]).strip().lower()
+                # Clamp into [0, 1] so a chatty model can't violate the salience
+                # CHECK constraint on article_keywords.
+                salience = max(0.0, min(1.0, float(item["salience"])))
+            except (KeyError, TypeError, ValueError):
+                # Skip one malformed item rather than discarding the whole reply.
+                continue
             if not term or term in seen:
                 continue
-            # Clamp into [0, 1] so a chatty model can't violate the salience
-            # CHECK constraint on article_keywords.
-            salience = max(0.0, min(1.0, float(item["salience"])))
+            if not is_meaningful_term(term):
+                # Drop stop words, single chars, and pure numbers — the LLM
+                # occasionally returns "de", "the", "2024" etc.
+                continue
             keywords.append(ScoredKeyword(term=term, salience=round(salience, 4)))
             seen.add(term)
             if len(keywords) >= self._max_keywords:

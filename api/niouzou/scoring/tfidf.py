@@ -15,27 +15,16 @@ from collections import Counter
 from collections.abc import Sequence
 
 from niouzou.scoring.base import BaseScorer, ScoredKeyword
+from niouzou.scoring.stopwords import is_meaningful_term
 
 # Words of length >= 3, starting with a letter; keeps tokens like "c++" out but
 # allows "rust", "web3". Lowercased before matching.
 _TOKEN_RE = re.compile(r"[a-z][a-z0-9]{2,}")
 
-# Small English stoplist — enough to keep extraction from being dominated by
-# function words without shipping a full NLP corpus.
-_STOPWORDS = frozenset(
-    """
-    the a an and or but if then else when while for to of in on at by with from
-    into over after before about as is are was were be been being have has had do
-    does did will would shall should can could may might must not no nor so than
-    too very this that these those it its it's they them their there here what which
-    who whom whose how why where you your yours we our ours us i me my mine he she
-    his her hers him also more most some such only own same out up down off again
-    once just now new get got like one two three first new news said says
-    """.split()
-)
-
 
 class TFIDFScorer(BaseScorer):
+    name = "tfidf"
+
     def __init__(self, max_keywords: int = 25) -> None:
         self.max_keywords = max_keywords
 
@@ -44,7 +33,7 @@ class TFIDFScorer(BaseScorer):
         return [
             tok
             for tok in _TOKEN_RE.findall(text.lower())
-            if tok not in _STOPWORDS
+            if is_meaningful_term(tok)
         ]
 
     def _idf(self, corpus: Sequence[str]) -> dict[str, float]:

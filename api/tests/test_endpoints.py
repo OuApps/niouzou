@@ -10,6 +10,7 @@ from niouzou.services.articles_service import ArticlesService
 from niouzou.services.feedback_service import FeedbackService
 from niouzou.services.keywords_service import KeywordsService
 from niouzou.services.saved_service import SavedService
+from niouzou.services.stats_service import StatsService
 from tests.factories import (
     add_keyword,
     make_article,
@@ -116,11 +117,57 @@ async def test_patch_keyword_overrides_and_pins(db_session):
     await db_session.commit()
 
     svc = KeywordsService(db_session)
-    out = await svc.set_weight(user.id, "rust", 0.0)
+    out = await svc.patch_keyword(user.id, "rust", weight=0.0, manually_overridden=None)
     await db_session.commit()
 
     assert out.term == "rust"
     assert out.weight == 0.0
+    assert out.manually_overridden is True
     # Re-running listing reflects the override.
     listed = await svc.list_keywords(user.id, cursor=None, limit=None)
     assert listed.keywords[0].term == "rust"
+
+    # Clearing the pin without changing the weight.
+    cleared = await svc.patch_keyword(
+        user.id, "rust", weight=None, manually_overridden=False
+    )
+    assert cleared.manually_overridden is False
+    assert cleared.weight == 0.0
+
+
+async def test_stats_aggregates_user_scoped_counts(db_session):
+    from datetime import datetime, timezone
+
+    from niouzou.models import Article
+    from niouzou.models.article import STATUS_PENDING
+
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    # Enriched article with AI success.
+    a1 = await make_article(db_session, source, title="ai")
+    a1.enriched_at = datetime.now(timezone.utc)
+    a1.enrichment_method = "ai"
+    # Enriched article with TF-IDF fallback (AI error captured).
+    a2 = await make_article(db_session, source, title="fallback")
+    a2.enriched_at = datetime.now(timezone.utc)
+    a2.enrichment_method = "tfidf"
+    a2.enrichment_error = "boom"
+    # Pending article (not yet enriched).
+    pending = Article(
+        source_id=source.id,
+        miniflux_entry_id=999_111,
+        url="https://example.com/p",
+        title="pending",
+        status=STATUS_PENDING,
+    )
+    db_session.add(pending)
+    await db_session.commit()
+
+    stats = await StatsService(db_session).get(user.id)
+    assert stats.articles.total == 3
+    assert stats.articles.pending_enrichment == 1
+    assert stats.sources.total == 1
+    assert stats.enrichment.total_ai == 1
+    assert stats.enrichment.total_tfidf == 1
+    assert stats.enrichment.total_tfidf_fallback == 1
+    assert stats.enrichment.last_error == "boom"

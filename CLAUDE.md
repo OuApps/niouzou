@@ -8,7 +8,7 @@ Niouzou is a self-hostable, mobile-first news aggregator with a TikTok/Tinder-st
 
 | Layer | Tech |
 |---|---|
-| API | Python 3.14 / FastAPI / SQLAlchemy 2.0 async |
+| API | Python 3.13 / FastAPI / SQLAlchemy 2.0 async |
 | PWA | React / TypeScript / Vite / Tailwind CSS |
 | DB | PostgreSQL |
 | RSS | Miniflux (external Docker image, REST API only) |

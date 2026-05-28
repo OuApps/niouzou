@@ -49,10 +49,10 @@ def test_parses_bare_list_with_prose_and_fence():
 
 def test_salience_clamped_into_unit_range():
     scorer = _scorer(
-        ['[{"term": "a", "salience": 1.7}, {"term": "b", "salience": -0.4}]']
+        ['[{"term": "rust", "salience": 1.7}, {"term": "safety", "salience": -0.4}]']
     )
     kws = {k.term: k.salience for k in scorer.extract_keywords("text")}
-    assert kws == {"a": 1.0, "b": 0.0}
+    assert kws == {"rust": 1.0, "safety": 0.0}
     assert all(0.0 <= s <= 1.0 for s in kws.values())
 
 
@@ -89,6 +89,17 @@ def test_persistently_malformed_raises_after_retry():
     with pytest.raises(OpenRouterError):
         scorer.extract_keywords("text")
     assert scorer._client.calls == 2  # retries=1 → exactly two attempts
+
+
+def test_malformed_item_is_skipped_not_whole_reply():
+    # One item lacks "salience", another is a bare string — both skipped, the
+    # valid ones survive (no retry, no OpenRouterError).
+    scorer = _scorer(
+        ['[{"term": "rust"}, "garbage", {"term": "safety", "salience": 0.7}]']
+    )
+    kws = scorer.extract_keywords("text")
+    assert [(k.term, k.salience) for k in kws] == [("safety", 0.7)]
+    assert scorer._client.calls == 1  # parsed on the first attempt
 
 
 def test_empty_keyword_list_is_rejected():

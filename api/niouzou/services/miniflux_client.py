@@ -44,6 +44,7 @@ class MinifluxEntry:
     url: str
     content: str | None
     published_at: datetime | None
+    og_image_url: str | None
 
     @classmethod
     def from_api(cls, data: dict) -> "MinifluxEntry":
@@ -54,7 +55,27 @@ class MinifluxEntry:
             url=data.get("url") or "",
             content=data.get("content") or None,
             published_at=_parse_dt(data.get("published_at")),
+            og_image_url=_first_image_enclosure(data.get("enclosures")),
         )
+
+
+def _first_image_enclosure(enclosures: object) -> str | None:
+    """Return the first image URL among Miniflux entry enclosures.
+
+    Miniflux exposes media via ``enclosures`` ([{url, mime_type, ...}]). Many
+    feeds advertise their cover image here, so it's the cheapest source of
+    ``og_image_url`` — no extra fetch required.
+    """
+    if not isinstance(enclosures, list):
+        return None
+    for enc in enclosures:
+        if not isinstance(enc, dict):
+            continue
+        mime = (enc.get("mime_type") or "").lower()
+        url = enc.get("url")
+        if mime.startswith("image/") and url:
+            return url
+    return None
 
 
 def _parse_dt(value: str | None) -> datetime | None:

@@ -17,13 +17,16 @@ from niouzou.errors import (
     validation_exception_handler,
 )
 from niouzou.routers import (
+    admin,
     articles,
     auth,
     feed,
     feedback,
     keywords,
+    me,
     saved,
     sources,
+    stats,
 )
 
 app = FastAPI(title="Niouzou API", version="0.1.0")
@@ -42,7 +45,18 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 API_PREFIX = "/api/v1"
-for module in (auth, sources, feed, feedback, articles, saved, keywords):
+for module in (
+    auth,
+    sources,
+    feed,
+    feedback,
+    articles,
+    saved,
+    keywords,
+    me,
+    stats,
+    admin,
+):
     app.include_router(module.router, prefix=API_PREFIX)
 
 

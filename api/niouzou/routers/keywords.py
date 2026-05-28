@@ -1,8 +1,9 @@
-"""Keyword-weight endpoints: GET /keywords, PATCH /keywords/{term}."""
+"""Keyword-weight endpoints: GET /keywords, PATCH /keywords/{term},
+DELETE /keywords."""
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from niouzou.deps import CurrentUser
 from niouzou.schemas.keywords import KeywordOut, KeywordPatch, KeywordsResponse
@@ -27,4 +28,15 @@ async def list_keywords(
 async def patch_keyword(
     term: str, body: KeywordPatch, user: CurrentUser, service: KeywordsServiceDep
 ) -> KeywordOut:
-    return await service.set_weight(user.id, term, body.weight)
+    return await service.patch_keyword(
+        user.id, term, body.weight, body.manually_overridden
+    )
+
+
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_keywords(
+    user: CurrentUser, service: KeywordsServiceDep
+) -> Response:
+    """Wipe all keyword weights for the current user. Irreversible."""
+    await service.reset_all(user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

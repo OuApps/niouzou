@@ -88,20 +88,26 @@ class EnrichmentService:
             parsed.parse()
             text = (parsed.text or "").strip()
             if text:
+                image = parsed.top_image or None
+                if not image:
+                    # newspaper occasionally misses og:image even when the page has
+                    # one — a regex over the raw HTML is a cheap second pass.
+                    image = _og_image_from_html(getattr(parsed, "html", None))
                 return ExtractedContent(
                     content=text,
-                    og_image_url=(parsed.top_image or None),
+                    og_image_url=image,
                     fallback_summary=_first_sentences(text),
                 )
             logger.info("enrich: newspaper returned empty text for %s, using RSS", url)
         except Exception as exc:  # noqa: BLE001 — any fetch/parse failure → RSS
             logger.info("enrich: content extraction failed for %s (%s), using RSS", url, exc)
 
-        rss = _strip_html(rss_fallback)
+        # Last resort: pull the first <img> from the RSS body. Better than nothing
+        # for paywalled / blocked sources.
         return ExtractedContent(
-            content=rss,
-            og_image_url=None,
-            fallback_summary=_first_sentences(rss) if rss else None,
+            content=_strip_html(rss_fallback),
+            og_image_url=_first_img_from_html(rss_fallback),
+            fallback_summary=_first_sentences(_strip_html(rss_fallback) or ""),
         )
 
     def generate_summaries(self, title: str, content: str | None) -> Summaries:
@@ -145,3 +151,33 @@ def _strip_html(html: str | None) -> str | None:
     text = re.sub(r"<[^>]+>", " ", html)
     text = " ".join(text.split())
     return text or None
+
+
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_OG_IMAGE_ALT_RE = re.compile(
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+    re.IGNORECASE,
+)
+_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _og_image_from_html(html: str | None) -> str | None:
+    """Best-effort og:image meta scrape (both attribute orderings)."""
+    if not html:
+        return None
+    for pattern in (_OG_IMAGE_RE, _OG_IMAGE_ALT_RE):
+        m = pattern.search(html)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _first_img_from_html(html: str | None) -> str | None:
+    """First ``<img src=...>`` URL — used as a last-resort RSS-body fallback."""
+    if not html:
+        return None
+    m = _IMG_SRC_RE.search(html)
+    return m.group(1) if m else None

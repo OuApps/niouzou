@@ -8,11 +8,13 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from niouzou.deps import SessionDep
 from niouzou.models import (
     Article,
     ArticleFeedback,
+    ArticleKeyword,
     ArticleRelevanceScore,
     Source,
 )
@@ -32,6 +34,22 @@ class SavedService:
     ) -> SavedResponse:
         page_size = _clamp_limit(limit)
 
+        # Returns NULL when the article has no keywords; coerced to [] in Python.
+        keywords_subq = (
+            select(
+                func.array_agg(
+                    aggregate_order_by(
+                        ArticleKeyword.term,
+                        ArticleKeyword.salience.desc(),
+                        ArticleKeyword.term.asc(),
+                    )
+                )
+            )
+            .where(ArticleKeyword.article_id == Article.id)
+            .correlate(Article)
+            .scalar_subquery()
+        )
+
         stmt = (
             select(
                 Article,
@@ -40,7 +58,9 @@ class SavedService:
                 func.coalesce(ArticleRelevanceScore.relevance_score, 0.0).label(
                     "relevance_score"
                 ),
+                ArticleRelevanceScore.scorer.label("scorer"),
                 ArticleFeedback.updated_at.label("saved_at"),
+                keywords_subq.label("keywords"),
             )
             .join(ArticleFeedback, ArticleFeedback.article_id == Article.id)
             .join(Source, Source.id == Article.source_id)
@@ -87,7 +107,9 @@ class SavedService:
                 source=SourceRef(id=r.source_id, name=r.source_name),
                 published_at=r.Article.published_at,
                 relevance_score=r.relevance_score,
+                scorer=r.scorer,
                 saved_at=r.saved_at,
+                keywords=list(r.keywords or []),
             )
             for r in rows
         ]

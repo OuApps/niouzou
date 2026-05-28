@@ -22,6 +22,10 @@ class ScoredKeyword:
 
 
 class BaseScorer(ABC):
+    # Short identifier persisted alongside relevance_score so the PWA can show
+    # whether a score came from AI or TF-IDF (E7-S7). Override in subclasses.
+    name: str = "base"
+
     @abstractmethod
     def extract_keywords(
         self, text: str, *, corpus: Sequence[str] | None = None

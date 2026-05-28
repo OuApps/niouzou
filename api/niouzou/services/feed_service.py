@@ -39,15 +39,25 @@ class FeedService:
         self.session = session
 
     async def get_feed(
-        self, user_id: uuid.UUID, cursor: str | None, limit: int | None
+        self,
+        user_id: uuid.UUID,
+        cursor: str | None,
+        limit: int | None,
+        min_score: float | None = None,
     ) -> FeedResponse:
         settings = get_settings()
         page_size = _clamp_limit(limit)
 
+        # Per-request override beats the env default (E7-S8); the random-surface
+        # branch still applies on top.
+        threshold = (
+            min_score if min_score is not None else settings.score_threshold
+        )
+
         params: dict = {
             "user_id": user_id,
             "gravity": settings.feed_gravity,
-            "threshold": settings.score_threshold,
+            "threshold": threshold,
             "random_rate": settings.random_surface_rate,
             "limit": page_size + 1,  # +1 row tells us whether more remain
         }
@@ -72,7 +82,13 @@ class FeedService:
                     s.id AS source_id,
                     s.name AS source_name,
                     ars.relevance_score AS relevance_score,
-                    {_FEED_RANK} AS feed_rank
+                    ars.scorer AS scorer,
+                    {_FEED_RANK} AS feed_rank,
+                    COALESCE(
+                        (SELECT array_agg(ak.term ORDER BY ak.salience DESC, ak.term ASC)
+                         FROM article_keywords ak WHERE ak.article_id = a.id),
+                        ARRAY[]::text[]
+                    ) AS keywords
                 FROM articles a
                 JOIN sources s ON s.id = a.source_id
                 JOIN article_relevance_scores ars
@@ -107,6 +123,8 @@ class FeedService:
                 source=SourceRef(id=r["source_id"], name=r["source_name"]),
                 published_at=r["published_at"],
                 relevance_score=r["relevance_score"],
+                scorer=r["scorer"],
+                keywords=list(r["keywords"] or []),
             )
             for r in rows
         ]

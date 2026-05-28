@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5
+    # Cap on keywords persisted per article; applied after extraction so it
+    # works uniformly for TF-IDF and AI scorers (E7-S5).
+    max_keywords_per_article: int = 6
     cron_fetch_interval: int = 15
     cron_enrich_interval: int = 30
 

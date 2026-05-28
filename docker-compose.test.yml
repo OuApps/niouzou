@@ -1,0 +1,30 @@
+# Throwaway Postgres for the pytest suite.
+#
+# Kept separate from docker-compose.yml so the main stack stays lean and there
+# is zero risk of pytest's TRUNCATEs (api/tests/conftest.py) ever pointing at a
+# real database. tmpfs makes startup near-instant and leaves no on-disk state.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test \
+#     uv run --project api alembic upgrade head
+#   DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test \
+#     uv run --project api pytest
+
+name: niouzou-test
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: niouzou
+      POSTGRES_PASSWORD: niouzou
+      POSTGRES_DB: niouzou_test
+    ports:
+      - "5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U niouzou"]
+      interval: 2s
+      timeout: 5s
+      retries: 10

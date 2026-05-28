@@ -29,6 +29,9 @@ public = { port = 8080, startPort = 8080 }
 [[services]]
 name = "api"
 build = { dockerfile = "api/Dockerfile" }
+# Migrations run once per deploy, after build and before the new version takes
+# traffic — never at per-replica startup.
+preDeployCommand = "alembic upgrade head"
 
 [services.api.variables]
 DATABASE_URL = "${{ postgres.DATABASE_URL }}"
@@ -43,16 +46,22 @@ public = { port = 8000, startPort = 8000 }
 name = "pwa"
 build = { dockerfile = "pwa/Dockerfile" }
 
+# VITE_API_URL is consumed as a build ARG by pwa/Dockerfile (Vite inlines it at
+# build time), so it must point at the API's public URL, with the /api/v1 path.
 [services.pwa.variables]
-VITE_API_URL = "${{ api.PUBLIC_URL }}"
+VITE_API_URL = "https://${{ api.RAILWAY_PUBLIC_DOMAIN }}/api/v1"
 
 [services.pwa.ports]
 public = { port = 3000, startPort = 3000 }
 
+# Cron services share the API image but run a one-shot script and exit. Railway
+# re-runs them on the given schedule (the scripts are one-shot, so no sleep loop
+# is needed here — unlike the Docker Compose stack).
 [[services]]
 name = "cron-fetch"
 build = { dockerfile = "api/Dockerfile" }
 startCommand = "python -m niouzou.crons.fetch"
+cronSchedule = "*/15 * * * *"
 
 [services.cron-fetch.variables]
 DATABASE_URL = "${{ postgres.DATABASE_URL }}"
@@ -63,6 +72,7 @@ MINIFLUX_API_KEY = "${{ secrets.MINIFLUX_API_KEY }}"
 name = "cron-enrich"
 build = { dockerfile = "api/Dockerfile" }
 startCommand = "python -m niouzou.crons.enrich"
+cronSchedule = "*/30 * * * *"
 
 [services.cron-enrich.variables]
 DATABASE_URL = "${{ postgres.DATABASE_URL }}"
@@ -73,6 +83,7 @@ OPENROUTER_MODEL = "${{ secrets.OPENROUTER_MODEL }}"
 name = "cron-refresh-weights"
 build = { dockerfile = "api/Dockerfile" }
 startCommand = "python -m niouzou.crons.refresh_weights"
+cronSchedule = "0 3 * * *"
 
 [services.cron-refresh-weights.variables]
 DATABASE_URL = "${{ postgres.DATABASE_URL }}"

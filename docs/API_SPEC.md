@@ -114,6 +114,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 |---|---|---|---|
 | `cursor` | string | No | Opaque cursor from previous response. Omit for first page. |
 | `limit` | integer | No | Number of articles to return. Default: `20`, max: `50`. |
+| `min_score` | float | No | Per-request override of `SCORE_THRESHOLD` (0.0–1.0). Used by the PWA empty state (E7-S8). |
 
 **Response `200`**
 ```json
@@ -130,7 +131,9 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
         "name": "The Pragmatic Engineer"
       },
       "published_at": "2024-01-15T10:30:00Z",
-      "relevance_score": 0.87
+      "relevance_score": 0.87,
+      "scorer": "ai_keyword",
+      "keywords": ["rust", "memory safety", "c++"]
     }
   ],
   "next_cursor": "eyJsYXN0X2lkIjoiLi4uIn0=",
@@ -140,6 +143,8 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 
 > `next_cursor` is null when there are no more articles.
 > Cursor encodes the last article's `relevance_score` + `id` to ensure stable pagination.
+> `scorer` is `"tfidf"` or `"ai_keyword"`; null for rows scored before E7-S7.
+> `keywords` is sorted by salience desc; empty array when the article has none.
 
 ---
 
@@ -204,12 +209,14 @@ Returns full article details. Called when user taps to expand an article before 
   "feedback": {
     "action": "like",
     "updated_at": "2024-01-15T10:31:00Z"
-  }
+  },
+  "keywords": ["rust", "memory safety", "c++"]
 }
 ```
 
 > `feedback` is null if the user has not interacted with the article yet.
 > `summary_executive` is null when AI enrichment is disabled.
+> `keywords` is sorted by salience desc; empty array when the article has none.
 
 ---
 
@@ -241,13 +248,34 @@ Returns articles the user has saved (Watch Later). Ordered by feedback `updated_
       },
       "published_at": "2024-01-15T10:30:00Z",
       "relevance_score": 0.87,
-      "saved_at": "2024-01-15T10:31:00Z"
+      "saved_at": "2024-01-15T10:31:00Z",
+      "keywords": ["rust", "memory safety", "c++"]
     }
   ],
   "next_cursor": "eyJsYXN0X2lkIjoiLi4uIn0=",
   "has_more": false
 }
 ```
+
+---
+
+## Profile
+
+### GET /me
+Returns the authenticated user's profile plus aggregate counts (E7-S9).
+
+**Response `200`**
+```json
+{
+  "email": "user@example.com",
+  "is_admin": false,
+  "saved_count": 42,
+  "keyword_count": 18,
+  "source_count": 7
+}
+```
+
+> `is_admin` is reserved for the E8 admin role; always `false` until then.
 
 ---
 
@@ -326,6 +354,7 @@ Used for the "view and edit keyword scores" UI.
       "weight": 2.4,
       "like_count": 12,
       "dislike_count": 1,
+      "manually_overridden": false,
       "updated_at": "2024-01-15T10:00:00Z"
     },
     {
@@ -333,6 +362,7 @@ Used for the "view and edit keyword scores" UI.
       "weight": -1.8,
       "like_count": 0,
       "dislike_count": 9,
+      "manually_overridden": true,
       "updated_at": "2024-01-14T08:00:00Z"
     }
   ],
@@ -344,14 +374,20 @@ Used for the "view and edit keyword scores" UI.
 ---
 
 ### PATCH /keywords/{term}
-Manually override the weight for a keyword.
+Manually override the weight for a keyword and/or change its pin state.
 
-**Request**
+**Request** — both fields are optional, send any subset:
 ```json
 {
-  "weight": 0.0
+  "weight": 0.0,
+  "manually_overridden": true
 }
 ```
+
+- Sending `weight` alone pins the keyword (`manually_overridden = true`).
+- Sending `{ "manually_overridden": false }` alone clears the pin without
+  touching the weight value — the next `cron_refresh_weights` run will
+  recompute it from feedback.
 
 **Response `200`**
 ```json
@@ -360,10 +396,75 @@ Manually override the weight for a keyword.
   "weight": 0.0,
   "like_count": 12,
   "dislike_count": 1,
+  "manually_overridden": true,
   "updated_at": "2024-01-15T11:00:00Z"
 }
 ```
 
 > Manual overrides are preserved by `cron_refresh_weights` —
-> a `manually_overridden` flag (bool) is set on the row and
-> the cron skips recomputing weights for flagged rows.
+> the cron skips recomputing weights when `manually_overridden = true`.
+
+---
+
+### DELETE /keywords
+Delete **all** keyword weights for the authenticated user. Hard delete, irreversible.
+
+**Response `204`** — no content
+
+---
+
+## System
+
+### GET /stats
+System and AI-enrichment health, used by the Profile screen's System section (E7-S15). All counts scoped to the authenticated user's sources / data.
+
+**Response `200`**
+```json
+{
+  "articles": {
+    "total": 1842,
+    "pending_enrichment": 7,
+    "last_fetched_at": "2026-05-27T14:03:00Z"
+  },
+  "sources": {
+    "total": 12,
+    "active": 12
+  },
+  "keywords": {
+    "total": 94,
+    "manually_overridden": 3
+  },
+  "enrichment": {
+    "last_enriched_at": "2026-05-27T14:10:00Z",
+    "total_ai": 1456,
+    "total_tfidf": 384,
+    "total_tfidf_fallback": 42,
+    "last_error": "JSONDecodeError: Expecting value: line 1 column 1",
+    "last_error_at": "2026-05-20T13:45:00Z"
+  }
+}
+```
+
+> `total_tfidf` counts every article enriched with TF-IDF (pure TF-IDF when AI
+> is off, plus fallbacks). `total_tfidf_fallback` is the subset where AI was
+> attempted and failed — useful for monitoring AI reliability.
+> `last_error` / `last_error_at` are null when no fallback has ever happened.
+
+---
+
+### POST /admin/refresh
+Trigger `cron_fetch` followed by `cron_enrich` as a background task (E7-S16).
+Concurrent runs are debounced server-side; the response is identical whether a
+new run started or one was already in flight.
+
+> Will be gated by `require_admin` once E8-S1 lands. Open to every authenticated
+> user for now (acceptable in the single-user self-host context).
+
+**Response `202`**
+```json
+{ "status": "started" }
+```
+or
+```json
+{ "status": "already_running" }
+```
