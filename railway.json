@@ -1,0 +1,134 @@
+{
+  "services": {
+    "postgres": {
+      "source": {
+        "image": "postgres:17"
+      },
+      "variables": {
+        "POSTGRES_DB": "niouzou",
+        "POSTGRES_USER": "niouzou"
+      },
+      "volumeMounts": {
+        "data": {
+          "mountPath": "/var/lib/postgresql/data"
+        }
+      }
+    },
+    "miniflux": {
+      "source": {
+        "image": "miniflux/miniflux:2.1.0"
+      },
+      "variables": {
+        "DATABASE_URL": "${{ postgres.DATABASE_URL }}?sslmode=disable",
+        "RUN_MIGRATIONS": "1",
+        "CREATE_ADMIN": "1",
+        "ADMIN_USERNAME": "admin",
+        "ADMIN_PASSWORD": "${{ MINIFLUX_ADMIN_PASSWORD }}"
+      },
+      "networking": {
+        "serviceDomains": {
+          "<hasDomain>": {
+            "port": 8080
+          }
+        }
+      }
+    },
+    "api": {
+      "source": {
+        "repo": "OuApps/niouzou",
+        "rootDirectory": "api"
+      },
+      "build": {
+        "dockerfilePath": "api/Dockerfile"
+      },
+      "deploy": {
+        "preDeployCommand": "alembic upgrade head",
+        "startCommand": "python app.py"
+      },
+      "variables": {
+        "DATABASE_URL": "${{ postgres.DATABASE_URL }}",
+        "MINIFLUX_URL": "http://miniflux:8080",
+        "MINIFLUX_API_KEY": "${{ MINIFLUX_API_KEY }}",
+        "JWT_SECRET": "${{ JWT_SECRET }}"
+      },
+      "networking": {
+        "serviceDomains": {
+          "<hasDomain>": {
+            "port": 8000
+          }
+        }
+      }
+    },
+    "pwa": {
+      "source": {
+        "repo": "OuApps/niouzou",
+        "rootDirectory": "pwa"
+      },
+      "build": {
+        "dockerfilePath": "pwa/Dockerfile"
+      },
+      "variables": {
+        "VITE_API_URL": "https://${{ api.RAILWAY_PUBLIC_DOMAIN }}/api/v1"
+      },
+      "networking": {
+        "serviceDomains": {
+          "<hasDomain>": {
+            "port": 3000
+          }
+        }
+      }
+    },
+    "cron-fetch": {
+      "source": {
+        "repo": "OuApps/niouzou",
+        "rootDirectory": "api"
+      },
+      "build": {
+        "dockerfilePath": "api/Dockerfile"
+      },
+      "deploy": {
+        "startCommand": "python -m niouzou.crons.fetch",
+        "cronSchedule": "*/15 * * * *"
+      },
+      "variables": {
+        "DATABASE_URL": "${{ postgres.DATABASE_URL }}",
+        "MINIFLUX_URL": "http://miniflux:8080",
+        "MINIFLUX_API_KEY": "${{ MINIFLUX_API_KEY }}"
+      }
+    },
+    "cron-enrich": {
+      "source": {
+        "repo": "OuApps/niouzou",
+        "rootDirectory": "api"
+      },
+      "build": {
+        "dockerfilePath": "api/Dockerfile"
+      },
+      "deploy": {
+        "startCommand": "python -m niouzou.crons.enrich",
+        "cronSchedule": "*/30 * * * *"
+      },
+      "variables": {
+        "DATABASE_URL": "${{ postgres.DATABASE_URL }}",
+        "OPENROUTER_API_KEY": "${{ OPENROUTER_API_KEY }}",
+        "OPENROUTER_MODEL": "${{ OPENROUTER_MODEL }}"
+      }
+    },
+    "cron-refresh-weights": {
+      "source": {
+        "repo": "OuApps/niouzou",
+        "rootDirectory": "api"
+      },
+      "build": {
+        "dockerfilePath": "api/Dockerfile"
+      },
+      "deploy": {
+        "startCommand": "python -m niouzou.crons.refresh_weights",
+        "cronSchedule": "0 3 * * *"
+      },
+      "variables": {
+        "DATABASE_URL": "${{ postgres.DATABASE_URL }}"
+      }
+    }
+  }
+}
