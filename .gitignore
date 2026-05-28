@@ -51,7 +51,6 @@ env/
 logs/
 
 # Models and data
-models/
 data/
 *.pkl
 *.pickle
