@@ -400,7 +400,7 @@ export const Feed = () => {
                         (x, y, r, s) =>
                           `translate3d(${x}px,${y}px,0) rotate(${r}deg) scale(${s})`,
                       ),
-                  opacity: isPeek ? 0.6 : props.opacity,
+                  opacity: isPeek ? 0.85 : props.opacity,
                   pointerEvents: isPeek ? 'none' : 'auto',
                   touchAction: 'none',
                 }}

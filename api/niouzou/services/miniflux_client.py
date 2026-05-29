@@ -153,6 +153,20 @@ class MinifluxClient:
         resp.raise_for_status()
         return resp.json()["feed_id"]
 
+    async def find_feed_by_url(self, feed_url: str) -> int | None:
+        """Return the id of an existing feed whose ``feed_url`` matches, if any.
+
+        Miniflux has no server-side filter on ``/v1/feeds``, so this lists all
+        feeds and matches client-side. Only used to recover from the "feed
+        already exists" 4xx when a second user subscribes to the same URL.
+        """
+        resp = await self._client.get("/v1/feeds")
+        resp.raise_for_status()
+        for feed in resp.json():
+            if feed.get("feed_url") == feed_url:
+                return feed["id"]
+        return None
+
     async def get_feed(self, feed_id: int) -> MinifluxFeed:
         """Fetch a feed's metadata (used to discover its display title)."""
         resp = await self._client.get(f"/v1/feeds/{feed_id}")

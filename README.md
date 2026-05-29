@@ -133,8 +133,6 @@ Conscious trade-offs, not bugs — most are harmless for single-user self-hostin
 
 - **Refresh tokens are not revocable.** JWTs are stateless, valid for 30 days,
   no blacklist. Logout or rotation can't invalidate a token before it expires.
-- **Miniflux deduplicates feeds globally.** Two users adding the same RSS URL
-  end up sharing the first user's source.
 - **Relevance scores are frozen at enrichment.** A user who signs up after an
   article was enriched won't see it (a backfill pass is planned).
 - **`RANDOM_SURFACE_RATE` + pagination.** With `SCORE_THRESHOLD > 0`, feed

@@ -69,12 +69,21 @@ class SourcesService:
             try:
                 category_id = await miniflux.default_category_id()
                 feed_id = await miniflux.create_feed(url, category_id=category_id)
-                feed = await miniflux.get_feed(feed_id)
             except httpx.HTTPStatusError as exc:
-                logger.warning("Miniflux feed creation failed for %s: %s", url, exc)
-                raise bad_request(
-                    "Could not subscribe to this feed — check the URL"
-                ) from exc
+                # Miniflux rejects a second subscription to the same URL with a
+                # 4xx ("This feed already exists."). In a multi-user deployment
+                # that is a normal case: reuse the existing feed id instead of
+                # erroring out, so both users can subscribe to the same source.
+                existing_id = await miniflux.find_feed_by_url(url)
+                if existing_id is None:
+                    logger.warning(
+                        "Miniflux feed creation failed for %s: %s", url, exc
+                    )
+                    raise bad_request(
+                        "Could not subscribe to this feed — check the URL"
+                    ) from exc
+                feed_id = existing_id
+            feed = await miniflux.get_feed(feed_id)
         return feed.id, feed.title
 
     async def delete_source(self, user_id: uuid.UUID, source_id: uuid.UUID) -> None:

@@ -31,23 +31,32 @@ from niouzou.services.miniflux_client import MinifluxClient, MinifluxEntry
 logger = logging.getLogger("niouzou.cron_fetch")
 
 
-async def _source_id_by_feed(session: AsyncSession) -> dict[int, str]:
-    """Map Miniflux feed id → Niouzou source id.
+async def _source_ids_by_feed(session: AsyncSession) -> dict[int, list[str]]:
+    """Map Miniflux feed id → list of Niouzou source ids.
 
-    Within a single shared Miniflux instance a feed id is unique, so the
-    mapping is unambiguous for the MVP single-tenant deployment.
+    Multiple users can subscribe to the same RSS URL — Miniflux deduplicates
+    those at the feed level, so a single ``miniflux_feed_id`` may back several
+    ``Source`` rows (one per user). Each entry needs to be ingested as a
+    separate article for every subscribing source.
     """
-    rows = await session.execute(select(Source.miniflux_feed_id, Source.id))
-    return {feed_id: source_id for feed_id, source_id in rows.all()}
+    rows = await session.execute(
+        select(Source.miniflux_feed_id, Source.id).where(Source.deleted_at.is_(None))
+    )
+    mapping: dict[int, list[str]] = {}
+    for feed_id, source_id in rows.all():
+        mapping.setdefault(feed_id, []).append(source_id)
+    return mapping
 
 
 async def _insert_articles(
-    session: AsyncSession, entries: list[MinifluxEntry], feed_to_source: dict[int, str]
+    session: AsyncSession,
+    entries: list[MinifluxEntry],
+    feed_to_sources: dict[int, list[str]],
 ) -> int:
     """Insert articles for matched entries; skip duplicates. Returns # rows tried."""
     values = [
         {
-            "source_id": feed_to_source[e.feed_id],
+            "source_id": source_id,
             "miniflux_entry_id": e.id,
             "url": e.url,
             "title": e.title,
@@ -57,12 +66,18 @@ async def _insert_articles(
             "status": STATUS_PENDING,
         }
         for e in entries
-        if e.feed_id in feed_to_source
+        if e.feed_id in feed_to_sources
+        for source_id in feed_to_sources[e.feed_id]
     ]
     if not values:
         return 0
+    # (source_id, miniflux_entry_id) is the per-user uniqueness key: two users
+    # subscribed to the same feed each get their own article row, but a rerun
+    # for the same user is a no-op.
     stmt = pg_insert(Article).values(values)
-    stmt = stmt.on_conflict_do_nothing(index_elements=["miniflux_entry_id"])
+    stmt = stmt.on_conflict_do_nothing(
+        index_elements=["source_id", "miniflux_entry_id"]
+    )
     await session.execute(stmt)
     return len(values)
 
@@ -81,10 +96,10 @@ async def run() -> int:
             return 0
 
         async with session_scope() as session:
-            feed_to_source = await _source_id_by_feed(session)
-            matched = [e for e in entries if e.feed_id in feed_to_source]
+            feed_to_sources = await _source_ids_by_feed(session)
+            matched = [e for e in entries if e.feed_id in feed_to_sources]
             unmatched = len(entries) - len(matched)
-            await _insert_articles(session, matched, feed_to_source)
+            await _insert_articles(session, matched, feed_to_sources)
 
         if unmatched:
             logger.warning(

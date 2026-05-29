@@ -713,7 +713,7 @@ api/
 
 ---
 
-#### [ ] E7-S14 — Multi-user: same RSS feed subscribed by two users
+#### [x] E7-S14 — Multi-user: same RSS feed subscribed by two users
 
 **Problem**: Miniflux is a single shared instance with one set of admin credentials. If two Niouzou users add the same RSS URL:
 1. The second `POST /sources` call fails with `bad_request` — `miniflux.create_feed()` returns a 422 because the feed already exists.
@@ -917,6 +917,44 @@ Add the following endpoints (all require `require_admin`):
 - Non-admin users do not see the "Administration" link on Profile and are redirected away from `/admin`
 - Saving a new model string updates the value shown without a full page reload
 - API key fields never show the plaintext value fetched from the server (masked on display, only the new value typed by the user is sent)
+
+---
+
+#### [ ] E8-S5 — User management (listing + password reset)
+
+**Goal**: Admins can see all registered users and reset any user's password from the admin screen — without SSH or DB access.
+
+**API changes**:
+
+- `GET /admin/users` — returns the list of all users:
+  ```json
+  [
+    { "id": "uuid", "email": "alice@example.com", "is_admin": true, "created_at": "2024-01-01T00:00:00Z" }
+  ]
+  ```
+  Sorted by `created_at ASC`. No pagination needed (user counts on self-hosted instances are small).
+
+- `PATCH /admin/users/{user_id}/password` — sets a new password for any user:
+  ```json
+  { "new_password": "hunter2" }
+  ```
+  Returns `204 No Content`. Enforces the same password validation rules as registration (min length). An admin can reset their own password too. The target user's existing sessions are **not** invalidated (keep it simple — no token revocation needed here).
+
+**PWA changes** (extend `Admin.tsx` from E8-S4):
+
+- Add a "Users" section below the config rows, with a collapsible list of all users
+- Each row shows: email, "Admin" badge if `is_admin`, creation date
+- Each row has a "Reset password" button that opens an inline input (type `password`) with a "Save" button
+- Saving calls `PATCH /admin/users/{user_id}/password`; shows a success checkmark or inline error
+- The admin's own row is visually distinguished (e.g. "You" label) but is still editable
+
+**Acceptance criteria**:
+
+- `GET /admin/users` returns all users; non-admin receives `403`
+- `PATCH /admin/users/{user_id}/password` with a password shorter than the minimum returns `422`
+- `PATCH /admin/users/{non_existent_id}/password` returns `404`
+- Non-admin users do not see the Users section (client-side guard + API-level `403`)
+- Password input is never echoed in plaintext in the UI after save
 
 ---
 

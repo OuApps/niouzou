@@ -91,7 +91,7 @@ html, body, #root {
 /* Cards need a darker, more opaque base than .glass-sm: they sit directly
    over the animated blobs and must stay legible through every colour phase. */
 .glass {
-  background: rgba(12, 16, 24, 0.72);
+  background: rgba(12, 16, 24, 0.92);
   border: 1px solid var(--glass-border);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));

@@ -102,6 +102,54 @@ async def test_readding_removed_source_revives_it(db_session):
 
 
 @respx.mock
+async def test_second_user_reuses_existing_miniflux_feed(db_session):
+    # Miniflux rejects a second POST /v1/feeds for the same URL with 4xx; the
+    # sources service must recover by looking up the existing feed id so user B
+    # can still subscribe (E7-S14).
+    user_a = await make_user(db_session, email="a@test.dev")
+    user_b = await make_user(db_session, email="b@test.dev")
+    await db_session.commit()
+    _mock_miniflux_create(feed_id=42)
+
+    await SourcesService(db_session).create_source(user_a.id, FEED_URL)
+    await db_session.commit()
+
+    # User B: POST fails (feed already exists), but GET /v1/feeds returns it.
+    respx.reset()
+    respx.get(f"{BASE}/v1/categories").mock(
+        return_value=httpx.Response(200, json=[{"id": 1, "title": "All"}])
+    )
+    respx.post(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(
+            400, json={"error_message": "This feed already exists."}
+        )
+    )
+    respx.get(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 42, "title": "The Feed", "feed_url": FEED_URL}],
+        )
+    )
+    respx.get(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(
+            200, json={"id": 42, "title": "The Feed", "feed_url": FEED_URL}
+        )
+    )
+
+    out_b = await SourcesService(db_session).create_source(user_b.id, FEED_URL)
+    await db_session.commit()
+
+    # Both users now point at the same Miniflux feed id.
+    rows = await db_session.scalars(
+        select(Source).where(Source.miniflux_feed_id == 42)
+    )
+    sources = rows.all()
+    assert len(sources) == 2
+    assert {s.user_id for s in sources} == {user_a.id, user_b.id}
+    assert out_b.name == "The Feed"
+
+
+@respx.mock
 async def test_bad_feed_url_returns_400(db_session):
     user = await make_user(db_session)
     await db_session.commit()
@@ -111,6 +159,8 @@ async def test_bad_feed_url_returns_400(db_session):
     respx.post(f"{BASE}/v1/feeds").mock(
         return_value=httpx.Response(400, json={"error_message": "bad feed"})
     )
+    # Recovery path: no existing feed matches, so the original 4xx surfaces.
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
 
     with pytest.raises(APIError) as exc:
         await SourcesService(db_session).create_source(user.id, FEED_URL)

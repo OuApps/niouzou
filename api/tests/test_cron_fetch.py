@@ -96,6 +96,49 @@ async def test_unmatched_feed_is_skipped_and_not_marked_read(db_session):
 
 
 @respx.mock
+async def test_multi_user_same_feed_ingests_per_source(db_session):
+    # Two users subscribed to the same Miniflux feed each get their own row
+    # for the same entry (E7-S14).
+    user_a = User(email="a@test.dev", password_hash="x")
+    user_b = User(email="b@test.dev", password_hash="x")
+    db_session.add_all([user_a, user_b])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Source(
+                user_id=user_a.id,
+                miniflux_feed_id=1,
+                url="https://feed",
+                name="Feed",
+            ),
+            Source(
+                user_id=user_b.id,
+                miniflux_feed_id=1,
+                url="https://feed",
+                name="Feed",
+            ),
+        ]
+    )
+    await db_session.commit()
+    put_route = _mock_miniflux([_entry(100, feed_id=1)])
+
+    marked = await fetch.run()
+
+    # One entry × two sources = two article rows; Miniflux still sees one
+    # handled entry (the return value is the entry count, not row count).
+    assert marked == 1
+    assert await _article_count(db_session) == 2
+    rows = await db_session.execute(select(Article.source_id))
+    assert {sid for (sid,) in rows.all()} == {
+        s.id
+        for s in (
+            await db_session.scalars(select(Source).where(Source.miniflux_feed_id == 1))
+        ).all()
+    }
+    assert json.loads(put_route.calls[0].request.content)["entry_ids"] == [100]
+
+
+@respx.mock
 async def test_no_unread_entries_is_a_noop(db_session):
     await _seed_source(db_session)
     put_route = _mock_miniflux([])
