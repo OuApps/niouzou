@@ -42,6 +42,19 @@ Click the button above. You need `JWT_SECRET` (use `openssl rand -hex 32`) and,
 on Railway only, a `MINIFLUX_API_KEY` you create once in the Miniflux UI.
 `OPENROUTER_API_KEY` is optional and enables AI summaries.
 
+**Database setup.** The API and Miniflux share **one** Postgres service but
+sit in **two databases** on it (`niouzou` and `miniflux`) so their `users`
+tables don't collide. The API's preDeploy step creates the `miniflux`
+database automatically on first boot; you just need to point the Miniflux
+service at it. In Railway, set the Miniflux service's `DATABASE_URL` to:
+
+```
+postgres://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/miniflux?sslmode=disable
+```
+
+The API keeps Railway's default `${{Postgres.DATABASE_URL}}` — it points at
+the default database, which is where Alembic runs.
+
 ---
 
 ## How the scoring works
