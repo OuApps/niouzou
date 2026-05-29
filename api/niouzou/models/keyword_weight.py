@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, Text, text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from niouzou.db import Base
@@ -24,7 +24,7 @@ class KeywordWeight(Base):
         Integer, server_default=text("0"), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        server_default=text("now()"), nullable=False
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
     )
     manually_overridden: Mapped[bool] = mapped_column(
         Boolean, server_default=text("false"), nullable=False

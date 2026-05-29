@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, text
+from sqlalchemy import DateTime, ForeignKey, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from niouzou.db import Base
@@ -17,5 +17,5 @@ class ArticleImpression(Base):
         ForeignKey("users.id"), primary_key=True
     )
     seen_at: Mapped[datetime] = mapped_column(
-        server_default=text("now()"), nullable=False
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
     )

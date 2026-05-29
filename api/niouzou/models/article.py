@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from niouzou.db import Base
@@ -26,13 +26,17 @@ class Article(Base):
     summary_short: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_executive: Mapped[str | None] = mapped_column(Text, nullable=True)
     og_image_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    published_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(
         String, server_default=text("'pending'"), nullable=False
     )
-    enriched_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    enriched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
-        server_default=text("now()"), nullable=False
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
     )
     enrichment_method: Mapped[str | None] = mapped_column(String, nullable=True)
     enrichment_error: Mapped[str | None] = mapped_column(Text, nullable=True)
