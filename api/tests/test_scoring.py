@@ -93,7 +93,6 @@ def test_pipeline_selects_tfidf_without_api_key(monkeypatch):
     fake_settings = Settings(
         database_url="postgresql://x",
         miniflux_url="http://x",
-        miniflux_api_key="x",
         jwt_secret="x",
         openrouter_api_key=None,
     )

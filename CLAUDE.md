@@ -64,8 +64,11 @@ pwa/src/
 ## Environment variables
 
 See `docs/ARCHITECTURE.md` for the full list.
-Required: `DATABASE_URL`, `MINIFLUX_URL`, `MINIFLUX_API_KEY`, `JWT_SECRET`
+Required: `DATABASE_URL`, `MINIFLUX_URL`, `JWT_SECRET`
 Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`
+
+The Miniflux API token is provisioned automatically from Miniflux's own DB
+(`api/niouzou/services/miniflux_bootstrap.py`) — no env var.
 
 ## Licence
 

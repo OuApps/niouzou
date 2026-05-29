@@ -31,7 +31,6 @@ niouzou/
 │   └── CONVENTIONS.md
 ├── api/
 │   ├── Dockerfile
-│   ├── docker-entrypoint.sh   ← promotes /secrets/miniflux_api_key into env
 │   ├── pyproject.toml
 │   └── niouzou/
 │       ├── main.py

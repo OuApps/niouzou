@@ -11,7 +11,6 @@ os.environ.setdefault(
     "DATABASE_URL", "postgresql://niouzou:niouzou@localhost:5432/niouzou"
 )
 os.environ.setdefault("MINIFLUX_URL", "http://miniflux.test")
-os.environ.setdefault("MINIFLUX_API_KEY", "test-key")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 
 import pytest

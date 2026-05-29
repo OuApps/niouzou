@@ -398,9 +398,7 @@ api/
 
 #### [x] E6-S1 — Docker images ✅
 - `api/Dockerfile` — multi-stage, uv-based, slim Python 3.13 base. Serves the
-  API, the `migrate` one-shot, and the three cron jobs. Includes a small
-  entrypoint (`api/docker-entrypoint.sh`) that promotes `/secrets/miniflux_api_key`
-  into `MINIFLUX_API_KEY` when present (env-supplied values win).
+  API, the `migrate` one-shot, and the three cron jobs.
 - `pwa/Dockerfile` — multi-stage, Node 22 build → Nginx 1.27 alpine static serve
   with SPA fallback (`pwa/nginx.conf`). `VITE_API_URL` is consumed as a build
   ARG because Vite inlines it at build time.
@@ -413,8 +411,8 @@ api/
 
 #### [x] E6-S2 — Docker Compose ✅
 - `docker-compose.yml` at repo root.
-- Services: `postgres`, `miniflux`, `miniflux_bootstrap`, `migrate`, `api`,
-  `pwa`, `cron_fetch`, `cron_enrich`, `cron_refresh_weights`.
+- Services: `postgres`, `miniflux`, `migrate`, `api`, `pwa`,
+  `cron_fetch`, `cron_enrich`, `cron_refresh_weights`.
 - **A single Postgres instance hosts both the `niouzou` and `miniflux`
   databases.** The `infra/postgres-init/01-miniflux.sh` script creates the
   `miniflux` user and database the first time the volume is initialised.
@@ -426,12 +424,12 @@ api/
   `depends_on: condition: service_completed_successfully`.
 - Miniflux admin account provisioned via `MINIFLUX_ADMIN_USERNAME` /
   `MINIFLUX_ADMIN_PASSWORD` ([Miniflux env-based admin creation](https://miniflux.app/docs/configuration.html#create-admin-user)).
-- **Miniflux API key auto-provisioned.** Miniflux has no HTTP endpoint to
-  create API keys, but stores them as plain text in `api_keys`. The one-shot
-  `miniflux_bootstrap` service generates a 64-hex token, INSERTs it into the
-  Miniflux DB via psql, and writes it to a shared `miniflux_secrets` volume.
-  The API image's entrypoint reads it at start and exports `MINIFLUX_API_KEY`.
-  Idempotent — re-runs are no-ops once the secret file exists.
+- **Miniflux API token auto-provisioned at runtime.** Miniflux exposes no HTTP
+  endpoint to mint API keys, but stores them as plain text in its `api_keys`
+  table. Since the API/crons share Postgres with Miniflux, they resolve a
+  token directly from that table on first call via
+  `api/niouzou/services/miniflux_bootstrap.py` (generating + INSERTing one
+  if absent, with `ON CONFLICT DO UPDATE`). Idempotent across restarts.
 - `docker-compose.test.yml` is a **separate file** (not a profile) providing a
   tmpfs Postgres on port `5433` for pytest. Kept out of the main stack so
   there's zero risk of pytest's `TRUNCATE` fixtures targeting real data.
@@ -440,23 +438,26 @@ api/
 - `docker compose up` from a clean machine starts the full stack, no manual step
 - Alembic migrations run automatically once (via `migrate`) before `api` accepts traffic
 - App accessible at `http://localhost:3000`
-- Miniflux admin account + API key both provisioned automatically on first boot
+- Miniflux admin account provisioned on first boot; API token minted on
+  first call by the API itself
 - `pytest` targets the test database, never the dev database
 
 ---
 
 #### [x] E6-S3 — Railway config ✅
 - `railway.toml` declares all services.
-- API service runs `alembic upgrade head` as its `preDeployCommand` — migrations
-  apply once per deploy (after build, before the new version takes traffic),
-  never at per-replica startup.
+- API service runs `python -m niouzou.scripts.ensure_miniflux_db && alembic upgrade head`
+  as its `preDeployCommand` — the first half creates a sibling `miniflux`
+  database on the shared Postgres if missing (Miniflux can't share the API's
+  default DB because both define a `users` table); the second half applies
+  migrations. Both halves are idempotent.
 - Cron services use Railway's `cronSchedule` (the scripts are one-shot, so no
   sleep loop is needed there — unlike the compose stack).
 - `VITE_API_URL` wired to `https://${{ api.RAILWAY_PUBLIC_DOMAIN }}/api/v1` so
   Railway's Dockerfile build receives it as a build ARG.
 - "Deploy on Railway" button in README.
-- Note: `MINIFLUX_API_KEY` is **not** auto-provisioned on Railway — it must be
-  set as a service secret. The auto-bootstrap only runs under `docker compose`.
+- The Miniflux API token is auto-provisioned at runtime (same mechanism as
+  the compose stack — see E6-S2).
 
 ---
 
@@ -714,7 +715,7 @@ api/
 
 #### [ ] E7-S14 — Multi-user: same RSS feed subscribed by two users
 
-**Problem**: Miniflux is a single shared instance with one set of admin credentials (`MINIFLUX_API_KEY`). If two Niouzou users add the same RSS URL:
+**Problem**: Miniflux is a single shared instance with one set of admin credentials. If two Niouzou users add the same RSS URL:
 1. The second `POST /sources` call fails with `bad_request` — `miniflux.create_feed()` returns a 422 because the feed already exists.
 2. Even if it succeeded, `cron_fetch`'s `feed_id → source_id` mapping is not multi-valued: only one user's source would receive articles.
 
@@ -853,7 +854,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 - Add an `app_settings` table: `key VARCHAR PK`, `value TEXT`, `updated_at TIMESTAMP`
 - Add `SettingsService` with `get(key)` and `set(key, value)` methods
 - At startup, `config.py` continues to read from env vars. At runtime, `SettingsService.get(key)` checks `app_settings` first and falls back to the env var — DB overrides env (allows runtime changes without restart)
-- Supported overridable keys: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `MINIFLUX_API_KEY`, `MAX_KEYWORDS_PER_ARTICLE`
+- Supported overridable keys: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `MAX_KEYWORDS_PER_ARTICLE`
 - When reading sensitive keys for display, mask the value: show only `sk-...` prefix + last 4 chars (e.g. `sk-...a3f9`); return `null` if unset
 
 **Acceptance criteria**:
@@ -872,7 +873,6 @@ Add the following endpoints (all require `require_admin`):
   {
     "openrouter_model": "anthropic/claude-3.5-sonnet",
     "openrouter_api_key": "sk-...a3f9",
-    "miniflux_api_key": "mf-...b812",
     "max_keywords_per_article": 6
   }
   ```

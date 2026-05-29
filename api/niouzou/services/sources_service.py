@@ -13,6 +13,7 @@ from niouzou.deps import SessionDep
 from niouzou.errors import bad_request, conflict, not_found
 from niouzou.models import Source
 from niouzou.schemas.sources import SourceOut, SourcesListResponse
+from niouzou.services.miniflux_bootstrap import get_miniflux_token
 from niouzou.services.miniflux_client import MinifluxClient
 
 logger = logging.getLogger("niouzou.sources")
@@ -22,9 +23,10 @@ class SourcesService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
 
-    def _client(self) -> MinifluxClient:
+    async def _client(self) -> MinifluxClient:
         settings = get_settings()
-        return MinifluxClient(settings.miniflux_url, settings.miniflux_api_key)
+        token = await get_miniflux_token()
+        return MinifluxClient(settings.miniflux_url, token)
 
     async def list_sources(self, user_id: uuid.UUID) -> SourcesListResponse:
         rows = await self.session.scalars(
@@ -63,7 +65,7 @@ class SourcesService:
         return SourceOut.model_validate(source)
 
     async def _register_in_miniflux(self, url: str) -> tuple[int, str]:
-        async with self._client() as miniflux:
+        async with await self._client() as miniflux:
             try:
                 category_id = await miniflux.default_category_id()
                 feed_id = await miniflux.create_feed(url, category_id=category_id)

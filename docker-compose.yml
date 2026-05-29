@@ -4,8 +4,9 @@
 #   docker compose up -d      # → PWA on http://localhost:3000
 #
 # Zero manual steps: migrations apply once (via `migrate`), the Miniflux admin
-# account is provisioned from env vars, and the Miniflux API key is minted and
-# wired into api + cron_fetch by the one-shot `miniflux_bootstrap` service.
+# account is provisioned from env vars, and the Miniflux API key is minted
+# on demand by the API/cron services on first call (see
+# api/niouzou/services/miniflux_bootstrap.py).
 
 name: niouzou
 
@@ -18,9 +19,6 @@ x-api-build: &api-build
 x-api-env: &api-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-niouzou}:${POSTGRES_PASSWORD:-niouzou}@postgres:5432/${POSTGRES_DB:-niouzou}
   MINIFLUX_URL: http://miniflux:8080
-  # Left empty by default; the entrypoint promotes /secrets/miniflux_api_key
-  # (written by miniflux_bootstrap) into this var at container start.
-  MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
   JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-string}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
@@ -72,56 +70,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Auto-provision a Miniflux API key for Niouzou ───────────────────────────
-  # Miniflux has no HTTP endpoint to create API keys, but it stores them as
-  # plain text in its own `api_keys` table — so we generate a token here and
-  # INSERT it directly via psql. Runs once after Miniflux is healthy, drops
-  # the token into `miniflux_secrets`, and exits. Idempotent: it's a no-op
-  # once the secret file exists.
-  miniflux_bootstrap:
-    image: postgres:17-alpine
-    restart: "no"
-    depends_on:
-      miniflux:
-        condition: service_healthy
-    environment:
-      PGHOST: postgres
-      PGUSER: miniflux
-      PGDATABASE: miniflux
-      PGPASSWORD: ${MINIFLUX_DB_PASSWORD:-miniflux}
-    volumes:
-      - miniflux_secrets:/secrets
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        set -e
-        if [ -s /secrets/miniflux_api_key ]; then
-          echo "miniflux_bootstrap: API key already provisioned, skipping"
-          exit 0
-        fi
-        # Miniflux's CREATE_ADMIN=1 inserts the admin user at boot, but the row
-        # may not be visible the instant the HTTP server becomes ready. Poll.
-        i=0
-        while ! psql -tAc "SELECT 1 FROM users WHERE is_admin = true LIMIT 1" | grep -q '^1$$'; do
-          i=$$((i+1))
-          if [ "$$i" -ge 20 ]; then
-            echo "miniflux_bootstrap: admin user never appeared in Miniflux DB" >&2
-            exit 1
-          fi
-          echo "miniflux_bootstrap: waiting for Miniflux admin user (attempt $$i)..."
-          sleep 1
-        done
-        token=$$(tr -dc 'a-f0-9' </dev/urandom | head -c 64)
-        psql -v ON_ERROR_STOP=1 -v token="$$token" <<-'EOSQL'
-            INSERT INTO api_keys (user_id, token, description)
-            SELECT id, :'token', 'niouzou'
-            FROM users WHERE is_admin = true ORDER BY id LIMIT 1
-            ON CONFLICT (user_id, description) DO UPDATE SET token = EXCLUDED.token;
-        EOSQL
-        printf '%s' "$$token" > /secrets/miniflux_api_key
-        chmod 0644 /secrets/miniflux_api_key
-        echo "miniflux_bootstrap: API key provisioned for Miniflux admin user"
-
   # ── One-shot migrations: run once, before api + crons accept work ───────────
   migrate:
     <<: *api-build
@@ -139,13 +87,11 @@ services:
     ports:
       - "8000:8000"
     environment: *api-env
-    volumes:
-      - miniflux_secrets:/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
-      miniflux_bootstrap:
-        condition: service_completed_successfully
+      miniflux:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     healthcheck:
@@ -184,15 +130,13 @@ services:
     environment:
       <<: *api-env
       CRON_FETCH_INTERVAL: ${CRON_FETCH_INTERVAL:-15}
-    volumes:
-      - miniflux_secrets:/secrets:ro
     command:
       - sh
       - -c
       - 'while true; do python -m niouzou.crons.fetch || echo "cron_fetch run failed"; sleep $$(( ${CRON_FETCH_INTERVAL:-15} * 60 )); done'
     depends_on:
-      miniflux_bootstrap:
-        condition: service_completed_successfully
+      miniflux:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
 
@@ -226,4 +170,3 @@ services:
 
 volumes:
   niouzou_db:
-  miniflux_secrets:

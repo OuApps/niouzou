@@ -196,22 +196,33 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 ## Deployment
 
 ### Railway (SaaS)
-- One Railway project, one service per component (`railway.toml` at repo root)
-- Services communicate via Railway internal network
-- `alembic upgrade head` runs as the API's pre-deploy command — migrations
-  apply once per deploy, never at per-replica startup
+- One Railway project, one service per component, each pointing at the repo
+  with a per-service **Root Directory** (`/api`, `/pwa`) — the per-service
+  `railway.toml` controls build/deploy.
+- A single Postgres service hosts **two databases** on the same instance:
+  the API's default DB and a sibling `miniflux` DB. The API's pre-deploy
+  step (`python -m niouzou.scripts.ensure_miniflux_db && alembic upgrade head`)
+  creates the `miniflux` database on first boot and runs migrations.
+- The Miniflux service's `DATABASE_URL` references the same Postgres but the
+  `miniflux` database (see README).
+- The Miniflux API token is provisioned automatically: the API/crons share
+  Postgres with Miniflux, so they resolve a token directly from Miniflux's
+  `api_keys` table on first call (see `services/miniflux_bootstrap.py`).
+  The token is generated and INSERTed idempotently; no env var, no UI step.
+- Services communicate via Railway's internal network
+  (`*.railway.internal`).
 - Cron jobs use Railway's `cronSchedule` (the cron scripts are one-shot, so no
-  sleep loop is needed there)
-- Domain: `niouzou.tutus.ovh` (during development)
+  sleep loop is needed there); each cron service uses `RAILWAY_CONFIG_FILE`
+  to point at its `cron-*.railway.toml`.
 
 ### Docker Compose (self-hosted)
 - `docker-compose.yml` at repo root — one-command stack
 - A single Postgres instance hosts both the `niouzou` and `miniflux` databases
   (the `miniflux` user/db are created by `infra/postgres-init/`)
 - One-shot `migrate` service runs Alembic before `api` accepts traffic
-- One-shot `miniflux_bootstrap` mints Miniflux's API key automatically and
-  drops it into a shared volume; `api` + `cron_fetch` pick it up at start via
-  the image's entrypoint — no manual UI step
+- The Miniflux API token is provisioned at runtime by the API/cron services
+  themselves on first call — same mechanism as on Railway. No bootstrap
+  container needed.
 - Cron jobs wrap the one-shot scripts in a sleep loop (`restart: unless-stopped`)
 - All configuration via `.env` (template: `.env.example`)
 - `docker-compose.test.yml` is a separate file providing a tmpfs Postgres on
@@ -226,7 +237,6 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 |---|---|---|
 | `DATABASE_URL` | ✅ | PostgreSQL connection string (built from `POSTGRES_*` inside compose) |
 | `MINIFLUX_URL` | ✅ | Miniflux instance URL |
-| `MINIFLUX_API_KEY` | ✅ | Miniflux API key. Auto-provisioned by `miniflux_bootstrap` in compose; required only when deploying outside (e.g. Railway), where it must be set as a secret |
 | `JWT_SECRET` | ✅ | Secret for JWT signing |
 | `MINIFLUX_ADMIN_USERNAME` | ⚙️ compose | Admin user provisioned by Miniflux on first boot (default: `admin`) |
 | `MINIFLUX_ADMIN_PASSWORD` | ⚙️ compose | Admin password (default: `adminpassword`) |

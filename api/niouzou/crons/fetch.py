@@ -25,6 +25,7 @@ from niouzou.config import get_settings
 from niouzou.db import session_scope
 from niouzou.models import Article, Source
 from niouzou.models.article import STATUS_PENDING
+from niouzou.services.miniflux_bootstrap import get_miniflux_token
 from niouzou.services.miniflux_client import MinifluxClient, MinifluxEntry
 
 logger = logging.getLogger("niouzou.cron_fetch")
@@ -70,9 +71,8 @@ async def run() -> int:
     """Execute one fetch cycle. Returns the number of entries marked read."""
     settings = get_settings()
 
-    async with MinifluxClient(
-        settings.miniflux_url, settings.miniflux_api_key
-    ) as miniflux:
+    token = await get_miniflux_token()
+    async with MinifluxClient(settings.miniflux_url, token) as miniflux:
         entries = await miniflux.list_unread_entries(
             max_entries=settings.miniflux_fetch_batch_size
         )

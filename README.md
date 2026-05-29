@@ -38,22 +38,45 @@ are all provisioned automatically on the first boot — no UI step.
 
 ## Deploy on Railway
 
-Click the button above. You need `JWT_SECRET` (use `openssl rand -hex 32`) and,
-on Railway only, a `MINIFLUX_API_KEY` you create once in the Miniflux UI.
-`OPENROUTER_API_KEY` is optional and enables AI summaries.
+Click the button above. You need `JWT_SECRET` (use `openssl rand -hex 32`).
+`OPENROUTER_API_KEY` is optional and enables AI summaries. Niouzou provisions
+its Miniflux access token on its own (see "How Miniflux integration works"
+below) — no manual key step.
+
+**Services to create** (7 total):
+- 1× **Postgres** (Railway template)
+- 1× **miniflux** — Docker image `miniflux/miniflux:2.1.0`
+- 5× from this repo (`OuApps/niouzou`): `api`, `pwa`, `cron-fetch`,
+  `cron-enrich`, `cron-refresh-weights`. Each of these must have its
+  **Root Directory** set in Settings → Source:
+  - `api`, `cron-*` → `/api`
+  - `pwa` → `/pwa`
+
+  The crons share the API image but use different commands and schedules;
+  set `RAILWAY_CONFIG_FILE` on each cron to its config file
+  (`cron-fetch.railway.toml`, `cron-enrich.railway.toml`,
+  `cron-refresh-weights.railway.toml`) so Railway picks the right
+  `cronSchedule` and `startCommand`.
 
 **Database setup.** The API and Miniflux share **one** Postgres service but
-sit in **two databases** on it (`niouzou` and `miniflux`) so their `users`
-tables don't collide. The API's preDeploy step creates the `miniflux`
-database automatically on first boot; you just need to point the Miniflux
-service at it. In Railway, set the Miniflux service's `DATABASE_URL` to:
+sit in **two databases** on it (the API's default DB and `miniflux`) so
+their `users` tables don't collide. The API's `preDeployCommand` creates
+the `miniflux` database automatically on first boot, then runs Alembic.
+You just need to point the Miniflux service's `DATABASE_URL` at it:
 
 ```
-postgres://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/miniflux?sslmode=disable
+postgres://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:${{Postgres.PGPORT}}/miniflux?sslmode=disable
 ```
 
 The API keeps Railway's default `${{Postgres.DATABASE_URL}}` — it points at
 the default database, which is where Alembic runs.
+
+**How Miniflux integration works.** Because both apps share the same Postgres,
+the API/crons read (or create) a Miniflux access token directly from its
+`api_keys` table on first call — see `api/niouzou/services/miniflux_bootstrap.py`.
+The token is generated with `secrets.token_hex(32)`, INSERTed with
+`description='niouzou'` (`ON CONFLICT DO UPDATE`), and cached in memory.
+Idempotent across deploys.
 
 ---
 

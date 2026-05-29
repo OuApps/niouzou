@@ -15,7 +15,6 @@ class Settings(BaseSettings):
     # --- Required ---
     database_url: str
     miniflux_url: str
-    miniflux_api_key: str
     jwt_secret: str = "change-me"  # required for the API; cron jobs don't use it
 
     # --- JWT (sensible defaults) ---

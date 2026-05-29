@@ -12,7 +12,9 @@ uv sync                  # create .venv and install deps (incl. dev group)
 ```
 
 Configuration comes from environment variables (see `../.env.example`). The
-required vars are `DATABASE_URL`, `MINIFLUX_URL`, `MINIFLUX_API_KEY`, `JWT_SECRET`.
+required vars are `DATABASE_URL`, `MINIFLUX_URL`, `JWT_SECRET`. The Miniflux
+access token is provisioned automatically at runtime from Miniflux's own DB
+(see `niouzou/services/miniflux_bootstrap.py`).
 
 ## Local dev stack (Postgres + Miniflux)
 

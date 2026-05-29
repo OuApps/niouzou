@@ -61,14 +61,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Wrapper that promotes /secrets/miniflux_api_key (written by miniflux_bootstrap
-# in the self-host compose) into MINIFLUX_API_KEY before exec'ing the command.
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
 USER appuser
 EXPOSE 8000
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Default role: serve the API. Overridden by the migrate and cron services.
 CMD ["uvicorn", "niouzou.main:app", "--host", "0.0.0.0", "--port", "8000"]
