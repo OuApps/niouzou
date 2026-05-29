@@ -86,20 +86,29 @@ async def run() -> int:
     """Execute one fetch cycle. Returns the number of entries marked read."""
     settings = get_settings()
 
+    logger.info("cron_fetch: start (batch_size=%d)", settings.miniflux_fetch_batch_size)
     token = await get_miniflux_token()
     async with MinifluxClient(settings.miniflux_url, token) as miniflux:
+        logger.info("cron_fetch: fetching unread entries from Miniflux...")
         entries = await miniflux.list_unread_entries(
             max_entries=settings.miniflux_fetch_batch_size
         )
+        logger.info("cron_fetch: received %d entries from Miniflux", len(entries))
         if not entries:
-            logger.info("cron_fetch: no unread entries")
+            logger.info("cron_fetch: no unread entries — done")
             return 0
 
         async with session_scope() as session:
             feed_to_sources = await _source_ids_by_feed(session)
             matched = [e for e in entries if e.feed_id in feed_to_sources]
             unmatched = len(entries) - len(matched)
-            await _insert_articles(session, matched, feed_to_sources)
+            logger.info(
+                "cron_fetch: %d entries match a Niouzou source (%d unmatched)",
+                len(matched),
+                unmatched,
+            )
+            inserted = await _insert_articles(session, matched, feed_to_sources)
+            logger.info("cron_fetch: inserted %d article rows (post-fanout)", inserted)
 
         if unmatched:
             logger.warning(
@@ -112,7 +121,10 @@ async def run() -> int:
         handled_ids = [e.id for e in matched]
         await miniflux.mark_entries_read(handled_ids)
         logger.info(
-            "cron_fetch: ingested %d entries (%d total fetched)",
+            "cron_fetch: marked %d entries as read in Miniflux", len(handled_ids)
+        )
+        logger.info(
+            "cron_fetch: done — ingested %d entries (%d total fetched)",
             len(handled_ids),
             len(entries),
         )

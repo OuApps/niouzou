@@ -29,6 +29,7 @@ via asyncio.to_thread.
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -114,8 +115,16 @@ async def enrich_article(
         return
 
     # 1. Content extraction (blocking) off the event loop.
+    t0 = time.perf_counter()
+    logger.info("enrich[%s]: extracting content from %s", article.id, article.url)
     extracted = await asyncio.to_thread(
         enrichment.extract_content, article.url, rss_fallback=article.content
+    )
+    logger.info(
+        "enrich[%s]: content extracted (%d chars) in %.2fs",
+        article.id,
+        len(extracted.content or ""),
+        time.perf_counter() - t0,
     )
     if extracted.content:
         article.content = extracted.content
@@ -123,8 +132,17 @@ async def enrich_article(
         article.og_image_url = extracted.og_image_url
 
     # 2. Summaries (LLM or fallback; never raises).
+    t0 = time.perf_counter()
+    logger.info("enrich[%s]: generating summaries...", article.id)
     summaries = await asyncio.to_thread(
         enrichment.generate_summaries, article.title, article.content
+    )
+    logger.info(
+        "enrich[%s]: summaries generated in %.2fs (short=%d chars, exec=%d chars)",
+        article.id,
+        time.perf_counter() - t0,
+        len(summaries.summary_short or ""),
+        len(summaries.summary_executive or ""),
     )
     if not summaries.summary_short:
         summaries.summary_short = extracted.fallback_summary
@@ -132,14 +150,29 @@ async def enrich_article(
     article.summary_executive = summaries.summary_executive
 
     # 3. Keywords (AI with TF-IDF fallback) — persisted via ScoringService.
+    t0 = time.perf_counter()
+    logger.info("enrich[%s]: extracting keywords...", article.id)
     used, method, ai_error = await _store_keywords(
         session, article, ai_scoring=ai_scoring, tfidf_scoring=tfidf_scoring
+    )
+    logger.info(
+        "enrich[%s]: keywords stored via %s in %.2fs%s",
+        article.id,
+        method,
+        time.perf_counter() - t0,
+        f" (ai_error={ai_error})" if ai_error else "",
     )
 
     # 4. Per-user relevance score, frozen now (reads DB only, no LLM).
     # Use the same service that performed extraction so the persisted ``scorer``
     # indicator matches the real path (TF-IDF when AI fell back).
+    t0 = time.perf_counter()
     await used.score_article_for_user(session, article.id, owner_id)
+    logger.info(
+        "enrich[%s]: relevance score computed in %.2fs",
+        article.id,
+        time.perf_counter() - t0,
+    )
 
     # 5. Transition to enriched + record the active method/error (E7-S15).
     article.status = STATUS_ENRICHED
@@ -168,6 +201,12 @@ async def run() -> int:
 
         ai_scoring = ScoringService(ScoringPipeline(AIKeywordScorer(client)))
 
+    logger.info(
+        "cron_enrich: start (batch_size=%d, ai_enabled=%s, model=%s)",
+        settings.enrich_batch_size,
+        enrichment.ai_enabled,
+        settings.openrouter_model if client is not None else "n/a",
+    )
     try:
         async with session_scope() as session:
             pending_ids = await _pending_article_ids(
@@ -175,16 +214,30 @@ async def run() -> int:
             )
 
         if not pending_ids:
-            logger.info("cron_enrich: no pending articles")
+            logger.info("cron_enrich: no pending articles — done")
             return 0
 
+        logger.info("cron_enrich: %d articles to enrich", len(pending_ids))
         enriched = 0
-        for article_id in pending_ids:
+        batch_start = time.perf_counter()
+        for idx, article_id in enumerate(pending_ids, start=1):
+            t0 = time.perf_counter()
+            logger.info(
+                "cron_enrich: [%d/%d] starting article %s",
+                idx,
+                len(pending_ids),
+                article_id,
+            )
             try:
                 async with session_scope() as session:
                     article = await session.get(Article, article_id)
                     if article is None or article.status != STATUS_PENDING:
-                        continue  # already handled by a concurrent/previous run
+                        logger.info(
+                            "cron_enrich: [%d/%d] skipped (already handled)",
+                            idx,
+                            len(pending_ids),
+                        )
+                        continue
                     await enrich_article(
                         session,
                         article,
@@ -193,16 +246,26 @@ async def run() -> int:
                         tfidf_scoring=tfidf_scoring,
                     )
                     enriched += 1
+                logger.info(
+                    "cron_enrich: [%d/%d] done in %.2fs",
+                    idx,
+                    len(pending_ids),
+                    time.perf_counter() - t0,
+                )
             except Exception:
                 # Isolate failures: a bad article must not abort the batch.
                 logger.exception(
-                    "cron_enrich: failed to enrich article %s", article_id
+                    "cron_enrich: [%d/%d] failed to enrich article %s",
+                    idx,
+                    len(pending_ids),
+                    article_id,
                 )
 
         logger.info(
-            "cron_enrich: enriched %d/%d pending articles (ai=%s)",
+            "cron_enrich: done — enriched %d/%d articles in %.1fs (ai=%s)",
             enriched,
             len(pending_ids),
+            time.perf_counter() - batch_start,
             enrichment.ai_enabled,
         )
         return enriched

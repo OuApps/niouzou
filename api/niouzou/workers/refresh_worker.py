@@ -27,6 +27,14 @@ from fastapi.responses import JSONResponse
 from niouzou.crons import enrich as cron_enrich
 from niouzou.crons import fetch as cron_fetch
 
+# uvicorn only configures its own loggers; without this our app loggers
+# (niouzou.refresh_worker, niouzou.cron_fetch, niouzou.cron_enrich) emit
+# nothing at INFO level — making the pipeline look stuck.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 logger = logging.getLogger("niouzou.refresh_worker")
 
 app = FastAPI(title="Niouzou Refresh Worker", version="0.1.0")

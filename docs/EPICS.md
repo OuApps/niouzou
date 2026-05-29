@@ -820,6 +820,39 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
+#### [ ] E7-S18 — Keyword deduplication: merge similar keywords with existing ones
+
+**Problem**: When the LLM (or TF-IDF) extracts keywords for a new article, it may produce surface forms that are semantically identical to keywords already in the database — e.g. `"Cuisiner"` or `"Faire à Manger"` when `"cuisine"` already exists. Storing these as distinct keywords fragments the user's weight signal: likes/dislikes on `"cuisine"` don't propagate to `"Cuisiner"`, so the feed degrades silently over time.
+
+**Goal**: During keyword enrichment, before inserting new keyword rows, look up existing keywords and collapse near-duplicates onto the canonical (legacy) form already in the DB.
+
+**Approach** (LLM-assisted, no heavy ML dependency):
+
+1. After the scorer produces its candidate keyword list for an article, collect all **distinct** keyword strings currently in the `keyword` table.
+2. Send both lists to the LLM in a single prompt:
+   - *"Given these existing keywords: `[cuisine, sport, politique, …]`, map each candidate below onto the most similar existing keyword if they are semantically equivalent (same concept, different inflection / synonym / phrasing). Return a JSON object `{candidate: existing_keyword_or_null}`."*
+3. For each candidate where the LLM returns a non-null mapping, replace the candidate string with the existing keyword string before upserting into the DB.
+4. Candidates with no match (LLM returns `null`) are inserted as new keywords as usual.
+
+**Constraints**:
+
+- Only applies when `OPENROUTER_API_KEY` is set; TF-IDF path is unchanged (no deduplication).
+- The existing keyword list sent to the LLM must be capped (e.g. top 200 by frequency) to stay within token limits.
+- The LLM call for deduplication is separate from the extraction call — keep them independent so a dedup failure doesn't block enrichment.
+- If the dedup call fails or times out, log a warning and proceed with the raw candidate strings (best-effort).
+- Never mutate existing `keyword` rows — only remap the candidate string; the legacy keyword's `salience` on other articles is unaffected.
+
+**Where to implement**: `api/niouzou/scoring/` — inside `AIKeywordScorer` (or a new `KeywordDeduplicator` helper called from `ScoringPipeline` after extraction).
+
+**Acceptance criteria**:
+
+- Given an existing keyword `"cuisine"` and a new article whose LLM extraction returns `["cuisiner", "faire à manger", "technologie"]`, after dedup the article is linked to `"cuisine"` (existing) and `"technologie"` (new); `"cuisiner"` and `"faire à manger"` are not created.
+- If the dedup LLM call fails, enrichment completes normally using the raw candidate strings (no exception propagates to the caller).
+- The keyword list sent to the LLM is capped and does not exceed the configured token budget.
+- Unit test: mock the LLM response and assert the correct keyword strings are persisted.
+
+---
+
 ## EPIC 8 — Admin Panel
 
 **Goal**: Introduce an admin role. Admin users can view and update runtime configuration (LLM model, API keys) from within the app — no SSH or env-var editing required after initial setup.
