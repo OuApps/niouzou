@@ -853,6 +853,41 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
+#### [ ] E7-S19 — Pull-to-refresh on background drag
+
+**Problem**: On mobile, there is no native gesture to manually refresh the current screen. Users have to navigate away and back, or wait for the next automatic fetch. A swipe-up gesture on the background blob (not on a card or scrollable list) is the natural mobile pattern.
+
+**Goal**: Add a pull-to-refresh gesture on the `BlobBackground` layer, available on every screen. Pulling from bottom to top triggers a soft refresh of the current screen's data.
+
+**Behaviour**:
+
+- The gesture is detected on the `BlobBackground` component (the decorative backdrop), not on scrollable content areas or swipeable cards — those must keep their existing touch handlers unaffected.
+- Direction: drag from bottom toward top (upward swipe, min ~80 px travel) triggers the refresh.
+- Visual feedback: while pulling, the app logo appears centered on screen and rotates (or pulses) in sync with the drag progress; once released, it spins continuously until the refresh completes, then fades out. No separate spinner or toast needed.
+- What "refresh" means per screen:
+  - **Feed** (`/`) — re-fetch `GET /feed` (discard current article stack, reload from the top)
+  - **Saved** (`/saved`) — re-fetch `GET /saved` from the first page
+  - **Keywords** (`/keywords`) — re-fetch `GET /keywords`
+  - **History** (`/history`) — re-fetch `GET /history` from the first page
+  - **Profile** (`/profile`) — re-fetch `GET /me`
+  - Other screens (article detail, admin…) — no-op or navigate back
+
+**Implementation notes**:
+
+- Implement a `usePullToRefresh(onRefresh: () => void)` hook that listens to `touchstart` / `touchmove` / `touchend` events on a given ref and fires `onRefresh` when the upward threshold is met.
+- `BlobBackground` receives an optional `onRefresh` prop; screens pass their own refresh callback.
+- Guard against accidental triggers: require the touch to start in the bottom third of the viewport and travel upward by at least 80 px before releasing.
+- Do not interfere with the card swipe gesture on the Feed screen (the swipe is horizontal; this gesture is vertical and starts from the background layer below the card stack).
+
+**Acceptance criteria**:
+
+- Dragging upward on the background blob from the bottom third of the screen triggers a visible loading indicator and re-fetches data on Feed, Saved, Keywords, History, and Profile.
+- The gesture does not fire when the drag starts on a card, a list item, or a scrollable area.
+- The horizontal swipe on Feed cards is unaffected.
+- No duplicate requests: if a refresh is already in flight, a second gesture is ignored until the first completes.
+
+---
+
 ## EPIC 8 — Admin Panel
 
 **Goal**: Introduce an admin role. Admin users can view and update runtime configuration (LLM model, API keys) from within the app — no SSH or env-var editing required after initial setup.
