@@ -1,66 +1,47 @@
 """Admin endpoints (E7-S16).
 
-POST /admin/refresh triggers cron_fetch + cron_enrich back-to-back as a
-background task. A module-level flag debounces concurrent runs.
-
-NOTE: this route should be gated by ``require_admin`` once E8-S1 lands. For
-now, in the single-user self-host model, every authenticated user can trigger
-it.
+POST /admin/refresh proxies to the ``refresh-worker`` service so the heavy
+fetch+enrich pipeline doesn't run inside the API process (which would starve
+PWA requests on a small Railway instance). The worker owns the
+single-in-flight lock; this endpoint just forwards.
 """
 
-import asyncio
 import logging
+import os
 
-from fastapi import APIRouter, BackgroundTasks, status
+import httpx
+from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 
-from niouzou.crons import enrich as cron_enrich
-from niouzou.crons import fetch as cron_fetch
 from niouzou.deps import CurrentUser
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
 logger = logging.getLogger("niouzou.admin")
 
-# Single-process in-memory guard — sufficient for self-host deployments. If
-# scaled out, switch to an advisory lock in Postgres.
-_refresh_lock = asyncio.Lock()
-
-
-async def _run_refresh_pipeline() -> None:
-    """Run fetch then enrich. Owns the lock for the duration."""
-    if _refresh_lock.locked():
-        # Defensive: BackgroundTasks already serialises, but a race on
-        # spawning could in theory queue two tasks; the lock collapses them.
-        logger.info("admin/refresh: another run is in flight, skipping")
-        return
-    async with _refresh_lock:
-        try:
-            logger.info("admin/refresh: cron_fetch start")
-            await cron_fetch.run()
-            logger.info("admin/refresh: cron_enrich start")
-            await cron_enrich.run()
-            logger.info("admin/refresh: done")
-        except Exception:
-            logger.exception("admin/refresh: pipeline failed")
+# Default targets the Railway internal DNS for the refresh-worker service.
+# Override locally with REFRESH_WORKER_URL=http://localhost:8001 etc.
+_WORKER_URL = os.environ.get(
+    "REFRESH_WORKER_URL", "http://refresh-worker.railway.internal:8000"
+)
 
 
 @router.post("/refresh", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_refresh(
-    user: CurrentUser, background: BackgroundTasks
-) -> JSONResponse:
-    """Kick off cron_fetch + cron_enrich asynchronously.
+async def trigger_refresh(user: CurrentUser) -> JSONResponse:
+    """Forward the refresh request to the worker service.
 
-    Returns 202 immediately. If a previous run is still in flight, this is a
-    no-op — the response is identical so the PWA can debounce without coupling
-    to server state.
+    Mirrors the worker's response shape (``{"status": "started"|"already_running"}``)
+    so the PWA contract doesn't change.
     """
-    if _refresh_lock.locked():
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{_WORKER_URL}/run")
+        resp.raise_for_status()
         return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={"status": "already_running"},
+            status_code=status.HTTP_202_ACCEPTED, content=resp.json()
         )
-    background.add_task(_run_refresh_pipeline)
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED, content={"status": "started"}
-    )
+    except httpx.HTTPError as exc:
+        logger.warning("admin/refresh: worker unreachable — %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "worker_unavailable"},
+        )
