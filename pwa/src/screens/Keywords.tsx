@@ -206,22 +206,22 @@ export const Keywords = () => {
           gap: 10,
         }}
       >
-        {/* Term + lock indicator */}
+        {/* Term + lock indicator. flex-basis caps the natural width but
+            wrapping is allowed so long keywords aren't ellipsised away. */}
         <span
+          title={kw.term}
           style={{
             fontSize: 13,
             fontWeight: 600,
-            width: 90,
-            flexShrink: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
+            flex: '0 1 110px',
+            minWidth: 0,
+            wordBreak: 'break-word',
             display: 'flex',
             alignItems: 'center',
             gap: 4,
           }}
         >
-          {kw.term}
+          <span style={{ minWidth: 0 }}>{kw.term}</span>
           {kw.manually_overridden && (
             <Lock
               size={11}
@@ -377,7 +377,12 @@ export const Keywords = () => {
         )}
       </header>
 
-      <div className="relative z-10 flex-1" style={{ padding: '8px 16px 90px' }}>
+      <div
+        className="relative z-10 flex-1"
+        style={{
+          padding: '8px 16px calc(env(safe-area-inset-bottom, 0px) + 110px)',
+        }}
+      >
         {status === 'loading' ? (
           <div className="flex justify-center" style={{ paddingTop: 60 }}>
             <Spinner size={30} />

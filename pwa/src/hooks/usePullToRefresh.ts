@@ -2,8 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 const TRAVEL_THRESHOLD = 80
 const TOP_THIRD_RATIO = 1 / 3
-// Touches that start on any of these never trigger the gesture — cards,
-// buttons, links, form controls, and explicit opt-outs.
 const EXCLUDE_SELECTOR =
   'button, a, input, textarea, select, [role="button"], [data-no-pull], .article-card'
 
@@ -14,21 +12,38 @@ type RefreshState = {
 }
 
 /**
+ * Walk up the DOM from `start` and return the first ancestor whose `overflow-y`
+ * makes it scrollable (`auto` or `scroll`). Falls back to `null` when no such
+ * ancestor exists — caller then treats the document/window as the scroller.
+ */
+function findScrollableAncestor(start: Element): Element | null {
+  let el: Element | null = start
+  while (el && el !== document.body && el !== document.documentElement) {
+    const style = window.getComputedStyle(el)
+    const overflowY = style.overflowY
+    if ((overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+      return el
+    }
+    el = el.parentElement
+  }
+  return null
+}
+
+/**
  * Classic top-to-bottom pull-to-refresh (E7-S19).
  *
- * Listeners attach at the window level (not on a ref) because `BlobBackground`
- * is `position: fixed; inset: 0` but sits behind the screen content — touches
- * almost never land on it directly. So we listen everywhere and filter:
- *
- *   - the page must be scrolled to the top (`window.scrollY === 0`)
+ * Listens at the window level and filters:
  *   - touchstart Y must be in the top third of the viewport
  *   - touch target must not be inside an interactive element (button, link,
  *     card, form control) — see EXCLUDE_SELECTOR
+ *   - the nearest scrollable ancestor (or the window) must already be at the
+ *     top — otherwise the user is scrolling the content, not refreshing
  *   - touch must travel downward by TRAVEL_THRESHOLD pixels before release
  *
- * `progress` (0..1.5) lets the caller animate a visual indicator; `refreshing`
- * stays true while the returned promise is in flight so a second gesture is
- * ignored.
+ * Once armed, touchmove calls `preventDefault()` so the browser doesn't pick
+ * up the gesture as a native scroll and steal the rest of it (this was the
+ * reason the gesture only "worked" on screens whose content fit in the
+ * viewport). That requires the move listener to be non-passive.
  */
 export function usePullToRefresh(
   onRefresh: (() => void | Promise<void>) | undefined,
@@ -57,11 +72,18 @@ export function usePullToRefresh(
       return target.closest(EXCLUDE_SELECTOR) === null
     }
 
+    const atTop = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Element)) return window.scrollY === 0
+      const scroller = findScrollableAncestor(target)
+      if (scroller) return scroller.scrollTop === 0
+      return window.scrollY === 0
+    }
+
     const armFromStart = (clientY: number, target: EventTarget | null) => {
       if (refreshingRef.current) return
-      if (window.scrollY > 0) return
       if (clientY > window.innerHeight * TOP_THIRD_RATIO) return
       if (!isPullable(target)) return
+      if (!atTop(target)) return
       startY.current = clientY
       tracking.current = true
     }
@@ -99,10 +121,16 @@ export function usePullToRefresh(
     }
     const onTouchMove = (e: TouchEvent) => {
       const t = e.touches[0]
-      if (t) updateFromMove(t.clientY)
+      if (!t) return
+      if (tracking.current && startY.current !== null && t.clientY > startY.current) {
+        // Suppress native scroll so the browser doesn't hijack the gesture
+        // mid-pull. Safe to call because we already verified atTop() at start.
+        if (e.cancelable) e.preventDefault()
+      }
+      updateFromMove(t.clientY)
     }
 
-    // Mirror as pointer events so dev testing on desktop (mouse drag) works.
+    // Mirror touch as pointer events so devtools desktop testing (mouse) works.
     let mouseDown = false
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'touch' || e.button !== 0) return
@@ -120,7 +148,7 @@ export function usePullToRefresh(
     }
 
     window.addEventListener('touchstart', onTouchStart, { passive: true })
-    window.addEventListener('touchmove', onTouchMove, { passive: true })
+    window.addEventListener('touchmove', onTouchMove, { passive: false })
     window.addEventListener('touchend', release)
     window.addEventListener('touchcancel', release)
     window.addEventListener('pointerdown', onPointerDown)
