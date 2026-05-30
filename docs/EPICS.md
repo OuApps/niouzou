@@ -900,20 +900,9 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E7-S22 — Premium articles: exploration of credential-based full-content fetching
+#### [x] E7-S22 — Premium articles: exploration of credential-based full-content fetching
 
-**Goal**: Investigate whether Niouzou can retrieve the full content of paywalled articles by supplying user credentials (login / password) to the underlying fetch mechanism.
-
-**Questions to answer**:
-
-- Does Miniflux support per-feed cookie injection or HTTP Basic Auth that would allow fetching behind a paywall?
-- Could a headless browser step (e.g. Playwright) be added to the enrichment pipeline to log in and scrape full content, and is this feasible to self-host?
-- What are the legal and ToS implications for the target publications?
-- What would the architecture look like if credentials were stored per-source in the DB (encrypted)?
-
-**Output**: A short design note (added to `docs/ARCHITECTURE.md` or a new `docs/PREMIUM_FETCHING.md`) summarising findings, what is feasible, and a recommended approach or an explicit "out of scope" decision with rationale.
-
-**Acceptance criteria**: Design note written and reviewed — no code required for this story.
+**Outcome**: Credential injection is not viable against WAF-protected sites (Le Monde / Akamai returns 402 even with valid session cookies + matching UA — only a headless browser would bypass it, which is out of scope). For client-side paywalls where the full HTML is served to anyone, enabling Miniflux's `crawler: true` per-feed is enough — Rugbyrama feed added on this basis.
 
 ---
 
@@ -998,6 +987,43 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 - A failing test causes the workflow to exit non-zero and the check is marked red on the PR.
 - The workflow completes in under 3 minutes on a cold runner for the current test suite size.
 - No secrets appear in workflow logs.
+
+---
+
+#### [ ] E7-S26 — Full-content fetch toggle for sources (Miniflux crawler)
+
+**Problem**: Adding a source from the PWA creates the Miniflux feed with default settings (`crawler: false`). For publishers whose RSS exposes only a teaser (Rugbyrama and similar), articles are ingested as ~200-char snippets instead of full content. E7-S22 confirmed that enabling Miniflux's `crawler: true` per-feed retrieves the full article HTML for these sources, but the option is reachable today only via the Miniflux admin UI.
+
+**Multi-user caveat**: A Miniflux feed is shared across all Niouzou users subscribed to the same URL (`sources.miniflux_feed_id` is not unique per user — see `api/niouzou/models/source.py`). The `crawler` flag lives on a shared resource, so any toggle by one user is visible to every other subscriber. Strategy: **last-write-wins, with a clear UI warning**. No per-user override (would require duplicating feeds in Miniflux, which it refuses).
+
+**Changes**:
+
+*API*:
+
+- Extend `MinifluxClient.create_feed()` (`api/niouzou/services/miniflux_client.py`) with an optional `crawler: bool = False` passed through to `POST /v1/feeds`.
+- Add `MinifluxClient.update_feed(feed_id, *, crawler: bool)` wrapping `PUT /v1/feeds/{id}`.
+- Add `fetch_full_content: bool = False` to the `POST /sources` request body, plumbed through `SourcesService` into `create_feed(crawler=…)`.
+- Add `PATCH /sources/{id}` accepting `{ "fetch_full_content": bool }`, which calls `update_feed`. The Niouzou-side `Source` row is unchanged; the state lives entirely on the Miniflux feed.
+- Surface `fetch_full_content` (read from Miniflux's `crawler` field) in `GET /sources` so the PWA can render the current state.
+
+*PWA*:
+
+- "Add a source" form: checkbox **"Récupérer l'article complet"** with helper text "Recommandé pour les sites où le flux RSS ne contient qu'un résumé.". Unchecked by default.
+- Source detail or list screen: same toggle for existing sources, with a small warning **"Ce réglage s'applique à tous les utilisateurs abonnés à cette source."** displayed near the toggle.
+- Toggling calls `PATCH /sources/{id}`; the UI optimistically reflects the new state.
+
+**Acceptance criteria**:
+
+- Adding a source with the checkbox ticked → Miniflux feed has `crawler: true`; next fetch produces articles with content length in the thousands (verified on a known teaser-only source).
+- Adding a source with the checkbox unticked → `crawler: false` (current behaviour, no regression).
+- Toggling on an existing source updates Miniflux in place and the next fetch reflects the change — no need to recreate the source.
+- The shared-state warning is visible before the user toggles.
+- No regression on existing sources where the RSS already contains full content.
+
+**Out of scope**:
+
+- Per-user crawler isolation (impossible without duplicating Miniflux feeds).
+- Exposing other Miniflux per-feed options (`user_agent`, `cookie`, `scraper_rules`) — to be reopened if a concrete need appears.
 
 ---
 
