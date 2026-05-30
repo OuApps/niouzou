@@ -42,6 +42,7 @@ CREATE TABLE sources (
   url               TEXT NOT NULL,              -- RSS feed URL
   name              TEXT NOT NULL,              -- display name
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at        TIMESTAMPTZ,                -- soft-delete; null when active
 
   UNIQUE (user_id, miniflux_feed_id)
 );
@@ -49,6 +50,7 @@ CREATE TABLE sources (
 
 > Sources are per-user. Two users following the same RSS feed = two source rows.
 > `miniflux_feed_id` scoped to the user's Miniflux instance.
+> Deleted sources are soft-deleted (`deleted_at` set) so existing articles keep a valid FK.
 
 ---
 
@@ -57,7 +59,7 @@ CREATE TABLE sources (
 CREATE TABLE articles (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   source_id            UUID NOT NULL REFERENCES sources(id),
-  miniflux_entry_id    INTEGER NOT NULL UNIQUE,  -- deduplication key
+  miniflux_entry_id    INTEGER NOT NULL,         -- Miniflux entry id (unique per source)
   url                  TEXT NOT NULL,
   title                TEXT NOT NULL,
   content              TEXT,                     -- full extracted content (newspaper4k or RSS fallback)
@@ -68,7 +70,11 @@ CREATE TABLE articles (
   status               TEXT NOT NULL DEFAULT 'pending',
                                                  -- pending | enriched
   enriched_at          TIMESTAMPTZ,              -- set when status → enriched
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+  enrichment_method    VARCHAR,                  -- 'ai' or 'tfidf'; set by cron_enrich
+  enrichment_error     TEXT,                     -- captured exception when AI failed and fell back to TF-IDF; null on success
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (source_id, miniflux_entry_id)          -- same entry may exist for different sources (multi-user)
 );
 
 CREATE INDEX idx_articles_source_id ON articles(source_id);
@@ -103,6 +109,7 @@ CREATE TABLE article_relevance_scores (
   relevance_score   FLOAT NOT NULL CHECK (relevance_score >= 0.0 AND relevance_score <= 1.0),
                     -- probability the user will enjoy this article
                     -- computed once at enrichment time, never recomputed
+  scorer            VARCHAR,                     -- 'tfidf' or 'ai_keyword'; null for legacy rows
 
   PRIMARY KEY (article_id, user_id)
 );
@@ -156,16 +163,18 @@ CREATE INDEX idx_feedbacks_user_id ON article_feedbacks(user_id);
 ### keyword_weights
 ```sql
 CREATE TABLE keyword_weights (
-  user_id      UUID NOT NULL REFERENCES users(id),
-  term         TEXT NOT NULL,
-  weight       FLOAT NOT NULL DEFAULT 0.0,
-               -- learned influence of this keyword on user's feed
-               -- positive = user likes content with this keyword
-               -- negative = user dislikes content with this keyword
-               -- 0.0 = unknown (neutral, never penalizes)
-  like_count   INTEGER NOT NULL DEFAULT 0,
-  dislike_count INTEGER NOT NULL DEFAULT 0,
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  user_id              UUID NOT NULL REFERENCES users(id),
+  term                 TEXT NOT NULL,
+  weight               FLOAT NOT NULL DEFAULT 0.0,
+                       -- learned influence of this keyword on user's feed
+                       -- positive = user likes content with this keyword
+                       -- negative = user dislikes content with this keyword
+                       -- 0.0 = unknown (neutral, never penalizes)
+  like_count           INTEGER NOT NULL DEFAULT 0,
+  dislike_count        INTEGER NOT NULL DEFAULT 0,
+  manually_overridden  BOOLEAN NOT NULL DEFAULT false,
+                       -- when true, cron_refresh_weights skips recomputing this row
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   PRIMARY KEY (user_id, term)
 );

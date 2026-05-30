@@ -37,7 +37,7 @@ You need Docker. That's it.
 ```bash
 git clone https://github.com/yourname/niouzou.git && cd niouzou
 cp .env.example .env && $EDITOR .env       # set JWT_SECRET + POSTGRES_PASSWORD
-docker compose up -d
+docker-compose up -d
 ```
 
 Open **http://localhost:3000**, create your account, add an RSS feed, start
@@ -53,20 +53,20 @@ Click the button above. You need `JWT_SECRET` (use `openssl rand -hex 32`).
 its Miniflux access token on its own (see "How Miniflux integration works"
 below) — no manual key step.
 
-**Services to create** (7 total):
+**Services to create** (8 total):
 - 1× **Postgres** (Railway template)
 - 1× **miniflux** — Docker image `miniflux/miniflux:2.1.0`
-- 5× from this repo (`OuApps/niouzou`): `api`, `pwa`, `cron-fetch`,
-  `cron-enrich`, `cron-refresh-weights`. Each of these must have its
+- 6× from this repo (`OuApps/niouzou`): `api`, `pwa`, `refresh-worker`,
+  `cron-fetch`, `cron-enrich`, `cron-refresh-weights`. Each must have its
   **Root Directory** set in Settings → Source:
-  - `api`, `cron-*` → `/api`
+  - `api`, `refresh-worker`, `cron-*` → `/api`
   - `pwa` → `/pwa`
 
-  The crons share the API image but use different commands and schedules;
-  set `RAILWAY_CONFIG_FILE` on each cron to its config file
-  (`cron-fetch.railway.toml`, `cron-enrich.railway.toml`,
-  `cron-refresh-weights.railway.toml`) so Railway picks the right
-  `cronSchedule` and `startCommand`.
+  Each service uses a different `railway.toml`; set `RAILWAY_CONFIG_FILE` on
+  each to its config file (`refresh-worker.railway.toml`,
+  `cron-fetch.railway.toml`, `cron-enrich.railway.toml`,
+  `cron-refresh-weights.railway.toml`) so Railway picks the right start
+  command and schedule.
 
 **Database setup.** The API and Miniflux share **one** Postgres service but
 sit in **two databases** on it (the API's default DB and `miniflux`) so
@@ -126,7 +126,7 @@ Hot-reload setups (running the API and PWA outside Docker) are documented in
 pytest suite uses a throwaway Postgres:
 
 ```bash
-docker compose -f docker-compose.test.yml up -d
+docker-compose -f docker-compose.test.yml up -d
 DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test \
     uv run --project api alembic upgrade head
 DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test \
@@ -144,7 +144,7 @@ Conscious trade-offs, not bugs — most are harmless for single-user self-hostin
 - **Refresh tokens are not revocable.** JWTs are stateless, valid for 30 days,
   no blacklist. Logout or rotation can't invalidate a token before it expires.
 - **Relevance scores are frozen at enrichment.** A user who signs up after an
-  article was enriched won't see it (a backfill pass is planned).
+  article was enriched won't see it in their feed.
 - **`RANDOM_SURFACE_RATE` + pagination.** With `SCORE_THRESHOLD > 0`, feed
   pages can be unstable. With the default `SCORE_THRESHOLD = 0.0`, the feed
   is fully deterministic.
@@ -157,7 +157,9 @@ See [`docs/EPICS.md`](docs/EPICS.md) for the full breakdown.
 
 - [x] EPIC 1–5 — PWA, ingestion, API, scoring, AI enrichment
 - [x] EPIC 6 — Packaging & open source
-- [ ] EPIC 7 — PWA polish & follow-up
+- [x] EPIC 7 — PWA polish & follow-up
+- [ ] EPIC 8 — Admin panel
+- [ ] EPIC 9 — Article history
 
 ---
 

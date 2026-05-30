@@ -94,7 +94,7 @@ niouzou/
 ## Backend (Python / FastAPI)
 
 ### General rules
-- Python 3.11+
+- Python 3.13
 - Dependency management: `uv` (fast, modern) with `pyproject.toml`
 - All settings via `config.py` using `pydantic-settings` — never read `os.environ` directly outside config
 - Never put business logic in routers — routers call services, services call DB
@@ -241,7 +241,7 @@ Format: `type/epic-story-short-description`
 ## Continuous integration
 
 - GitHub Actions: `.github/workflows/ci.yml` runs on every push to `main` and
-  every PR targeting it (E7-S25).
+  every PR targeting it.
 - Two jobs:
   - `test-api` — boots a PostgreSQL 17 service container, applies Alembic
     migrations, then runs the pytest suite via `uv`.

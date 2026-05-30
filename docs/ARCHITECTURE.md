@@ -262,11 +262,11 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 | `SCORE_THRESHOLD` | ❌ | Minimum relevance_score to surface article (default: `0.0`) |
 | `RANDOM_SURFACE_RATE` | ❌ | % of random articles in feed (default: `0.05`) |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
-| `COLD_START_THRESHOLD` | ❌ | Number of feedbacks below which `SCORE_THRESHOLD` is bypassed for a user — prevents an empty feed on day one (default: `10`, E7-S6) |
+| `COLD_START_THRESHOLD` | ❌ | Number of feedbacks below which `SCORE_THRESHOLD` is bypassed — prevents an empty feed on day one (default: `10`) |
 | `MAX_KEYWORDS_PER_ARTICLE` | ❌ | Cap on keywords stored per article — applied after extraction (default: `6`) |
-| `CRON_FETCH_INTERVAL` | ❌ | Fetch interval in minutes (default: `15`) |
-| `CRON_ENRICH_INTERVAL` | ❌ | Enrichment interval in minutes (default: `30`) |
-| `CRON_REFRESH_INTERVAL` | ❌ | Keyword-weight recompute interval in minutes (default: `1440` — daily) |
+| `CRON_FETCH_INTERVAL` | ❌ | Fetch interval in minutes, Docker Compose only (default: `15`) |
+| `CRON_ENRICH_INTERVAL` | ❌ | Enrichment interval in minutes, Docker Compose only (default: `30`) |
+| `CRON_REFRESH_INTERVAL` | ❌ | Keyword-weight recompute interval in minutes, Docker Compose only (default: `1440` — daily) |
 | `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`) |
 
 ---

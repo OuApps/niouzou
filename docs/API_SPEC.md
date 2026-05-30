@@ -114,7 +114,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 |---|---|---|---|
 | `cursor` | string | No | Opaque cursor from previous response. Omit for first page. |
 | `limit` | integer | No | Number of articles to return. Default: `20`, max: `50`. |
-| `min_score` | float | No | Per-request override of `SCORE_THRESHOLD` (0.0–1.0). Used by the PWA empty state (E7-S8). |
+| `min_score` | float | No | Per-request override of `SCORE_THRESHOLD` (0.0–1.0). |
 
 **Response `200`**
 ```json
@@ -144,9 +144,9 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 
 > `next_cursor` is null when there are no more articles.
 > Cursor encodes the last article's `relevance_score` + `id` to ensure stable pagination.
-> `scorer` is `"tfidf"` or `"ai_keyword"`; null for rows scored before E7-S7.
+> `scorer` is `"tfidf"` or `"ai_keyword"`; null for legacy rows written before the scorer column existed.
 > `keywords` is sorted by salience desc; empty array when the article has none.
-> `cold_start` is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`, E7-S6) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
+> `cold_start` is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
 
 ---
 
@@ -264,7 +264,7 @@ Returns articles the user has saved (Watch Later). Ordered by feedback `updated_
 ## Profile
 
 ### GET /me
-Returns the authenticated user's profile plus aggregate counts (E7-S9).
+Returns the authenticated user's profile plus aggregate counts.
 
 **Response `200`**
 ```json
@@ -277,7 +277,7 @@ Returns the authenticated user's profile plus aggregate counts (E7-S9).
 }
 ```
 
-> `is_admin` is reserved for the E8 admin role; always `false` until then.
+> `is_admin` is always `false` for now — the admin role is not yet implemented.
 
 ---
 
@@ -301,10 +301,10 @@ Returns all RSS sources for the authenticated user.
 }
 ```
 
-> `fetch_full_content` mirrors the Miniflux `crawler` flag (E7-S26). When
-> `true`, Miniflux fetches the full article HTML instead of relying on the
-> RSS payload. The flag lives on the shared Miniflux feed, so changes are
-> visible to every user subscribed to the same URL.
+> `fetch_full_content` mirrors the Miniflux `crawler` flag. When `true`,
+> Miniflux fetches the full article HTML instead of relying on the RSS payload.
+> The flag lives on the shared Miniflux feed, so changes are visible to every
+> user subscribed to the same URL.
 
 ---
 
@@ -450,7 +450,7 @@ Delete **all** keyword weights for the authenticated user. Hard delete, irrevers
 ## System
 
 ### GET /stats
-System and AI-enrichment health, used by the Profile screen's System section (E7-S15). All counts scoped to the authenticated user's sources / data.
+System and AI-enrichment health. All counts scoped to the authenticated user's sources / data.
 
 **Response `200`**
 ```json
@@ -487,12 +487,12 @@ System and AI-enrichment health, used by the Profile screen's System section (E7
 ---
 
 ### POST /admin/refresh
-Trigger `cron_fetch` followed by `cron_enrich` as a background task (E7-S16).
+Trigger `cron_fetch` followed by `cron_enrich` as a background task.
 Concurrent runs are debounced server-side; the response is identical whether a
 new run started or one was already in flight.
 
-> Will be gated by `require_admin` once E8-S1 lands. Open to every authenticated
-> user for now (acceptable in the single-user self-host context).
+> Open to any authenticated user. Will be restricted to admins when the admin
+> role (E8-S1) is implemented.
 
 **Response `202`**
 ```json
