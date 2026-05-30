@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5
+    # Number of feedbacks below which the feed bypasses SCORE_THRESHOLD entirely
+    # (E7-S6). A brand-new user has weight 0 for every keyword, so every score
+    # ends up near 0.5 — a positive threshold would yield an empty feed on day
+    # one. We open the floodgates until enough signal has been collected.
+    cold_start_threshold: int = 10
     # Cap on keywords persisted per article; applied after extraction so it
     # works uniformly for TF-IDF and AI scorers (E7-S5).
     max_keywords_per_article: int = 6

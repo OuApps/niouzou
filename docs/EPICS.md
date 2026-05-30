@@ -13,6 +13,7 @@
 | EPIC 7 | PWA polish & follow-up | EPIC 4 |
 | EPIC 8 | Admin panel | EPIC 3, EPIC 4 |
 | EPIC 9 | Article history | EPIC 3, EPIC 4 |
+| EPIC 10 | Scaling | EPIC 5 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -580,7 +581,7 @@ api/
 
 ---
 
-#### [ ] E7-S6 — Cold-start scoring: bypass threshold for new users
+#### [x] E7-S6 — Cold-start scoring: bypass threshold for new users
 
 **Problem**: A new user has no `keyword_weights`. All article keywords resolve to weight 0 (neutral), pushing every relevance score to ~50% via the sigmoid. With a `SCORE_THRESHOLD` above 0.5 (e.g. 0.6), the feed is completely empty from day one — a broken first-run experience.
 
@@ -820,40 +821,13 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E7-S18 — Keyword deduplication: merge similar keywords with existing ones
+#### ~~E7-S18 — Keyword deduplication: merge similar keywords with existing ones~~
 
-**Problem**: When the LLM (or TF-IDF) extracts keywords for a new article, it may produce surface forms that are semantically identical to keywords already in the database — e.g. `"Cuisiner"` or `"Faire à Manger"` when `"cuisine"` already exists. Storing these as distinct keywords fragments the user's weight signal: likes/dislikes on `"cuisine"` don't propagate to `"Cuisiner"`, so the feed degrades silently over time.
-
-**Goal**: During keyword enrichment, before inserting new keyword rows, look up existing keywords and collapse near-duplicates onto the canonical (legacy) form already in the DB.
-
-**Approach** (LLM-assisted, no heavy ML dependency):
-
-1. After the scorer produces its candidate keyword list for an article, collect all **distinct** keyword strings currently in the `keyword` table.
-2. Send both lists to the LLM in a single prompt:
-   - *"Given these existing keywords: `[cuisine, sport, politique, …]`, map each candidate below onto the most similar existing keyword if they are semantically equivalent (same concept, different inflection / synonym / phrasing). Return a JSON object `{candidate: existing_keyword_or_null}`."*
-3. For each candidate where the LLM returns a non-null mapping, replace the candidate string with the existing keyword string before upserting into the DB.
-4. Candidates with no match (LLM returns `null`) are inserted as new keywords as usual.
-
-**Constraints**:
-
-- Only applies when `OPENROUTER_API_KEY` is set; TF-IDF path is unchanged (no deduplication).
-- The existing keyword list sent to the LLM must be capped (e.g. top 200 by frequency) to stay within token limits.
-- The LLM call for deduplication is separate from the extraction call — keep them independent so a dedup failure doesn't block enrichment.
-- If the dedup call fails or times out, log a warning and proceed with the raw candidate strings (best-effort).
-- Never mutate existing `keyword` rows — only remap the candidate string; the legacy keyword's `salience` on other articles is unaffected.
-
-**Where to implement**: `api/niouzou/scoring/` — inside `AIKeywordScorer` (or a new `KeywordDeduplicator` helper called from `ScoringPipeline` after extraction).
-
-**Acceptance criteria**:
-
-- Given an existing keyword `"cuisine"` and a new article whose LLM extraction returns `["cuisiner", "faire à manger", "technologie"]`, after dedup the article is linked to `"cuisine"` (existing) and `"technologie"` (new); `"cuisiner"` and `"faire à manger"` are not created.
-- If the dedup LLM call fails, enrichment completes normally using the raw candidate strings (no exception propagates to the caller).
-- The keyword list sent to the LLM is capped and does not exceed the configured token budget.
-- Unit test: mock the LLM response and assert the correct keyword strings are persisted.
+> Migrated to **E10-S1** (EPIC 10 — Scaling). See EPIC 10 for full spec.
 
 ---
 
-#### [ ] E7-S19 — Pull-to-refresh on background drag
+#### [x] E7-S19 — Pull-to-refresh on background drag
 
 **Problem**: On mobile, there is no native gesture to manually refresh the current screen. Users have to navigate away and back, or wait for the next automatic fetch. A swipe-up gesture on the background blob (not on a card or scrollable list) is the natural mobile pattern.
 
@@ -987,7 +961,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E7-S25 — CI: automated unit test pipeline
+#### [x] E7-S25 — CI: automated unit test pipeline
 
 **Goal**: Run the unit test suite automatically on every push and pull request so regressions are caught before merge.
 
@@ -1244,4 +1218,89 @@ Add the following endpoints (all require `require_admin`):
 
 - Tapping the History tab in the navbar opens `/history`
 - Keywords are still accessible via Profile → Keywords
-- No broken links or dead routes after the navbar change
+- No broken links or dead routes after the navbar change- No broken links or dead routes after the navbar change
+
+---
+
+## EPIC 10 — Scaling
+
+**Goal**: Reduce the cost and improve the quality of the AI enrichment pipeline — smarter keyword extraction, token economy, and keyword deduplication — without degrading the feed relevance.
+
+> Depends on EPIC 5 (AI enrichment pipeline in place).
+
+### Stories
+
+#### [ ] E10-S1 — Keyword deduplication: merge similar keywords with existing ones
+
+*(Migrated from E7-S18)*
+
+**Problem**: When the LLM extracts keywords for a new article, it may produce surface forms that are semantically identical to keywords already in the database — e.g. `"Cuisiner"` or `"Faire à Manger"` when `"cuisine"` already exists. Storing these as distinct keywords fragments the user's weight signal: likes/dislikes on `"cuisine"` don't propagate to `"Cuisiner"`, so the feed degrades silently over time.
+
+**Goal**: During keyword enrichment, before inserting new keyword rows, look up existing keywords and collapse near-duplicates onto the canonical (legacy) form already in the DB.
+
+**Approach** (LLM-assisted, no heavy ML dependency):
+
+1. After the scorer produces its candidate keyword list for an article, collect all **distinct** keyword strings currently in the `keyword` table.
+2. Send both lists to the LLM in a single prompt: *"Given these existing keywords: `[cuisine, sport, politique, …]`, map each candidate below onto the most similar existing keyword if they are semantically equivalent (same concept, different inflection / synonym / phrasing). Return a JSON object `{candidate: existing_keyword_or_null}`."*
+3. For each candidate where the LLM returns a non-null mapping, replace the candidate string with the existing keyword string before upserting into the DB.
+4. Candidates with no match are inserted as new keywords as usual.
+
+**Constraints**:
+
+- Only applies when `OPENROUTER_API_KEY` is set; TF-IDF path is unchanged.
+- The existing keyword list sent to the LLM must be capped (e.g. top 200 by frequency) to stay within token limits.
+- The dedup call is separate from the extraction call — a failure must not block enrichment (log warning, proceed with raw candidates).
+- Never mutate existing `keyword` rows — only remap the candidate string.
+
+**Where to implement**: `api/niouzou/scoring/` — inside `AIKeywordScorer` or a new `KeywordDeduplicator` helper called from `ScoringPipeline`.
+
+**Acceptance criteria**:
+
+- Given existing keyword `"cuisine"` and a new article whose LLM extraction returns `["cuisiner", "faire à manger", "technologie"]`, after dedup the article is linked to `"cuisine"` (existing) and `"technologie"` (new).
+- If the dedup LLM call fails, enrichment completes normally (no exception propagates).
+- The keyword list sent to the LLM is capped and does not exceed the configured token budget.
+- Unit test: mock the LLM response and assert the correct keyword strings are persisted.
+
+---
+
+#### [ ] E10-S2 — Token economy: exploration of cost-reduction strategies
+
+**Goal**: Investigate and benchmark techniques to reduce the number of tokens consumed per article enrichment cycle, without significantly degrading summary quality or keyword relevance.
+
+**Questions to answer**:
+
+- **Prompt compression**: can the system prompt and article content be compressed (e.g. truncation strategy, stripping boilerplate HTML artefacts) to reduce input tokens by a meaningful amount without quality loss?
+- **Batching**: can multiple articles be enriched in a single LLM call (one prompt, N articles)? What is the quality trade-off vs. per-article calls?
+- **Caching**: are there recurring article structures or sources where prompt prefixes could be cached (OpenRouter / provider-level prompt caching)?
+- **Model tiering**: can cheaper/smaller models handle keyword extraction while a more capable model handles executive summaries? What is the quality delta?
+- **Selective enrichment**: should articles below a certain TF-IDF pre-score skip LLM enrichment entirely (saving tokens on low-quality content)?
+
+**Output**: A ranked list of strategies with estimated token savings, quality impact assessment, and implementation complexity for each. Written as a design note in `docs/SCALING.md`. No code required for this story.
+
+**Acceptance criteria**:
+
+- `docs/SCALING.md` exists and covers at least the five strategies above.
+- Each strategy has: estimated token saving (%), quality risk (low/medium/high), implementation effort (S/M/L).
+- A recommended prioritisation order is included.
+
+---
+
+#### [ ] E10-S3 — Keyword quality: reduction and precision exploration
+
+**Goal**: Investigate why the current keyword extraction produces noisy, redundant, or overly generic keywords, and define a strategy to improve precision and reduce the total keyword count per article.
+
+**Questions to answer**:
+
+- What is the current average keyword count per article, and what share are stop words, named entities (person names, place names), or overly generic terms (e.g. "article", "information")?
+- Would a stricter salience threshold reduce noise without losing useful signal?
+- Should named entities (persons, organisations, locations) be kept, filtered, or stored in a separate dimension from topical keywords?
+- Can the LLM prompt be refined (few-shot examples, explicit exclusion rules) to produce fewer, higher-quality keywords?
+- Is there a maximum useful vocabulary size for the keyword weight system before it becomes counterproductive?
+
+**Output**: A design note appended to `docs/SCALING.md` (created in E10-S2) with findings, proposed prompt changes, and a recommended keyword quality strategy. No code required for this story.
+
+**Acceptance criteria**:
+
+- Findings section covers current keyword distribution (average count, noise categories).
+- Proposed prompt changes are written out and ready to be tested.
+- A recommended keyword count cap and salience threshold are justified with rationale.

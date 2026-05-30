@@ -88,6 +88,10 @@ export const Feed = () => {
   const snapshot = useFeedStore((s) => s.snapshot)
   const setSnapshot = useFeedStore((s) => s.setSnapshot)
   const clearSnapshot = useFeedStore((s) => s.clearSnapshot)
+  // ArticleDetail signals via the store when a like/dislike/save was submitted
+  // there, so the deck should advance past that article on return. Back button
+  // does not raise the flag (Bonus on E7-S23).
+  const consumeAdvance = useFeedStore((s) => s.consumeAdvance)
 
   const [articles, setArticles] = useState<FeedArticle[]>(
     () => snapshot?.articles ?? [],
@@ -170,6 +174,21 @@ export const Feed = () => {
       active = false
     }
   }, [reloadKey, gone, minScore])
+
+  // Advance past an article when ArticleDetail signalled an action (Bonus on
+  // E7-S23): consume the flag once on mount so a back-navigation that did not
+  // raise it leaves the deck in place.
+  useEffect(() => {
+    if (status !== 'ready') return
+    const advanceId = consumeAdvance()
+    if (!advanceId) return
+    const idx = articles.findIndex((a) => a.id === advanceId)
+    if (idx === currentIndex && idx !== -1) {
+      gone.add(idx)
+      setCurrentIndex((prev) => Math.min(prev + 1, articles.length))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status])
 
   // Persist the current state into the snapshot store. Runs on every change so
   // navigating away mid-deck (article detail) leaves a fresh snapshot behind.
@@ -351,7 +370,7 @@ export const Feed = () => {
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
-      <BlobBackground />
+      <BlobBackground onRefresh={refresh} />
 
       {/* Pull-to-refresh indicator */}
       <div

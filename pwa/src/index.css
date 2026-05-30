@@ -150,5 +150,41 @@ html, body, #root {
   to { transform: rotate(360deg); }
 }
 
+/* ── Pull-to-refresh logo (E7-S19) ── */
+.pull-logo {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 72px;
+  height: 72px;
+  pointer-events: none;
+  z-index: 1;
+  transition: opacity 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pull-logo-mark {
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  background: rgba(12, 16, 24, 0.85);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 34px;
+  letter-spacing: -0.02em;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.pull-logo-mark--spin {
+  animation: spin 0.9s linear infinite;
+}
+
 /* ── Touch optimization ── */
 * { -webkit-tap-highlight-color: transparent; }

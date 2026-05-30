@@ -247,6 +247,7 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 | `SCORE_THRESHOLD` | ❌ | Minimum relevance_score to surface article (default: `0.0`) |
 | `RANDOM_SURFACE_RATE` | ❌ | % of random articles in feed (default: `0.05`) |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
+| `COLD_START_THRESHOLD` | ❌ | Number of feedbacks below which `SCORE_THRESHOLD` is bypassed for a user — prevents an empty feed on day one (default: `10`, E7-S6) |
 | `MAX_KEYWORDS_PER_ARTICLE` | ❌ | Cap on keywords stored per article — applied after extraction (default: `6`) |
 | `CRON_FETCH_INTERVAL` | ❌ | Fetch interval in minutes (default: `15`) |
 | `CRON_ENRICH_INTERVAL` | ❌ | Enrichment interval in minutes (default: `30`) |

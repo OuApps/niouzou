@@ -9,6 +9,7 @@ import { ErrorState } from '../components/ErrorState'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { useApiData } from '../hooks/useApiData'
 import { useFeedbackStore } from '../store/feedback'
+import { useFeedStore } from '../store/feed'
 import { getArticle, postFeedback } from '../api'
 import type { FeedArticle, FeedbackAction } from '../types/api'
 
@@ -19,6 +20,7 @@ export const ArticleDetail = () => {
 
   const storeFeedbacks = useFeedbackStore((s) => s.feedbacks)
   const setFeedback = useFeedbackStore((s) => s.setFeedback)
+  const requestAdvance = useFeedStore((s) => s.requestAdvance)
 
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -53,12 +55,13 @@ export const ArticleDetail = () => {
     setSubmitting(true)
     try {
       await postFeedback(id, next)
-      // Like/dislike from detail: return to the previous screen so the user
-      // can keep swiping without an extra tap. Save keeps them on the article.
-      if (next === 'like' || next === 'dislike') {
-        navigate(-1)
-        return
-      }
+      // Any action from detail returns to the previous screen and signals that
+      // the article should be advanced past in the deck. Back button (handled
+      // separately) does not raise this flag, so the same article stays on top
+      // when the user only wanted to peek (E7-S23 + Bonus).
+      requestAdvance(id)
+      navigate(-1)
+      return
     } catch {
       setSubmitError("Couldn't save your feedback. Please try again.")
     } finally {

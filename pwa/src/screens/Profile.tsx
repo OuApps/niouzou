@@ -31,7 +31,7 @@ export const Profile = () => {
 
   // Authoritative counts + email from the server (E7-S9). The auth store's
   // email is only a fallback while the request is in flight.
-  const { data: me, loading } = useApiData(getMe, [])
+  const { data: me, loading, reload: reloadMe } = useApiData(getMe, [])
   const email = me?.email ?? storedEmail ?? 'user@example.com'
 
   // ── System section (E7-S15) ─────────────────────────────────────────────
@@ -93,7 +93,7 @@ export const Profile = () => {
 
   return (
     <div className="flex flex-col h-dvh overflow-y-auto relative">
-      <BlobBackground />
+      <BlobBackground onRefresh={reloadMe} />
 
       <header
         className="relative z-10 flex items-center justify-center"

@@ -35,6 +35,10 @@ class FeedResponse(BaseModel):
     articles: list[FeedArticle]
     next_cursor: str | None
     has_more: bool
+    # True while the user has fewer than COLD_START_THRESHOLD feedbacks (E7-S6):
+    # the score threshold is bypassed so the feed isn't empty on day one. PWA
+    # can use this to show a "keep swiping to personalise" hint.
+    cold_start: bool = False
 
 
 class SavedArticle(FeedArticle):

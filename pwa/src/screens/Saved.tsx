@@ -188,7 +188,7 @@ export const Saved = () => {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
     >
-      <BlobBackground />
+      <BlobBackground onRefresh={reload} />
 
       <div
         className="pull-indicator"

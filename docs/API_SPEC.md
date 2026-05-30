@@ -137,7 +137,8 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
     }
   ],
   "next_cursor": "eyJsYXN0X2lkIjoiLi4uIn0=",
-  "has_more": true
+  "has_more": true,
+  "cold_start": false
 }
 ```
 
@@ -145,6 +146,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 > Cursor encodes the last article's `relevance_score` + `id` to ensure stable pagination.
 > `scorer` is `"tfidf"` or `"ai_keyword"`; null for rows scored before E7-S7.
 > `keywords` is sorted by salience desc; empty array when the article has none.
+> `cold_start` is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`, E7-S6) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
 
 ---
 

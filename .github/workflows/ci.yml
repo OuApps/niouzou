@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-api:
+    name: API · pytest
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: niouzou
+          POSTGRES_PASSWORD: niouzou
+          POSTGRES_DB: niouzou_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U niouzou"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://niouzou:niouzou@localhost:5432/niouzou_test
+      MINIFLUX_URL: http://miniflux.test
+      JWT_SECRET: ci-test-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Sync dependencies
+        working-directory: api
+        run: uv sync --frozen --all-groups
+
+      - name: Run Alembic migrations
+        working-directory: api
+        run: uv run alembic upgrade head
+
+      - name: Run pytest
+        working-directory: api
+        run: uv run pytest -q --tb=short
+
+  test-pwa:
+    name: PWA · typecheck & build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pwa/package-lock.json
+
+      - name: Install dependencies
+        working-directory: pwa
+        run: npm ci
+
+      - name: Type-check + build
+        working-directory: pwa
+        env:
+          VITE_API_URL: http://localhost:8000/api/v1
+        run: npm run build

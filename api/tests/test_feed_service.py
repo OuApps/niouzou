@@ -2,7 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
-from niouzou.models import ArticleImpression
+from niouzou.config import get_settings
+from niouzou.models import ArticleFeedback, ArticleImpression
 from niouzou.services.feed_service import FeedService
 from tests.factories import make_article, make_source, make_user, set_relevance
 
@@ -80,3 +81,63 @@ async def test_cursor_pages_do_not_overlap(db_session):
 
     seen_ids = [a.id for a in page1.articles + page2.articles + page3.articles]
     assert len(seen_ids) == len(set(seen_ids)) == 5
+
+
+async def test_cold_start_bypasses_score_threshold(db_session, monkeypatch):
+    """E7-S6: a new user with no feedback sees sub-threshold articles."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("SCORE_THRESHOLD", "0.8")
+    monkeypatch.setenv("RANDOM_SURFACE_RATE", "0.0")
+
+    try:
+        user = await make_user(db_session)
+        source = await make_source(db_session, user)
+        art = await make_article(db_session, source, title="low-score")
+        await set_relevance(db_session, art, user, 0.2)
+        await db_session.commit()
+
+        feed = await FeedService(db_session).get_feed(
+            user.id, cursor=None, limit=None
+        )
+
+        assert [a.title for a in feed.articles] == ["low-score"]
+        assert feed.cold_start is True
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_cold_start_ends_after_threshold_reached(db_session, monkeypatch):
+    """E7-S6: once COLD_START_THRESHOLD feedbacks are in, the floor applies."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("SCORE_THRESHOLD", "0.8")
+    monkeypatch.setenv("RANDOM_SURFACE_RATE", "0.0")
+    monkeypatch.setenv("COLD_START_THRESHOLD", "2")
+
+    try:
+        user = await make_user(db_session)
+        source = await make_source(db_session, user)
+        low = await make_article(db_session, source, title="low")
+        await set_relevance(db_session, low, user, 0.2)
+        # Two feedbacks on unrelated articles graduates the user out of cold
+        # start.
+        for i in range(2):
+            other = await make_article(db_session, source, title=f"seen-{i}")
+            await set_relevance(db_session, other, user, 0.2)
+            db_session.add(
+                ArticleImpression(article_id=other.id, user_id=user.id)
+            )
+            db_session.add(
+                ArticleFeedback(
+                    article_id=other.id, user_id=user.id, action="like"
+                )
+            )
+        await db_session.commit()
+
+        feed = await FeedService(db_session).get_feed(
+            user.id, cursor=None, limit=None
+        )
+
+        assert feed.cold_start is False
+        assert feed.articles == []
+    finally:
+        get_settings.cache_clear()

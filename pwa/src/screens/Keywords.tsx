@@ -347,7 +347,7 @@ export const Keywords = () => {
 
   return (
     <div className="flex flex-col min-h-dvh relative">
-      <BlobBackground />
+      <BlobBackground onRefresh={reload} />
 
       <header
         className="relative z-10 flex items-center justify-between"

@@ -12,13 +12,13 @@ threshold is configured (anti echo chamber).
 
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.errors import not_found
-from niouzou.models import Article, ArticleImpression, Source
+from niouzou.models import Article, ArticleFeedback, ArticleImpression, Source
 from niouzou.models.article import STATUS_ENRICHED
 from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.feed import FeedArticle, FeedResponse, SourceRef
@@ -48,11 +48,23 @@ class FeedService:
         settings = get_settings()
         page_size = _clamp_limit(limit)
 
-        # Per-request override beats the env default (E7-S8); the random-surface
-        # branch still applies on top.
-        threshold = (
-            min_score if min_score is not None else settings.score_threshold
-        )
+        # Cold start (E7-S6): users with little feedback get an unfiltered feed,
+        # otherwise they'd see nothing on day one (all weights = 0 → all scores
+        # ≈ 0.5, blocked by any positive threshold). The PWA override (E7-S8)
+        # only kicks in once the user has graduated out of cold start.
+        feedback_count = await self.session.scalar(
+            select(func.count())
+            .select_from(ArticleFeedback)
+            .where(ArticleFeedback.user_id == user_id)
+        ) or 0
+        cold_start = feedback_count < settings.cold_start_threshold
+
+        if cold_start:
+            threshold = 0.0
+        else:
+            threshold = (
+                min_score if min_score is not None else settings.score_threshold
+            )
 
         params: dict = {
             "user_id": user_id,
@@ -140,7 +152,10 @@ class FeedService:
             next_cursor = encode_cursor({"rank": last["feed_rank"], "id": last["id"]})
 
         return FeedResponse(
-            articles=articles, next_cursor=next_cursor, has_more=has_more
+            articles=articles,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            cold_start=cold_start,
         )
 
     async def record_impression(

@@ -238,6 +238,18 @@ Format: `type/epic-story-short-description`
 - Focus tests on services and scoring logic — not on routers or UI details
 - Each scorer must have unit tests covering: neutral user (no history), positive keywords, negative keywords, mixed
 
+## Continuous integration
+
+- GitHub Actions: `.github/workflows/ci.yml` runs on every push to `main` and
+  every PR targeting it (E7-S25).
+- Two jobs:
+  - `test-api` — boots a PostgreSQL 17 service container, applies Alembic
+    migrations, then runs the pytest suite via `uv`.
+  - `test-pwa` — installs PWA deps with `npm ci`, then `npm run build`
+    (TypeScript project references + Vite production build).
+- A failing job blocks the merge. Secrets (none required today) are stored as
+  GitHub Actions secrets, never inlined in the workflow file.
+
 ---
 
 ## What agents must do before writing any code

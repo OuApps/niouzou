@@ -35,17 +35,30 @@ export interface SavedSnapshot {
 interface FeedStoreState {
   snapshot: FeedSnapshot | null
   savedSnapshot: SavedSnapshot | null
+  // One-shot signal set by ArticleDetail when a like/dislike/save is submitted:
+  // tells Feed to advance the deck past this article on remount. Back button
+  // does not set this flag.
+  advanceArticleId: string | null
   setSnapshot: (s: FeedSnapshot) => void
   clearSnapshot: () => void
   setSavedSnapshot: (s: SavedSnapshot) => void
   clearSavedSnapshot: () => void
+  requestAdvance: (id: string) => void
+  consumeAdvance: () => string | null
 }
 
-export const useFeedStore = create<FeedStoreState>((set) => ({
+export const useFeedStore = create<FeedStoreState>((set, get) => ({
   snapshot: null,
   savedSnapshot: null,
+  advanceArticleId: null,
   setSnapshot: (s) => set({ snapshot: s }),
   clearSnapshot: () => set({ snapshot: null }),
   setSavedSnapshot: (s) => set({ savedSnapshot: s }),
   clearSavedSnapshot: () => set({ savedSnapshot: null }),
+  requestAdvance: (id) => set({ advanceArticleId: id }),
+  consumeAdvance: () => {
+    const id = get().advanceArticleId
+    if (id !== null) set({ advanceArticleId: null })
+    return id
+  },
 }))
