@@ -465,6 +465,7 @@ export const Feed = () => {
             return (
               <animated.div
                 key={articles[i].id}
+                data-no-pull
                 {...(isPeek ? {} : bind(i))}
                 style={{
                   position: 'absolute',
