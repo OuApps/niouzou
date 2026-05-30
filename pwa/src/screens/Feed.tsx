@@ -15,7 +15,6 @@ import type { FeedArticle, FeedbackAction } from '../types/api'
 const SWIPE_THRESHOLD = 100
 const SWIPE_UP_THRESHOLD = 80
 const SWIPE_DOWN_THRESHOLD = 80
-const PULL_THRESHOLD = 80
 const PAGE_SIZE = 20
 // Start loading the next page when this many cards remain ahead of the user.
 const PREFETCH_AHEAD = 5
@@ -126,12 +125,6 @@ export const Feed = () => {
   // True after the first mount has consumed any restored snapshot. Used to
   // skip the initial-load effect when we already restored data.
   const hadSnapshotOnMount = useRef(snapshot !== null)
-
-  // Pull-to-refresh state
-  const [pullY, setPullY] = useState(0)
-  const [pulling, setPulling] = useState(false)
-  const touchStartY = useRef(0)
-  const isPulling = useRef(false)
 
   const [springs, api] = useSprings(articles.length, () => ({
     x: 0,
@@ -331,75 +324,11 @@ export const Feed = () => {
     { filterTaps: true },
   )
 
-  // ── Pull-to-refresh ────────────────────────────────────────────────────────
-  // Derived here (before touch handlers) so handleTouchMove can close over it.
   const deckEmpty = currentIndex >= articles.length
 
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    touchStartY.current = e.touches[0].clientY
-    isPulling.current = false
-  }, [])
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    // When cards are present, swipe-down is the "save" gesture handled by the
-    // card gesture recogniser — don't let it also trigger pull-to-refresh.
-    if (status === 'ready' && !deckEmpty) return
-    const dy = e.touches[0].clientY - touchStartY.current
-    if (dy > 0 && window.scrollY === 0) {
-      isPulling.current = true
-      setPulling(true)
-      setPullY(Math.min(dy * 0.5, 120))
-    }
-  }, [status, deckEmpty])
-
-  const handleTouchEnd = useCallback(() => {
-    if (isPulling.current && pullY > PULL_THRESHOLD) {
-      refresh()
-    }
-    setPullY(0)
-    setPulling(false)
-    isPulling.current = false
-  }, [pullY, refresh])
-
-  const pullProgress = Math.min(pullY / PULL_THRESHOLD, 1)
-
   return (
-    <div
-      className="flex flex-col min-h-dvh relative"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-    >
+    <div className="flex flex-col min-h-dvh relative">
       <BlobBackground onRefresh={refresh} />
-
-      {/* Pull-to-refresh indicator */}
-      <div
-        className="pull-indicator"
-        style={{
-          transform: `translateY(${pullY - 40}px)`,
-          opacity: pulling ? pullProgress : 0,
-        }}
-      >
-        <svg
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{
-            transform: `rotate(${pullProgress * 360}deg)`,
-            transition: pulling ? 'none' : 'transform 0.3s ease',
-          }}
-        >
-          <path d="M12 2v6" />
-          <path d="m9 5 3-3 3 3" />
-          <path d="M12 22v-6" />
-          <path d="m15 19-3 3-3-3" />
-        </svg>
-      </div>
 
       {/* Active relaxed-threshold pill */}
       {minScore !== null && (

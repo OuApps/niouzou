@@ -1,11 +1,15 @@
+import { RefreshCw } from 'lucide-react'
 import { usePullToRefresh } from '../hooks/usePullToRefresh'
+
+const REVEAL_OFFSET = 24
+const REVEAL_TRAVEL = 56
 
 interface Props {
   /**
-   * When provided, dragging upward from the bottom third of the viewport on
-   * a non-interactive area triggers this callback (E7-S19). The logo overlay
-   * spins while the user pulls and continues spinning until the returned
-   * promise resolves.
+   * When provided, the classic top-to-bottom pull gesture on a non-interactive
+   * area of the top third triggers this callback (E7-S19). A refresh icon
+   * descends from the top with the drag and spins while the returned promise
+   * is in flight.
    */
   onRefresh?: () => void | Promise<void>
 }
@@ -14,6 +18,9 @@ export const BlobBackground = ({ onRefresh }: Props) => {
   const { pulling, refreshing, progress } = usePullToRefresh(onRefresh)
   const interactive = Boolean(onRefresh)
   const visible = pulling || refreshing
+  const clamped = Math.min(progress, 1)
+  // Slide the indicator down with the gesture so it feels physically pulled.
+  const offsetY = visible ? REVEAL_OFFSET + clamped * REVEAL_TRAVEL : 0
 
   return (
     <>
@@ -23,21 +30,23 @@ export const BlobBackground = ({ onRefresh }: Props) => {
       </div>
       {interactive && (
         <div
-          className="pull-logo"
+          className="pull-indicator-top"
           style={{
-            opacity: visible ? Math.min(progress, 1) : 0,
-            transform: `translate(-50%, -50%) scale(${0.7 + Math.min(progress, 1) * 0.3})`,
+            opacity: visible ? clamped : 0,
+            transform: `translate(-50%, ${offsetY - 48}px)`,
           }}
         >
           <div
-            className={refreshing ? 'pull-logo-mark pull-logo-mark--spin' : 'pull-logo-mark'}
-            style={
+            className={
               refreshing
-                ? undefined
-                : { transform: `rotate(${progress * 360}deg)` }
+                ? 'pull-indicator-icon pull-indicator-icon--spin'
+                : 'pull-indicator-icon'
+            }
+            style={
+              refreshing ? undefined : { transform: `rotate(${progress * 360}deg)` }
             }
           >
-            N
+            <RefreshCw size={22} strokeWidth={2.5} />
           </div>
         </div>
       )}

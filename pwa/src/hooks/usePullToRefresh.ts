@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 const TRAVEL_THRESHOLD = 80
-const BOTTOM_THIRD_RATIO = 2 / 3
+const TOP_THIRD_RATIO = 1 / 3
 // Touches that start on any of these never trigger the gesture — cards,
 // buttons, links, form controls, and explicit opt-outs.
 const EXCLUDE_SELECTOR =
@@ -14,16 +14,17 @@ type RefreshState = {
 }
 
 /**
- * Bottom-to-top drag triggers `onRefresh` (E7-S19).
+ * Classic top-to-bottom pull-to-refresh (E7-S19).
  *
  * Listeners attach at the window level (not on a ref) because `BlobBackground`
  * is `position: fixed; inset: 0` but sits behind the screen content — touches
  * almost never land on it directly. So we listen everywhere and filter:
  *
- *   - touchstart Y must be in the bottom third of the viewport
+ *   - the page must be scrolled to the top (`window.scrollY === 0`)
+ *   - touchstart Y must be in the top third of the viewport
  *   - touch target must not be inside an interactive element (button, link,
  *     card, form control) — see EXCLUDE_SELECTOR
- *   - touch must travel upward by TRAVEL_THRESHOLD pixels before release
+ *   - touch must travel downward by TRAVEL_THRESHOLD pixels before release
  *
  * `progress` (0..1.5) lets the caller animate a visual indicator; `refreshing`
  * stays true while the returned promise is in flight so a second gesture is
@@ -56,21 +57,18 @@ export function usePullToRefresh(
       return target.closest(EXCLUDE_SELECTOR) === null
     }
 
-    const onTouchStart = (e: TouchEvent) => {
+    const armFromStart = (clientY: number, target: EventTarget | null) => {
       if (refreshingRef.current) return
-      const touch = e.touches[0]
-      if (!touch) return
-      if (touch.clientY < window.innerHeight * BOTTOM_THIRD_RATIO) return
-      if (!isPullable(e.target)) return
-      startY.current = touch.clientY
+      if (window.scrollY > 0) return
+      if (clientY > window.innerHeight * TOP_THIRD_RATIO) return
+      if (!isPullable(target)) return
+      startY.current = clientY
       tracking.current = true
     }
 
-    const onTouchMove = (e: TouchEvent) => {
+    const updateFromMove = (clientY: number) => {
       if (!tracking.current || startY.current === null) return
-      const touch = e.touches[0]
-      if (!touch) return
-      const dy = startY.current - touch.clientY
+      const dy = clientY - startY.current
       if (dy <= 0) {
         progressRef.current = 0
         setState((s) => (s.pulling ? { ...s, pulling: false, progress: 0 } : s))
@@ -81,7 +79,7 @@ export function usePullToRefresh(
       setState({ pulling: true, refreshing: false, progress })
     }
 
-    const onTouchEnd = () => {
+    const release = () => {
       if (!tracking.current) return
       tracking.current = false
       startY.current = null
@@ -95,50 +93,44 @@ export function usePullToRefresh(
       }
     }
 
-    // Mirror touch events as pointer events so dev testing on desktop (mouse)
-    // also works. Filtered to primary-button drags only.
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t) armFromStart(t.clientY, e.target)
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t) updateFromMove(t.clientY)
+    }
+
+    // Mirror as pointer events so dev testing on desktop (mouse drag) works.
     let mouseDown = false
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType === 'touch') return
-      if (e.button !== 0) return
+      if (e.pointerType === 'touch' || e.button !== 0) return
       mouseDown = true
-      if (refreshingRef.current) return
-      if (e.clientY < window.innerHeight * BOTTOM_THIRD_RATIO) return
-      if (!isPullable(e.target)) return
-      startY.current = e.clientY
-      tracking.current = true
+      armFromStart(e.clientY, e.target)
     }
     const onPointerMove = (e: PointerEvent) => {
       if (e.pointerType === 'touch' || !mouseDown) return
-      if (!tracking.current || startY.current === null) return
-      const dy = startY.current - e.clientY
-      if (dy <= 0) {
-        progressRef.current = 0
-        setState((s) => (s.pulling ? { ...s, pulling: false, progress: 0 } : s))
-        return
-      }
-      const progress = Math.min(dy / TRAVEL_THRESHOLD, 1.5)
-      progressRef.current = progress
-      setState({ pulling: true, refreshing: false, progress })
+      updateFromMove(e.clientY)
     }
     const onPointerUp = (e: PointerEvent) => {
       if (e.pointerType === 'touch') return
       mouseDown = false
-      onTouchEnd()
+      release()
     }
 
     window.addEventListener('touchstart', onTouchStart, { passive: true })
     window.addEventListener('touchmove', onTouchMove, { passive: true })
-    window.addEventListener('touchend', onTouchEnd)
-    window.addEventListener('touchcancel', onTouchEnd)
+    window.addEventListener('touchend', release)
+    window.addEventListener('touchcancel', release)
     window.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
     return () => {
       window.removeEventListener('touchstart', onTouchStart)
       window.removeEventListener('touchmove', onTouchMove)
-      window.removeEventListener('touchend', onTouchEnd)
-      window.removeEventListener('touchcancel', onTouchEnd)
+      window.removeEventListener('touchend', release)
+      window.removeEventListener('touchcancel', release)
       window.removeEventListener('pointerdown', onPointerDown)
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
