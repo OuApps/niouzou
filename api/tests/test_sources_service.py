@@ -17,7 +17,9 @@ BASE = "http://miniflux.test"
 FEED_URL = "https://newsletter.example.com/feed"
 
 
-def _mock_miniflux_create(feed_id: int = 42, title: str = "The Feed"):
+def _mock_miniflux_create(
+    feed_id: int = 42, title: str = "The Feed", crawler: bool = False
+):
     respx.get(f"{BASE}/v1/categories").mock(
         return_value=httpx.Response(200, json=[{"id": 1, "title": "All"}])
     )
@@ -26,7 +28,13 @@ def _mock_miniflux_create(feed_id: int = 42, title: str = "The Feed"):
     )
     respx.get(f"{BASE}/v1/feeds/{feed_id}").mock(
         return_value=httpx.Response(
-            200, json={"id": feed_id, "title": title, "feed_url": FEED_URL}
+            200,
+            json={
+                "id": feed_id,
+                "title": title,
+                "feed_url": FEED_URL,
+                "crawler": crawler,
+            },
         )
     )
 
@@ -147,6 +155,180 @@ async def test_second_user_reuses_existing_miniflux_feed(db_session):
     assert len(sources) == 2
     assert {s.user_id for s in sources} == {user_a.id, user_b.id}
     assert out_b.name == "The Feed"
+
+
+@respx.mock
+async def test_create_source_passes_crawler_to_miniflux(db_session):
+    user = await make_user(db_session)
+    await db_session.commit()
+    cat = respx.get(f"{BASE}/v1/categories").mock(
+        return_value=httpx.Response(200, json=[{"id": 1, "title": "All"}])
+    )
+    post = respx.post(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(201, json={"feed_id": 42})
+    )
+    respx.get(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "title": "The Feed",
+                "feed_url": FEED_URL,
+                "crawler": True,
+            },
+        )
+    )
+
+    out = await SourcesService(db_session).create_source(
+        user.id, FEED_URL, fetch_full_content=True
+    )
+    await db_session.commit()
+
+    assert out.fetch_full_content is True
+    import json
+
+    body = json.loads(post.calls[0].request.content)
+    assert body.get("crawler") is True
+    assert cat.called
+
+
+@respx.mock
+async def test_create_source_second_user_with_crawler_updates_shared_feed(db_session):
+    user_a = await make_user(db_session, email="a@test.dev")
+    user_b = await make_user(db_session, email="b@test.dev")
+    await db_session.commit()
+    _mock_miniflux_create(feed_id=42)
+
+    await SourcesService(db_session).create_source(user_a.id, FEED_URL)
+    await db_session.commit()
+
+    respx.reset()
+    respx.get(f"{BASE}/v1/categories").mock(
+        return_value=httpx.Response(200, json=[{"id": 1, "title": "All"}])
+    )
+    respx.post(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(
+            400, json={"error_message": "This feed already exists."}
+        )
+    )
+    respx.get(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": 42, "title": "The Feed", "feed_url": FEED_URL, "crawler": False}
+            ],
+        )
+    )
+    put = respx.put(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "title": "The Feed",
+                "feed_url": FEED_URL,
+                "crawler": True,
+            },
+        )
+    )
+    respx.get(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "title": "The Feed",
+                "feed_url": FEED_URL,
+                "crawler": True,
+            },
+        )
+    )
+
+    out_b = await SourcesService(db_session).create_source(
+        user_b.id, FEED_URL, fetch_full_content=True
+    )
+    await db_session.commit()
+
+    assert out_b.fetch_full_content is True
+    assert put.called
+
+
+@respx.mock
+async def test_update_source_toggles_crawler(db_session):
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=77)
+    await db_session.commit()
+
+    put = respx.put(f"{BASE}/v1/feeds/77").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 77,
+                "title": source.name,
+                "feed_url": source.url,
+                "crawler": True,
+            },
+        )
+    )
+
+    out = await SourcesService(db_session).update_source(
+        user.id, source.id, fetch_full_content=True
+    )
+
+    assert out.fetch_full_content is True
+    assert put.called
+    import json
+
+    assert json.loads(put.calls[0].request.content) == {"crawler": True}
+
+
+@respx.mock
+async def test_update_source_404_for_foreign_source(db_session):
+    owner = await make_user(db_session, email="o@test.dev")
+    intruder = await make_user(db_session, email="i@test.dev")
+    source = await make_source(db_session, owner, feed_id=77)
+    await db_session.commit()
+
+    with pytest.raises(APIError) as exc:
+        await SourcesService(db_session).update_source(
+            intruder.id, source.id, fetch_full_content=True
+        )
+    assert exc.value.status_code == 404
+
+
+@respx.mock
+async def test_list_sources_surfaces_crawler_state(db_session):
+    user = await make_user(db_session)
+    s1 = await make_source(db_session, user, feed_id=1, name="A")
+    s2 = await make_source(db_session, user, feed_id=2, name="B")
+    await db_session.commit()
+    respx.get(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": 1, "title": "A", "feed_url": s1.url, "crawler": True},
+                {"id": 2, "title": "B", "feed_url": s2.url, "crawler": False},
+            ],
+        )
+    )
+
+    listed = await SourcesService(db_session).list_sources(user.id)
+
+    by_id = {s.id: s for s in listed.sources}
+    assert by_id[s1.id].fetch_full_content is True
+    assert by_id[s2.id].fetch_full_content is False
+
+
+@respx.mock
+async def test_list_sources_falls_back_when_miniflux_down(db_session):
+    user = await make_user(db_session)
+    await make_source(db_session, user, feed_id=1, name="A")
+    await db_session.commit()
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(500))
+
+    listed = await SourcesService(db_session).list_sources(user.id)
+
+    # Service degrades gracefully: still returns the rows, crawler defaults false.
+    assert len(listed.sources) == 1
+    assert listed.sources[0].fetch_full_content is False
 
 
 @respx.mock

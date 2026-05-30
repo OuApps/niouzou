@@ -96,8 +96,21 @@ export function getSources(): Promise<{ sources: SourceFull[] }> {
   return request<{ sources: SourceFull[] }>('/sources')
 }
 
-export function addSource(url: string): Promise<SourceFull> {
-  return request<SourceFull>('/sources', { method: 'POST', body: { url } })
+export function addSource(
+  url: string,
+  fetchFullContent = false,
+): Promise<SourceFull> {
+  return request<SourceFull>('/sources', {
+    method: 'POST',
+    body: { url, fetch_full_content: fetchFullContent },
+  })
+}
+
+export function updateSource(
+  id: string,
+  body: { fetch_full_content: boolean },
+): Promise<SourceFull> {
+  return request<SourceFull>(`/sources/${id}`, { method: 'PATCH', body })
 }
 
 export function deleteSource(id: string): Promise<void> {

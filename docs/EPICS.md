@@ -990,7 +990,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E7-S26 — Full-content fetch toggle for sources (Miniflux crawler)
+#### [x] E7-S26 — Full-content fetch toggle for sources (Miniflux crawler)
 
 **Problem**: Adding a source from the PWA creates the Miniflux feed with default settings (`crawler: false`). For publishers whose RSS exposes only a teaser (Rugbyrama and similar), articles are ingested as ~200-char snippets instead of full content. E7-S22 confirmed that enabling Miniflux's `crawler: true` per-feed retrieves the full article HTML for these sources, but the option is reachable today only via the Miniflux admin UI.
 
@@ -1027,7 +1027,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E7-S27 — System card: spacing fix + metric clarity
+#### [x] E7-S27 — System card: spacing fix + metric clarity
 
 **Problem**: The System card in the Profile tab has two presentation issues:
 
@@ -1088,6 +1088,8 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 - First registered user has `is_admin = true`; subsequent users have `is_admin = false`
 - Alembic migration runs cleanly on an existing DB
 
+**Docs to update**: add `is_admin BOOLEAN NOT NULL DEFAULT FALSE` to the `users` table definition in `docs/DATA_MODEL.md`.
+
 ---
 
 #### [ ] E8-S2 — App config persistence layer
@@ -1099,13 +1101,16 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 - Add an `app_settings` table: `key VARCHAR PK`, `value TEXT`, `updated_at TIMESTAMP`
 - Add `SettingsService` with `get(key)` and `set(key, value)` methods
 - At startup, `config.py` continues to read from env vars. At runtime, `SettingsService.get(key)` checks `app_settings` first and falls back to the env var — DB overrides env (allows runtime changes without restart)
-- Supported overridable keys: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `MAX_KEYWORDS_PER_ARTICLE`
-- When reading sensitive keys for display, mask the value: show only `sk-...` prefix + last 4 chars (e.g. `sk-...a3f9`); return `null` if unset
+- Supported overridable keys: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `MAX_KEYWORDS_PER_ARTICLE`, `CRON_FETCH_INTERVAL`, `CRON_REFRESH_WEIGHTS_HOUR`
+- When reading sensitive keys (`OPENROUTER_API_KEY`) for display, mask the value: show only `sk-...` prefix + last 4 chars (e.g. `sk-...a3f9`); return `null` if unset. Non-sensitive keys (`OPENROUTER_MODEL`, `MAX_KEYWORDS_PER_ARTICLE`, `CRON_FETCH_INTERVAL`, `CRON_REFRESH_WEIGHTS_HOUR`) are returned as-is.
+- Exception: `CRON_FETCH_INTERVAL` and `CRON_REFRESH_WEIGHTS_HOUR` are read by the `refresh-worker` at startup only — changes to these two keys take effect on the next worker restart (cannot be applied live without rescheduling APScheduler jobs).
 
 **Acceptance criteria**:
 
 - After `SettingsService.set("OPENROUTER_MODEL", "gpt-4o")`, the next enrichment cron uses the new model without a restart
 - Env vars remain the source of truth if no DB override exists
+
+**Docs to update**: add the `app_settings` table (`key VARCHAR PK`, `value TEXT`, `updated_at TIMESTAMP`) to `docs/DATA_MODEL.md`.
 
 ---
 
@@ -1118,16 +1123,23 @@ Add the following endpoints (all require `require_admin`):
   {
     "openrouter_model": "anthropic/claude-3.5-sonnet",
     "openrouter_api_key": "sk-...a3f9",
-    "max_keywords_per_article": 6
+    "max_keywords_per_article": 6,
+    "cron_fetch_interval": 15,
+    "cron_refresh_weights_hour": 3
   }
   ```
-  API keys are always masked in the response.
+  API keys are always masked. Non-sensitive keys returned as-is.
 
 - `PATCH /admin/config` — partial update; body may contain any subset of the overridable keys:
   ```json
   { "openrouter_model": "openai/gpt-4o" }
   ```
-  Returns the updated config (masked). Sending an empty string for an API key deletes the DB override (falls back to env var).
+  Returns the updated config (masked). Sending an empty string for an API key deletes the DB override (falls back to env var). Changes to `cron_fetch_interval` and `cron_refresh_weights_hour` are persisted but take effect on next worker restart.
+
+- **`GET /stats` extension**: add `cron_fetch_interval_minutes` (integer) to the top-level of the `GET /stats` response so the PWA can compute the "Next fetch" countdown (E7-S27) without hardcoding. The value is read from `SettingsService` (DB override then env var fallback).
+  ```json
+  { "cron_fetch_interval_minutes": 15, "articles": { … }, … }
+  ```
 
 - `GET /admin/models` — proxies the OpenRouter models catalogue, applies server-side filters, and returns a curated list ready for the PWA selector:
   - Calls `GET https://openrouter.ai/api/v1/models` with the stored OpenRouter API key.
@@ -1158,6 +1170,8 @@ Add the following endpoints (all require `require_admin`):
 - `GET /admin/models` with no API key configured returns `424`
 - Non-admin calling any of these endpoints receives `403`
 
+**Docs to update**: add `GET /admin/config`, `PATCH /admin/config`, and `GET /admin/models` endpoint specs to `docs/API_SPEC.md`. Also extend the `GET /stats` response shape with `cron_fetch_interval_minutes`.
+
 ---
 
 #### [ ] E8-S4 — PWA admin screen
@@ -1166,17 +1180,18 @@ Add the following endpoints (all require `require_admin`):
 
 **Profile screen changes**:
 
-- Show an "Administration" menu item in `Profile.tsx` (below "Manage sources") only when the current user is admin — determined via a new field `is_admin` returned by `GET /me` (extend the E7-S1 response)
+- Show an "Administration" menu item in `Profile.tsx` (below "Manage sources") only when the current user is admin — determined via the `is_admin` field returned by `GET /me` (added in E7-S9)
 - Tapping "Administration" navigates to `/admin`
 
 **Admin screen (`Admin.tsx`)**:
 
 - Protected: redirect to `/` if user is not admin (client-side guard in addition to API-level guard)
 - Header: "Administration" with a back button
-- Three config rows, each with a label, masked current value, and an edit button:
+- Four config rows, each with a label, current value, and an edit button:
   - **OpenRouter API key** — masked display; edit opens an inline input (password type)
   - **OpenRouter model** — shows current model name; edit opens a searchable `<select>` (or dropdown list) populated by `GET /admin/models`. Each option displays `{name} — {input_price}$ in / {output_price}$ out per M tokens`. A loading state is shown while the model list is fetching; if the call fails (no API key, network error) the field falls back to a plain text input so the admin can still type a model ID manually.
-  - **Miniflux API key** — masked display; edit opens an inline input (password type)
+  - **Fetch interval** — integer input (minutes); helper text "How often the pipeline fetches new articles. Takes effect on next worker restart."
+  - **Weight refresh hour** — integer input (0–23, UTC); helper text "UTC hour for the daily keyword-weight recompute. Takes effect on next worker restart."
 - Each row has a "Save" button that calls `PATCH /admin/config` with only that key; shows a success checkmark or error inline
 - Unsaved changes are discarded on navigation (no dirty-state warning needed)
 
@@ -1187,6 +1202,9 @@ Add the following endpoints (all require `require_admin`):
 - Selecting a model from the dropdown and saving sends its `id` to `PATCH /admin/config`; the displayed value updates without a full page reload
 - If `GET /admin/models` fails, the field degrades to a plain text input (no broken UI)
 - API key fields never show the plaintext value fetched from the server (masked on display, only the new value typed by the user is sent)
+- Fetch interval and weight refresh hour fields display the current effective value (DB override or env var default)
+
+**Docs to update**: add the `GET /admin/users` and `PATCH /admin/users/{user_id}/password` endpoint specs to `docs/API_SPEC.md` (done here alongside E8-S5 which shares the same file section).
 
 ---
 
@@ -1226,6 +1244,8 @@ Add the following endpoints (all require `require_admin`):
 - Non-admin users do not see the Users section (client-side guard + API-level `403`)
 - Password input is never echoed in plaintext in the UI after save
 
+**Docs to update**: add `GET /admin/users` and `PATCH /admin/users/{user_id}/password` to `docs/API_SPEC.md`.
+
 ---
 
 #### [ ] E8-S6 — Cron consolidation: move scheduled jobs into the Refresh Worker
@@ -1252,9 +1272,10 @@ A concurrent Railway cron run and a manual "Run now" trigger can execute `cron_f
           await _run_pipeline()
   ```
   The existing `POST /run` handler is updated to `asyncio.create_task(_guarded_run())` instead of its current inline `_guarded()` closure. If both paths called `_run_pipeline()` directly without this wrapper, the lock would never be acquired by the scheduler and the two paths could race.
-- On FastAPI `startup` event, create an `AsyncIOScheduler` and register:
-  - `_guarded_run` via `CronTrigger("*/15 * * * *")` (wall-clock aligned, same as the current Railway cron) — `misfire_grace_time=300` so a restart close to the trigger doesn't skip the job. Use `CronTrigger` rather than `IntervalTrigger` so the fire times are predictable and `last_fetched_at + 15 min` (computed in E7-S27) remains a valid client-side estimate.
-  - `cron_refresh_weights.run()` directly (no pipeline lock needed — it's independent) daily at 03:00 — `misfire_grace_time=3600`
+- On FastAPI `startup` event, read `CRON_FETCH_INTERVAL` (integer minutes) and `CRON_REFRESH_WEIGHTS_HOUR` (integer UTC hour) from `SettingsService` (DB override then env var fallback), then create an `AsyncIOScheduler` and register:
+  - `_guarded_run` via `CronTrigger(minute=f"*/{cron_fetch_interval}")` (wall-clock aligned) — `misfire_grace_time=300` so a restart close to the trigger doesn't skip the job. Use `CronTrigger` rather than `IntervalTrigger` so the fire times are predictable and `last_fetched_at + N min` (computed in E7-S27 via `GET /stats`) remains a valid client-side estimate.
+  - `cron_refresh_weights.run()` directly (no pipeline lock needed — it's independent) daily at `cron_refresh_weights_hour:00 UTC` — `misfire_grace_time=3600`
+- The scheduler reads these values once at startup. Changes persisted via `PATCH /admin/config` (E8-S3) take effect on the next worker restart.
 
 **Concurrency behaviour**:
 - Scheduled run in progress → manual `POST /run` → `_lock.locked()` is True → returns `{"status": "already_running"}` immediately. PWA shows the button grayed as "Triggered". No double run.
@@ -1270,9 +1291,11 @@ A concurrent Railway cron run and a manual "Run now" trigger can execute `cron_f
 - Replace the three cron services (currently wrapping one-shot scripts in a restart loop) with a single `worker` service using the same image as `api`, start command `uvicorn niouzou.workers.refresh_worker:app --host 0.0.0.0 --port 8001`, `restart: unless-stopped`. No `depends_on` change needed (worker already depends on `db` and `miniflux` indirectly via the scripts).
 
 **Environment variable additions**:
-- `CRON_FETCH_INTERVAL` (already documented, default `15`) — used by the scheduler to set the interval in minutes
+- `CRON_FETCH_INTERVAL` (already documented, default `15`) — now also overridable via `app_settings` (E8-S2); used by the scheduler at startup
 - `CRON_ENRICH_AFTER_FETCH` — not needed; enrich is always chained after fetch in `_run_pipeline()`
-- `CRON_REFRESH_WEIGHTS_HOUR` — optional, default `3` — UTC hour for the daily weight refresh
+- `CRON_REFRESH_WEIGHTS_HOUR` — new, default `3` — UTC hour for the daily weight refresh; also overridable via `app_settings` (E8-S2)
+
+**Docs to update**: add `CRON_REFRESH_WEIGHTS_HOUR` to the environment variables table in `docs/ARCHITECTURE.md`. Update the "Known limitation" note in the Railway section to reference E8-S6 instead of E9-S1.
 
 **Acceptance criteria**:
 - After deployment, the Railway project shows 3 services: `api`, `pwa`, `refresh-worker`
@@ -1284,7 +1307,7 @@ A concurrent Railway cron run and a manual "Run now" trigger can execute `cron_f
 
 **Out of scope**:
 - Persistent job state (APScheduler memory scheduler is sufficient; a missed daily job on restart is acceptable)
-- Exposing schedule configuration via the Admin UI (E8-S2/S3 scope)
+- Dynamic rescheduling without restart (interval changes require a worker restart — acceptable)
 - Per-user cron isolation
 
 ---

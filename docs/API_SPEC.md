@@ -294,11 +294,17 @@ Returns all RSS sources for the authenticated user.
       "id": "uuid",
       "name": "The Pragmatic Engineer",
       "url": "https://newsletter.pragmaticengineer.com/feed",
-      "created_at": "2024-01-01T00:00:00Z"
+      "created_at": "2024-01-01T00:00:00Z",
+      "fetch_full_content": false
     }
   ]
 }
 ```
+
+> `fetch_full_content` mirrors the Miniflux `crawler` flag (E7-S26). When
+> `true`, Miniflux fetches the full article HTML instead of relying on the
+> RSS payload. The flag lives on the shared Miniflux feed, so changes are
+> visible to every user subscribed to the same URL.
 
 ---
 
@@ -308,9 +314,16 @@ Add a new RSS source. The backend registers the feed in Miniflux and creates the
 **Request**
 ```json
 {
-  "url": "https://newsletter.pragmaticengineer.com/feed"
+  "url": "https://newsletter.pragmaticengineer.com/feed",
+  "fetch_full_content": false
 }
 ```
+
+> `fetch_full_content` is optional (default `false`). When `true`, the new
+> Miniflux feed is created with `crawler: true`. If the feed already exists
+> (another user is subscribed), the existing feed is updated to enable the
+> crawler (last-write-wins). Sending `false` never downgrades an existing
+> feed — use `PATCH /sources/{id}` to disable the crawler explicitly.
 
 **Response `201`**
 ```json
@@ -318,12 +331,31 @@ Add a new RSS source. The backend registers the feed in Miniflux and creates the
   "id": "uuid",
   "name": "The Pragmatic Engineer",
   "url": "https://newsletter.pragmaticengineer.com/feed",
-  "created_at": "2024-01-15T10:00:00Z"
+  "created_at": "2024-01-15T10:00:00Z",
+  "fetch_full_content": false
 }
 ```
 
 > The feed name is auto-discovered from the RSS feed metadata.
 > Returns `409` if the source URL already exists for this user.
+
+---
+
+### PATCH /sources/{id}
+Update the `fetch_full_content` flag on a source. The change is applied to
+the underlying Miniflux feed and therefore affects every user subscribed to
+the same URL — the PWA surfaces this warning before the toggle.
+
+**Request**
+```json
+{
+  "fetch_full_content": true
+}
+```
+
+**Response `200`** — same shape as `POST /sources`.
+
+> Returns `404` if the source does not belong to the authenticated user.
 
 ---
 

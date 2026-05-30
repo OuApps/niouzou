@@ -73,3 +73,70 @@ async def test_mark_entries_read_noop_when_empty():
     async with MinifluxClient(BASE, "k") as client:
         await client.mark_entries_read([])
     assert not route.called
+
+
+@respx.mock
+async def test_create_feed_passes_crawler_flag():
+    route = respx.post(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(201, json={"feed_id": 9})
+    )
+    async with MinifluxClient(BASE, "k") as client:
+        feed_id = await client.create_feed(
+            "https://x.dev/feed", category_id=1, crawler=True
+        )
+    assert feed_id == 9
+    import json
+
+    assert json.loads(route.calls[0].request.content) == {
+        "feed_url": "https://x.dev/feed",
+        "category_id": 1,
+        "crawler": True,
+    }
+
+
+@respx.mock
+async def test_create_feed_omits_crawler_when_false():
+    route = respx.post(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(201, json={"feed_id": 9})
+    )
+    async with MinifluxClient(BASE, "k") as client:
+        await client.create_feed("https://x.dev/feed", category_id=1)
+    import json
+
+    body = json.loads(route.calls[0].request.content)
+    # Default-false stays out of the payload so we never overwrite an upstream
+    # default Miniflux might apply.
+    assert "crawler" not in body
+
+
+@respx.mock
+async def test_update_feed_sends_crawler():
+    route = respx.put(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 42, "title": "X", "feed_url": "u", "crawler": True},
+        )
+    )
+    async with MinifluxClient(BASE, "k") as client:
+        feed = await client.update_feed(42, crawler=True)
+    assert feed.crawler is True
+    import json
+
+    assert json.loads(route.calls[0].request.content) == {"crawler": True}
+
+
+@respx.mock
+async def test_list_feeds_returns_crawler_state():
+    respx.get(f"{BASE}/v1/feeds").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": 1, "title": "A", "feed_url": "a", "crawler": True},
+                {"id": 2, "title": "B", "feed_url": "b", "crawler": False},
+                {"id": 3, "title": "C", "feed_url": "c"},  # no crawler key
+            ],
+        )
+    )
+    async with MinifluxClient(BASE, "k") as client:
+        feeds = await client.list_feeds()
+    assert {f.id: f.crawler for f in feeds} == {1: True, 2: False, 3: False}

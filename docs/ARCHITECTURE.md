@@ -36,7 +36,7 @@ External:
 > (`cron_fetch`, `cron_enrich`, `cron_refresh_weights`) are implemented as
 > separate Railway cron services that run the Python scripts one-shot on a
 > schedule, independently of the Refresh Worker. The diagram above shows the
-> **target** topology after the planned cron consolidation (see E9-S1). In the
+> **target** topology after the planned cron consolidation (see E8-S6). In the
 > current state there are 6 Railway services total: `api`, `pwa`,
 > `refresh-worker`, `cron-fetch`, `cron-enrich`, `cron-refresh-weights`.
 
@@ -228,7 +228,7 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
   - `cron-fetch` — Railway cron `*/15 * * * *`, `cron-fetch.railway.toml`, one-shot `python -m niouzou.crons.fetch`
   - `cron-enrich` — Railway cron `*/30 * * * *`, `cron-enrich.railway.toml`, one-shot `python -m niouzou.crons.enrich`
   - `cron-refresh-weights` — Railway cron `0 3 * * *`, `cron-refresh-weights.railway.toml`, one-shot `python -m niouzou.crons.refresh_weights`
-- **Known limitation**: the three Railway cron services call the DB directly, independently of the `refresh-worker`. There is no coordination lock between a Railway cron run and a simultaneous manual `POST /admin/refresh`. See E9-S1 for the planned consolidation.
+- **Known limitation**: the three Railway cron services call the DB directly, independently of the `refresh-worker`. There is no coordination lock between a Railway cron run and a simultaneous manual `POST /admin/refresh`. See E8-S6 for the planned consolidation.
 
 ### Docker Compose (self-hosted)
 - `docker-compose.yml` at repo root — one-command stack

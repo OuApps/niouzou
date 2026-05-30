@@ -14,7 +14,7 @@ name: niouzou-test
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17
     environment:
       POSTGRES_USER: niouzou
       POSTGRES_PASSWORD: niouzou

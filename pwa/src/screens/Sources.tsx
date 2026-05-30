@@ -1,12 +1,18 @@
 import { useState } from 'react'
-import { ArrowLeft, Trash2, Plus, Rss } from 'lucide-react'
+import { ArrowLeft, Trash2, Plus, Rss, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
-import { addSource, deleteSource, getSources, ApiError } from '../api'
+import {
+  addSource,
+  deleteSource,
+  getSources,
+  updateSource,
+  ApiError,
+} from '../api'
 import type { SourceFull } from '../types/api'
 
 export const Sources = () => {
@@ -15,15 +21,24 @@ export const Sources = () => {
   const [newUrl, setNewUrl] = useState('')
   const [urlError, setUrlError] = useState('')
   const [adding, setAdding] = useState(false)
+  const [fetchFullContent, setFetchFullContent] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   // Optimistic overlays over the fetched list (no effect copying into state).
   const [added, setAdded] = useState<SourceFull[]>([])
   const [removed, setRemoved] = useState<Set<string>>(new Set())
+  // Per-source crawler overrides applied on top of the server payload — lets
+  // the toggle reflect immediately without waiting for a refetch.
+  const [crawlerOverrides, setCrawlerOverrides] = useState<Record<string, boolean>>({})
+  const [togglingId, setTogglingId] = useState<string | null>(null)
 
   const sources: SourceFull[] = [
     ...(data?.sources ?? []).filter((s) => !removed.has(s.id)),
     ...added.filter((s) => !removed.has(s.id)),
-  ]
+  ].map((s) =>
+    s.id in crawlerOverrides
+      ? { ...s, fetch_full_content: crawlerOverrides[s.id] }
+      : s,
+  )
 
   const handleAdd = async () => {
     setUrlError('')
@@ -38,9 +53,10 @@ export const Sources = () => {
     }
     setAdding(true)
     try {
-      const created = await addSource(url)
+      const created = await addSource(url, fetchFullContent)
       setAdded((prev) => [...prev, created])
       setNewUrl('')
+      setFetchFullContent(false)
     } catch (err) {
       setUrlError(
         err instanceof ApiError && err.status === 409
@@ -72,6 +88,23 @@ export const Sources = () => {
         next.delete(id)
         return next
       }) // restore on failure
+    }
+  }
+
+  const handleToggleFullContent = async (source: SourceFull) => {
+    const next = !source.fetch_full_content
+    setCrawlerOverrides((prev) => ({ ...prev, [source.id]: next }))
+    setTogglingId(source.id)
+    try {
+      await updateSource(source.id, { fetch_full_content: next })
+    } catch {
+      // Rollback on failure.
+      setCrawlerOverrides((prev) => ({
+        ...prev,
+        [source.id]: source.fetch_full_content,
+      }))
+    } finally {
+      setTogglingId(null)
     }
   }
 
@@ -150,6 +183,30 @@ export const Sources = () => {
               Add
             </button>
           </div>
+          <label
+            className="flex items-start gap-2"
+            style={{ marginTop: 10, cursor: 'pointer', fontSize: 12 }}
+          >
+            <input
+              type="checkbox"
+              checked={fetchFullContent}
+              onChange={(e) => setFetchFullContent(e.target.checked)}
+              style={{ marginTop: 2, accentColor: 'var(--accent)' }}
+            />
+            <span style={{ color: 'var(--text-secondary)' }}>
+              Récupérer l'article complet
+              <span
+                style={{
+                  display: 'block',
+                  color: 'var(--text-tertiary)',
+                  fontSize: 11,
+                  marginTop: 2,
+                }}
+              >
+                Recommandé pour les sites où le flux RSS ne contient qu'un résumé.
+              </span>
+            </span>
+          </label>
           {urlError && (
             <p style={{ fontSize: 11, color: 'var(--action-dislike)', marginTop: 6, paddingLeft: 2 }}>
               {urlError}
@@ -175,52 +232,59 @@ export const Sources = () => {
             {sources.map((source) => (
               <div
                 key={source.id}
-                className="glass-sm flex items-center gap-3"
+                className="glass-sm flex flex-col gap-2"
                 style={{ borderRadius: 16, padding: '12px 14px' }}
               >
-                <div
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 10,
-                    background: 'var(--accent-subtle)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--accent)',
-                    flexShrink: 0,
-                  }}
-                >
-                  <Rss size={14} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{source.name}</p>
-                  <p
+                <div className="flex items-center gap-3">
+                  <div
                     style={{
-                      fontSize: 10,
-                      color: 'var(--text-tertiary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      background: 'var(--accent-subtle)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'var(--accent)',
+                      flexShrink: 0,
                     }}
                   >
-                    {source.url}
-                  </p>
+                    <Rss size={14} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{source.name}</p>
+                    <p
+                      style={{
+                        fontSize: 10,
+                        color: 'var(--text-tertiary)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {source.url}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleDelete(source.id)}
+                    aria-label={confirmDelete === source.id ? 'Confirm delete' : `Delete ${source.name}`}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      padding: 6,
+                      cursor: 'pointer',
+                      color: confirmDelete === source.id ? '#f87171' : 'var(--text-tertiary)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleDelete(source.id)}
-                  aria-label={confirmDelete === source.id ? 'Confirm delete' : `Delete ${source.name}`}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 6,
-                    cursor: 'pointer',
-                    color: confirmDelete === source.id ? '#f87171' : 'var(--text-tertiary)',
-                    flexShrink: 0,
-                  }}
-                >
-                  <Trash2 size={16} />
-                </button>
+                <FullContentToggle
+                  source={source}
+                  busy={togglingId === source.id}
+                  onToggle={() => handleToggleFullContent(source)}
+                />
               </div>
             ))}
           </div>
@@ -229,3 +293,51 @@ export const Sources = () => {
     </div>
   )
 }
+
+interface FullContentToggleProps {
+  source: SourceFull
+  busy: boolean
+  onToggle: () => void
+}
+
+const FullContentToggle = ({ source, busy, onToggle }: FullContentToggleProps) => (
+  <div
+    className="flex items-start gap-2"
+    style={{
+      paddingTop: 8,
+      borderTop: '1px solid var(--divider)',
+    }}
+  >
+    <FileText
+      size={12}
+      style={{ color: 'var(--text-tertiary)', flexShrink: 0, marginTop: 3 }}
+    />
+    <div className="flex-1 min-w-0">
+      <label
+        className="flex items-center justify-between gap-3"
+        style={{ cursor: busy ? 'default' : 'pointer', fontSize: 12 }}
+      >
+        <span style={{ color: 'var(--text-secondary)' }}>
+          Récupérer l'article complet
+        </span>
+        <input
+          type="checkbox"
+          checked={source.fetch_full_content}
+          disabled={busy}
+          onChange={onToggle}
+          style={{ accentColor: 'var(--accent)' }}
+        />
+      </label>
+      <p
+        style={{
+          fontSize: 10,
+          color: 'var(--text-tertiary)',
+          marginTop: 2,
+          lineHeight: 1.4,
+        }}
+      >
+        Ce réglage s'applique à tous les utilisateurs abonnés à cette source.
+      </p>
+    </div>
+  </div>
+)

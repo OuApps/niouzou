@@ -24,6 +24,7 @@ class MinifluxFeed:
     id: int
     title: str
     feed_url: str
+    crawler: bool
 
     @classmethod
     def from_api(cls, data: dict) -> "MinifluxFeed":
@@ -31,6 +32,7 @@ class MinifluxFeed:
             id=data["id"],
             title=data.get("title") or data.get("feed_url") or "(untitled feed)",
             feed_url=data.get("feed_url") or "",
+            crawler=bool(data.get("crawler", False)),
         )
 
 
@@ -144,14 +146,29 @@ class MinifluxClient:
             raise RuntimeError("Miniflux returned no categories")
         return categories[0]["id"]
 
-    async def create_feed(self, feed_url: str, *, category_id: int) -> int:
-        """Subscribe Miniflux to ``feed_url``. Returns the new feed id."""
-        resp = await self._client.post(
-            "/v1/feeds",
-            json={"feed_url": feed_url, "category_id": category_id},
-        )
+    async def create_feed(
+        self, feed_url: str, *, category_id: int, crawler: bool = False
+    ) -> int:
+        """Subscribe Miniflux to ``feed_url``. Returns the new feed id.
+
+        ``crawler=True`` tells Miniflux to fetch the full article HTML for each
+        entry rather than relying on whatever the RSS feed inlines — useful
+        when the feed only exposes teasers.
+        """
+        payload: dict = {"feed_url": feed_url, "category_id": category_id}
+        if crawler:
+            payload["crawler"] = True
+        resp = await self._client.post("/v1/feeds", json=payload)
         resp.raise_for_status()
         return resp.json()["feed_id"]
+
+    async def update_feed(self, feed_id: int, *, crawler: bool) -> MinifluxFeed:
+        """Toggle the ``crawler`` flag on an existing feed."""
+        resp = await self._client.put(
+            f"/v1/feeds/{feed_id}", json={"crawler": crawler}
+        )
+        resp.raise_for_status()
+        return MinifluxFeed.from_api(resp.json())
 
     async def find_feed_by_url(self, feed_url: str) -> int | None:
         """Return the id of an existing feed whose ``feed_url`` matches, if any.
@@ -166,6 +183,12 @@ class MinifluxClient:
             if feed.get("feed_url") == feed_url:
                 return feed["id"]
         return None
+
+    async def list_feeds(self) -> list[MinifluxFeed]:
+        """Return all feeds Miniflux currently has subscribed."""
+        resp = await self._client.get("/v1/feeds")
+        resp.raise_for_status()
+        return [MinifluxFeed.from_api(f) for f in resp.json()]
 
     async def get_feed(self, feed_id: int) -> MinifluxFeed:
         """Fetch a feed's metadata (used to discover its display title)."""

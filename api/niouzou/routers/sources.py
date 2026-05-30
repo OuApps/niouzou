@@ -1,4 +1,4 @@
-"""Sources endpoints: list, add, remove."""
+"""Sources endpoints: list, add, update, remove."""
 
 import uuid
 from typing import Annotated
@@ -6,7 +6,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 
 from niouzou.deps import CurrentUser
-from niouzou.schemas.sources import SourceCreate, SourceOut, SourcesListResponse
+from niouzou.schemas.sources import (
+    SourceCreate,
+    SourceOut,
+    SourcesListResponse,
+    SourceUpdate,
+)
 from niouzou.services.sources_service import SourcesService
 
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -25,7 +30,21 @@ async def list_sources(
 async def create_source(
     body: SourceCreate, user: CurrentUser, service: SourcesServiceDep
 ) -> SourceOut:
-    return await service.create_source(user.id, body.url)
+    return await service.create_source(
+        user.id, body.url, fetch_full_content=body.fetch_full_content
+    )
+
+
+@router.patch("/{source_id}", response_model=SourceOut)
+async def update_source(
+    source_id: uuid.UUID,
+    body: SourceUpdate,
+    user: CurrentUser,
+    service: SourcesServiceDep,
+) -> SourceOut:
+    return await service.update_source(
+        user.id, source_id, fetch_full_content=body.fetch_full_content
+    )
 
 
 @router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)

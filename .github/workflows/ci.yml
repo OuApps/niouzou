@@ -13,7 +13,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17
         env:
           POSTGRES_USER: niouzou
           POSTGRES_PASSWORD: niouzou
