@@ -1065,6 +1065,99 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
+#### [ ] E7-S28 — Sources: crawler toggle discret + feedback de confirmation
+
+**Problème** : Le bloc "Récupérer l'article complet" est toujours visible en bas de chaque carte source, même pour les sources où le crawl n'est pas pertinent. Il prend de la place et le message "Ce réglage s'applique à tous les utilisateurs…" est redondant. De plus, quand l'utilisateur coche la case, il n'a aucun retour visuel confirmant que l'action a été prise en compte.
+
+**Changements (PWA uniquement)** :
+
+- Remplacer le bloc `FullContentToggle` toujours visible par une icône "More" (`MoreHorizontal` ou `MoreVertical`, lucide-react, 16px, couleur `var(--text-tertiary)`) dans la ligne d'actions de chaque carte source (à droite du bouton de suppression).
+- Au clic sur cette icône, déplier/replier un panneau inline (non modal) en bas de la carte, contenant uniquement le toggle "Récupérer l'article complet" (label + checkbox, même style qu'actuellement).
+- Supprimer entièrement la phrase "Ce réglage s'applique à tous les utilisateurs abonnés à cette source."
+- Après un toggle réussi (appel API OK), afficher un bref retour visuel : remplacer temporairement (1,5 s) l'icône "More" par une icône `Check` verte (`#4ade80`), puis revenir à l'icône d'origine. Si l'appel échoue, revenir à l'état précédent sans crash.
+
+**Acceptance criteria** :
+
+- Le bloc "Récupérer l'article complet" n'est pas visible par défaut sur une carte source.
+- Un clic sur l'icône "More" affiche le panneau inline ; un second clic ou un clic ailleurs le referme.
+- Après un toggle réussi, l'icône `Check` verte apparaît pendant ~1,5 s avant de repasser à l'icône "More".
+- En cas d'erreur réseau, l'état du toggle est remis à sa valeur précédente et un message d'erreur inline est affiché (même pattern que les autres erreurs de la page).
+- La phrase "s'applique à tous les utilisateurs" n'apparaît plus nulle part.
+
+---
+
+#### [ ] E7-S29 — Scroll cassé sur Sources, Saved et Keywords
+
+**Problème** : Le défilement ne fonctionne pas sur trois écrans — Manage Sources (`/sources`), Saved (`/saved`) et Keywords (`/keywords`). L'utilisateur ne peut pas atteindre les éléments en bas de liste si la liste dépasse la hauteur du viewport.
+
+**Investigation** : Vérifier pour chaque écran que le conteneur de liste a `overflow-y: auto` (ou `scroll`) **et** une hauteur contrainte (soit via `flex-1 min-h-0` dans un parent flex column, soit via `h-full`). Sans `min-h-0`, un enfant flex peut dépasser sans déclencher le scroll. Vérifier aussi que `BlobBackground` ou un conteneur parent ne bloque pas le scroll via `overflow: hidden`.
+
+**Changements** :
+
+- `Sources.tsx` : s'assurer que la liste des sources est dans un conteneur scrollable qui ne dépasse pas la hauteur disponible.
+- `Saved.tsx` : vérifier la régression depuis E7-S20 — l'infinite scroll était censé fonctionner ; s'assurer que le conteneur de liste a bien `min-h-0` dans sa chaîne flex parente.
+- `Keywords.tsx` : même vérification et correction.
+
+**Acceptance criteria** :
+
+- Sur chaque écran, si la liste dépasse le viewport, l'utilisateur peut défiler jusqu'au dernier élément.
+- Le contenu ne déborde pas par-dessus la `BottomNav`.
+- Aucune régression sur l'infinite scroll de Saved et Keywords (E7-S12).
+
+---
+
+#### [ ] E7-S30 — Feed : article courant perdu au pull-to-refresh
+
+**Problème** : Quand l'utilisateur effectue un pull-to-refresh sur le feed, l'article affiché au top de la pile disparaît et ne réapparaît pas, alors qu'aucune action n'a été prise dessus (pas de like, dislike, save ou swipe).
+
+**Cause** : `postImpression` est appelé dès qu'un article atteint le top de la pile (Feed.tsx, hook `useEffect` sur `[articles, currentIndex]`). L'impression est persistée en base. Au pull-to-refresh, `clearSnapshot()` + `reloadKey++` déclenchent un nouveau `GET /feed`, qui filtre les articles déjà impressionnés (`ai.article_id IS NULL` dans `feed_service.py`). L'article courant est donc exclu du résultat, alors que l'utilisateur ne l'a pas encore traité.
+
+**Approche (frontend uniquement — pas de changement API)** :
+
+1. Dans le callback `refresh` (Feed.tsx), avant de vider le snapshot, capturer l'article courant (`articles[currentIndex]`) si aucune action n'a été prise dessus (c'est-à-dire si son index n'est pas dans `gone`). Stocker cet article dans un `useRef`.
+2. Après que le premier `GET /feed` frais a renvoyé ses résultats, vérifier si l'article capturé est absent de la nouvelle liste (par id). Si absent, le réinsérer en tête de liste.
+3. L'article réinséré est déjà dans `impressed.current`, donc aucun deuxième appel `postImpression` ne sera émis.
+
+**Acceptance criteria** :
+
+- Après un pull-to-refresh, l'article qui était au top sans action préalable apparaît en premier dans le feed rechargé.
+- Si l'utilisateur a swipé ou aimé l'article avant de puller, il n'est pas réinséré (comportement actuel correct préservé).
+- Aucun doublon dans la liste (l'article réinséré ne doit pas apparaître aussi dans la liste normale si l'API venait à le renvoyer malgré l'impression — protéger par déduplication sur `id`).
+- Le pull-to-refresh reste fluide, sans flash ni saut de position.
+
+---
+
+#### [ ] E7-S31 — System card : timer "Next enrichment" + statut fetch ambigu
+
+**Problème** : Deux lacunes d'information dans la System card (Profile) :
+
+1. **"Next enrichment" absent** : il y a "Last enrichment" mais pas d'estimation du prochain passage. L'utilisateur ne sait pas combien de temps attendre avant que les nouveaux articles soient enrichis.
+2. **"Next fetch: soon" persistant** : quand le fetch est en retard (le cron n'a pas encore démarré ou est en cours), `nextFetchLabel` retourne `'soon'` indéfiniment. L'utilisateur ne sait pas si le cron tourne ou s'il est bloqué.
+
+**Changements** :
+
+**Backend — `GET /stats` (admin.py + schemas/stats.py)** :
+- Ajouter `cron_enrich_interval_minutes: int` à `StatsResponse` (lire depuis `SettingsService`, même pattern que `cron_fetch_interval_minutes` ajouté en E8-S3).
+
+**PWA — Profile.tsx** :
+
+- Ajouter une row **"Next enrichment"** sous "Last enrichment", calculée côté client comme `last_enriched_at + cron_enrich_interval_minutes`. Même rendu que "Next fetch" : `in ~X min` ou `soon`.
+- Améliorer `nextFetchLabel` : distinguer trois états au lieu de deux :
+  - `diffMs > 0` → `in ~X min` (inchangé)
+  - `-2 min < diffMs ≤ 0` → `soon` (inchangé, le cron va se lancer)
+  - `diffMs ≤ -2 min` → `running…` (le cron est probablement en cours d'exécution)
+- Appliquer la même logique à une nouvelle fonction `nextEnrichLabel` pour la row "Next enrichment".
+- Lire `cron_enrich_interval_minutes` depuis `stats` (API), ne pas le hardcoder.
+
+**Acceptance criteria** :
+
+- La System card affiche une row "Next enrichment" avec un countdown ou "soon" / "running…".
+- "Next fetch" affiche "running…" quand le fetch est en retard de plus de 2 minutes.
+- `cron_enrich_interval_minutes` est exposé par `GET /stats` et utilisé côté client (pas de constante hardcodée pour l'intervalle d'enrichissement).
+- Aucune régression sur les rows existantes (Last fetch, Next fetch, Last enrichment, Articles pending, AI status, Run now).
+
+---
+
 ## EPIC 8 — Admin Panel
 
 **Goal**: Introduce an admin role. Admin users can view and update runtime configuration (LLM model, API keys) from within the app — no SSH or env-var editing required after initial setup.
