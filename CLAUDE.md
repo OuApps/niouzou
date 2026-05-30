@@ -70,6 +70,26 @@ Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SCORE_THRESHOLD`, `RANDOM_S
 The Miniflux API token is provisioned automatically from Miniflux's own DB
 (`api/niouzou/services/miniflux_bootstrap.py`) — no env var.
 
+## Local dev environment quirks
+
+- **Use `docker-compose` (hyphen), not `docker compose`.** The maintainer's
+  local Docker setup ships the standalone v1 binary; the Compose v2 plugin
+  is not installed, so `docker compose -f …` fails with
+  `unknown shorthand flag: 'f'`.
+- **Container runtime is Colima**, sized lean (2 CPU / 2 GiB RAM / 10 GiB
+  disk). Pulling large images may be tight — prefer `postgres:17` over
+  multi-arch manifest images that have triggered `exec format error` on
+  this setup in the past (`postgres:17-alpine` was one such case).
+- **Tests need the Postgres test container running** before pytest can do
+  anything: `docker-compose -f docker-compose.test.yml up -d` (port 5433),
+  then `DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test
+  uv run --project api pytest`. Tests skip cleanly if Postgres is
+  unreachable.
+- **No real Miniflux DB in tests.** `tests/conftest.py` short-circuits
+  `miniflux_bootstrap._cached_key` so `SourcesService` / `cron_fetch` never
+  try to open the sibling `miniflux` database. Miniflux HTTP is mocked with
+  respx — leave that pattern alone.
+
 ## Licence
 
 Apache 2.0 + Commons Clause — self-hosting allowed, commercial hosting of this software for third parties is not.
