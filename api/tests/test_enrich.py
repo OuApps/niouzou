@@ -84,33 +84,65 @@ def test_extract_content_falls_back_when_newspaper_text_empty(fake_newspaper):
     assert result.content == "plain rss"
 
 
-# ── EnrichmentService.generate_summaries ─────────────────────────────────────
+# ── EnrichmentService.generate_enrichment ────────────────────────────────────
 
 
-def test_generate_summaries_without_ai_uses_first_sentences():
+def test_generate_enrichment_without_ai_uses_first_sentences():
     svc = EnrichmentService(openrouter_client=None)
-    summaries = svc.generate_summaries("Title", _ARTICLE_TEXT)
-    assert summaries.summary_executive is None
-    assert summaries.summary_short == _first_sentences(_ARTICLE_TEXT)
+    result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
+    assert result.summary_executive is None
+    assert result.summary_short == _first_sentences(_ARTICLE_TEXT)
+    # Signals "AI not run" so the cron knows to fall back to TF-IDF.
+    assert result.keywords is None
 
 
-def test_generate_summaries_with_ai_parses_json():
+def test_generate_enrichment_with_ai_parses_json():
     client = FakeClient(
-        ['{"summary_short": "Punchy three liner.", "summary_executive": "- a\\n- b"}']
+        [
+            '{"summary_short": "Punchy three liner.", '
+            '"summary_executive": "- a\\n- b", '
+            '"keywords": [{"term": "rust", "salience": 0.9}]}'
+        ]
     )
     svc = EnrichmentService(openrouter_client=client)
-    summaries = svc.generate_summaries("Title", _ARTICLE_TEXT)
-    assert summaries.summary_short == "Punchy three liner."
-    assert summaries.summary_executive == "- a\n- b"
+    result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
+    assert result.summary_short == "Punchy three liner."
+    assert result.summary_executive == "- a\n- b"
+    assert result.keywords is not None
+    assert [kw.term for kw in result.keywords] == ["rust"]
+    assert result.keywords[0].salience == 0.9
 
 
-def test_generate_summaries_degrades_to_fallback_on_llm_failure():
+def test_generate_enrichment_degrades_to_fallback_on_llm_failure():
     client = FakeClient(["garbage", "still garbage"])  # never valid JSON
     svc = EnrichmentService(openrouter_client=client)
-    summaries = svc.generate_summaries("Title", _ARTICLE_TEXT)
-    # Never raises — falls back to first sentences.
-    assert summaries.summary_short == _first_sentences(_ARTICLE_TEXT)
-    assert summaries.summary_executive is None
+    result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
+    # Never raises — falls back to first sentences with keywords=None so the
+    # cron triggers its TF-IDF fallback path.
+    assert result.summary_short == _first_sentences(_ARTICLE_TEXT)
+    assert result.summary_executive is None
+    assert result.keywords is None
+
+
+def test_generate_enrichment_drops_malformed_keywords():
+    client = FakeClient(
+        [
+            '{"summary_short": "S.", "summary_executive": null, '
+            '"keywords": [{"term": "rust", "salience": 0.8}, '
+            '{"term": "", "salience": 0.5}, '
+            '{"term": "the", "salience": 0.5}, '
+            '{"term": "rust", "salience": 0.3}, '
+            '{"term": "memory safety", "salience": 1.5}]}'
+        ]
+    )
+    svc = EnrichmentService(openrouter_client=client)
+    result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
+    assert result.keywords is not None
+    terms = [kw.term for kw in result.keywords]
+    # Empty term, stopword "the", and duplicate "rust" all dropped. Salience
+    # 1.5 is clamped to 1.0.
+    assert terms == ["rust", "memory safety"]
+    assert result.keywords[1].salience == 1.0
 
 
 def test_ai_enabled_flag():
@@ -134,12 +166,20 @@ async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
     from niouzou.crons.enrich import enrich_article
 
     user, article = await _pending_article(db_session)
+    # One combined LLM reply now carries summaries + keywords.
     enrichment = EnrichmentService(
-        FakeClient(['{"summary_short": "Short.", "summary_executive": "- bullet"}'])
+        FakeClient(
+            [
+                '{"summary_short": "Short.", "summary_executive": "- bullet", '
+                '"keywords": [{"term": "rust", "salience": 0.9}]}'
+            ]
+        )
     )
-    ai_scoring = ScoringService(
-        ScoringPipeline(AIKeywordScorer(FakeClient(['[{"term": "rust", "salience": 0.9}]'])))
-    )
+    # AI pipeline is still needed for the relevance-score path and the
+    # ``scorer`` indicator stored on article_relevance_scores. Its scorer's
+    # ``extract_keywords`` is no longer called from the cron — the AI keywords
+    # come from the EnrichmentService reply.
+    ai_scoring = ScoringService(ScoringPipeline(AIKeywordScorer(FakeClient([]))))
     tfidf_scoring = ScoringService(ScoringPipeline(TFIDFScorer()))
 
     await enrich_article(
@@ -181,11 +221,10 @@ async def test_enrich_article_falls_back_to_tfidf_on_ai_keyword_failure(
     from niouzou.crons.enrich import enrich_article
 
     user, article = await _pending_article(db_session)
-    enrichment = EnrichmentService(openrouter_client=None)  # no AI summaries
-    # AI keyword scorer that always fails → cron must fall back to TF-IDF.
-    ai_scoring = ScoringService(
-        ScoringPipeline(AIKeywordScorer(FakeClient(["nope", "nope"])))
-    )
+    # LLM enrichment call always fails → cron must fall back to TF-IDF for
+    # both summaries (newspaper first sentences) and keywords.
+    enrichment = EnrichmentService(FakeClient(["nope", "nope"]))
+    ai_scoring = ScoringService(ScoringPipeline(AIKeywordScorer(FakeClient([]))))
     tfidf_scoring = ScoringService(ScoringPipeline(TFIDFScorer()))
 
     await enrich_article(

@@ -42,7 +42,7 @@ from niouzou.models import Article, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
 from niouzou.services.enrichment_service import EnrichmentService
-from niouzou.services.openrouter_client import OpenRouterClient, OpenRouterError
+from niouzou.services.openrouter_client import OpenRouterClient
 from niouzou.services.scoring_service import ScoringService
 from niouzou.services.settings_service import SettingsService
 
@@ -60,44 +60,6 @@ async def _pending_article_ids(session: AsyncSession, limit: int) -> list[uuid.U
     return list(rows.scalars().all())
 
 
-async def _store_keywords(
-    session: AsyncSession,
-    article: Article,
-    *,
-    ai_scoring: ScoringService,
-    tfidf_scoring: ScoringService,
-) -> tuple[ScoringService, str, str | None]:
-    """Extract + persist keywords, falling back to TF-IDF on any LLM failure.
-
-    Returns ``(service, method, error)``:
-      * ``service`` — the ScoringService that actually performed the extraction
-        (the caller uses it for ``score_article_for_user`` so the persisted
-        ``scorer`` indicator matches the real path).
-      * ``method`` — ``"ai"`` or ``"tfidf"``, written to
-        ``articles.enrichment_method`` (E7-S15).
-      * ``error`` — the exception string when AI was tried and failed (``None``
-        on success or pure TF-IDF). Written to ``articles.enrichment_error``.
-
-    ``ai_scoring`` is the config-selected pipeline (AI when a key is set); its
-    extractor already retries once internally, so a raised OpenRouterError here
-    means the model is unusable — we then use the dependency-free TF-IDF path.
-    """
-    if ai_scoring is tfidf_scoring:
-        await tfidf_scoring.extract_and_store_keywords(session, article)
-        return tfidf_scoring, "tfidf", None
-    try:
-        await ai_scoring.extract_and_store_keywords(session, article)
-        return ai_scoring, "ai", None
-    except OpenRouterError as exc:
-        logger.warning(
-            "enrich: AI keyword extraction failed for %s (%s), falling back to TF-IDF",
-            article.id,
-            exc,
-        )
-        await tfidf_scoring.extract_and_store_keywords(session, article)
-        return tfidf_scoring, "tfidf", str(exc)
-
-
 async def enrich_article(
     session: AsyncSession,
     article: Article,
@@ -106,7 +68,13 @@ async def enrich_article(
     ai_scoring: ScoringService,
     tfidf_scoring: ScoringService,
 ) -> None:
-    """Enrich a single article in the given (open) transaction."""
+    """Enrich a single article in the given (open) transaction.
+
+    The AI path uses a single combined LLM call (summaries + keywords) via
+    ``EnrichmentService.generate_enrichment`` — half the OpenRouter roundtrips
+    of the previous design. On LLM failure (or AI off), summaries fall back to
+    the newspaper-derived first sentences and keywords come from TF-IDF.
+    """
     owner_id = await session.scalar(
         select(Source.user_id).where(Source.id == article.source_id)
     )
@@ -132,30 +100,44 @@ async def enrich_article(
     if extracted.og_image_url and not article.og_image_url:
         article.og_image_url = extracted.og_image_url
 
-    # 2. Summaries (LLM or fallback; never raises).
+    # 2. Combined LLM call: summaries + keywords in one roundtrip.
     t0 = time.perf_counter()
-    logger.info("enrich[%s]: generating summaries...", article.id)
-    summaries = await asyncio.to_thread(
-        enrichment.generate_summaries, article.title, article.content
+    logger.info("enrich[%s]: generating enrichment (summaries + keywords)...", article.id)
+    enriched = await asyncio.to_thread(
+        enrichment.generate_enrichment, article.title, article.content
     )
     logger.info(
-        "enrich[%s]: summaries generated in %.2fs (short=%d chars, exec=%d chars)",
+        "enrich[%s]: enrichment generated in %.2fs (short=%d, exec=%d, keywords=%s)",
         article.id,
         time.perf_counter() - t0,
-        len(summaries.summary_short or ""),
-        len(summaries.summary_executive or ""),
+        len(enriched.summary_short or ""),
+        len(enriched.summary_executive or ""),
+        len(enriched.keywords) if enriched.keywords is not None else "n/a",
     )
-    if not summaries.summary_short:
-        summaries.summary_short = extracted.fallback_summary
-    article.summary_short = summaries.summary_short
-    article.summary_executive = summaries.summary_executive
+    if not enriched.summary_short:
+        enriched.summary_short = extracted.fallback_summary
+    article.summary_short = enriched.summary_short
+    article.summary_executive = enriched.summary_executive
 
-    # 3. Keywords (AI with TF-IDF fallback) — persisted via ScoringService.
+    # 3. Keyword persistence — AI keywords when the combined call returned
+    # some, TF-IDF fallback otherwise. ``keywords is None`` signals the LLM
+    # call itself failed (or AI is off); an empty list means it ran cleanly
+    # but had nothing useful — we still treat that as needing TF-IDF.
     t0 = time.perf_counter()
-    logger.info("enrich[%s]: extracting keywords...", article.id)
-    used, method, ai_error = await _store_keywords(
-        session, article, ai_scoring=ai_scoring, tfidf_scoring=tfidf_scoring
-    )
+    if enriched.keywords:
+        await ai_scoring.store_keywords(session, article, enriched.keywords)
+        used, method, ai_error = ai_scoring, "ai", None
+    else:
+        if enriched.keywords is None and enrichment.ai_enabled:
+            ai_error = "LLM enrichment call failed or returned no keywords"
+            logger.warning(
+                "enrich: AI enrichment unusable for %s, falling back to TF-IDF",
+                article.id,
+            )
+        else:
+            ai_error = None
+        await tfidf_scoring.extract_and_store_keywords(session, article)
+        used, method = tfidf_scoring, "tfidf"
     logger.info(
         "enrich[%s]: keywords stored via %s in %.2fs%s",
         article.id,
@@ -165,7 +147,7 @@ async def enrich_article(
     )
 
     # 4. Per-user relevance score, frozen now (reads DB only, no LLM).
-    # Use the same service that performed extraction so the persisted ``scorer``
+    # Use the same service that persisted keywords so the stored ``scorer``
     # indicator matches the real path (TF-IDF when AI fell back).
     t0 = time.perf_counter()
     await used.score_article_for_user(session, article.id, owner_id)
