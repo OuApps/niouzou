@@ -11,7 +11,7 @@ Why synchronous (unlike ``MinifluxClient``)?
     batch job, so a blocking HTTP call here costs nothing in practice.
 
 API reference: https://openrouter.ai/docs/api-reference/chat-completion
-Auth: ``Authorization: Bearer <OPENROUTER_API_KEY>``.
+Uses the official OpenRouter Python SDK (v0.9+).
 """
 
 import json
@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 import httpx
+from openrouter import OpenRouter as _OpenRouterSDK
 
 from niouzou.config import get_settings
 
@@ -43,15 +44,10 @@ class OpenRouterClient:
         timeout: float = 60.0,
     ) -> None:
         self._model = model
-        self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                # Optional attribution headers OpenRouter surfaces in dashboards.
-                "HTTP-Referer": "https://github.com/niouzou",
-                "X-Title": "Niouzou",
-            },
-            timeout=timeout,
+        self._client = _OpenRouterSDK(
+            api_key=api_key,
+            http_referer="https://github.com/niouzou",
+            x_open_router_title="Niouzou",
         )
 
     @classmethod
@@ -94,27 +90,31 @@ class OpenRouterClient:
         self.close()
 
     def close(self) -> None:
-        self._client.close()
+        if hasattr(self._client, "close"):
+            self._client.close()
+        elif hasattr(self._client, "__exit__"):
+            self._client.__exit__(None, None, None)
 
     def complete(self, *, system: str, user: str, temperature: float = 0.2) -> str:
         """Single chat completion. Returns the assistant message content."""
-        resp = self._client.post(
-            "/chat/completions",
-            json={
-                "model": self._model,
-                "temperature": temperature,
-                "messages": [
+        try:
+            response = self._client.chat.send(
+                messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        try:
-            return data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise OpenRouterError(f"Unexpected OpenRouter response shape: {data!r}") from exc
+                model=self._model,
+                temperature=temperature,
+                stream=False,
+            )
+            content = response.choices[0].message.content
+            if not isinstance(content, str):
+                raise OpenRouterError(f"Unexpected content type: {type(content)}")
+            return content
+        except OpenRouterError:
+            raise
+        except Exception as exc:
+            raise OpenRouterError(f"OpenRouter call failed: {exc}") from exc
 
     def complete_json(
         self,
