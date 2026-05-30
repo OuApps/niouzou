@@ -48,6 +48,7 @@ class OpenRouterClient:
             api_key=api_key,
             http_referer="https://github.com/niouzou",
             x_open_router_title="Niouzou",
+            timeout_ms=int(timeout * 1000),
         )
 
     @classmethod

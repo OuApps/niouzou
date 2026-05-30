@@ -260,7 +260,7 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
               <option value="">Select a model</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name}
+                  {m.name} — ${m.input_price_per_m.toFixed(2)} in / ${m.output_price_per_m.toFixed(2)} out per M tokens
                 </option>
               ))}
             </select>
