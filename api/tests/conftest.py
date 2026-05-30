@@ -18,6 +18,14 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from niouzou.db import async_session_factory, engine
+from niouzou.services import miniflux_bootstrap
+
+
+# Stub the Miniflux token bootstrap for the entire test suite. Production code
+# resolves the token by connecting to a sibling `miniflux` database (see
+# miniflux_bootstrap.py); tests mock the Miniflux HTTP API with respx, so the
+# token value is irrelevant — short-circuit the cache so no DB call happens.
+miniflux_bootstrap._cached_key = "test-miniflux-token"
 
 
 async def _db_reachable() -> bool:
