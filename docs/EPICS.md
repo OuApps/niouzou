@@ -1027,6 +1027,44 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
+#### [ ] E7-S27 — System card: spacing fix + metric clarity
+
+**Problem**: The System card in the Profile tab has two presentation issues:
+
+1. **Spacing inconsistency**: The System card sits in a separate `<div>` with `marginTop: 24` outside the `flex flex-col gap-2` container that holds "Manage sources" and "Sign out". This makes the gap above System visually larger than between the other cards.
+
+2. **Confusing metrics in the expanded panel**:
+   - `1456 with AI · 384 with TF-IDF` — cumulative all-time counters; the user has no idea whether these refer to the last run or all articles ever processed.
+   - `Last error` — no context about which job it belongs to, and only shown when `hasFallback && last_error`, so an AI error that happened without a TF-IDF fallback is silently hidden.
+   - No "next run" information — the user can't tell when the next automatic fetch will happen.
+   - "Pending enrichment" label — "pending" is internal jargon; the user doesn't know what it means.
+
+**Changes (PWA only — no API changes)**:
+
+- Move the System card `<button>` + expanded `<SystemPanel>` inside the same `flex flex-col gap-2` container as "Manage sources" and "Sign out". Remove the outer `<div>` with `marginTop: 24`.
+
+- Replace the `total_ai / total_tfidf` counts line with a single **AI status** indicator:
+  - `AI · Working` (green dot) — if `last_error` is null, or `last_error_at < last_enriched_at` (last run succeeded)
+  - `AI · Last run failed` (amber dot) — if `last_error_at >= last_enriched_at` (last run errored)
+  - `AI · Off (TF-IDF)` (neutral) — if `total_ai === 0` and `total_tfidf_fallback === 0`
+
+- Add a **"Next fetch"** row below "Last fetch", computed client-side as `last_fetched_at + CRON_FETCH_INTERVAL_MS`. Show `in ~X min` when in the future, `soon` when overdue. This is an estimate — it can drift if a scheduled slot was skipped (e.g. a manual run was in progress); in that case the display stays on `soon` for up to one extra interval, which is acceptable.
+
+- Rename "Pending enrichment" → **"Articles pending"**.
+
+- Show the enrichment error whenever `last_error` is not null (remove the `hasFallback` gate). Use label **"Enrichment error"** instead of "Last error" so the user understands which job produced the error.
+
+**Acceptance criteria**:
+
+- The gap between "Sign out" and "System" matches the gap between "Manage sources" and "Sign out".
+- The expanded System panel shows: Last fetch / Next fetch / Last enrichment / Articles pending / AI status / (error if any) / Run now button.
+- "Next fetch" shows a countdown in whole minutes; when overdue it shows "soon".
+- The AI status indicator is correct for all three states (working / last run failed / off).
+- The enrichment error is shown whenever `last_error` is non-null, regardless of whether a TF-IDF fallback occurred.
+- No regression on the "Run now" button behaviour.
+
+---
+
 ## EPIC 8 — Admin Panel
 
 **Goal**: Introduce an admin role. Admin users can view and update runtime configuration (LLM model, API keys) from within the app — no SSH or env-var editing required after initial setup.
@@ -1187,6 +1225,67 @@ Add the following endpoints (all require `require_admin`):
 - `PATCH /admin/users/{non_existent_id}/password` returns `404`
 - Non-admin users do not see the Users section (client-side guard + API-level `403`)
 - Password input is never echoed in plaintext in the UI after save
+
+---
+
+#### [ ] E8-S6 — Cron consolidation: move scheduled jobs into the Refresh Worker
+
+**Problem**: As of E7-S16, there are **6 Railway services** for the backend: `api`, `pwa`, `refresh-worker`, `cron-fetch`, `cron-enrich`, `cron-refresh-weights`. The three cron services execute the pipeline scripts one-shot directly against the DB, completely bypassing the `refresh-worker`. This creates two parallel execution paths with no coordination:
+- Railway crons call the DB directly (no lock, no awareness of each other)
+- `POST /admin/refresh` calls the `refresh-worker`, which owns a single `asyncio.Lock`
+
+A concurrent Railway cron run and a manual "Run now" trigger can execute `cron_fetch` or `cron_enrich` simultaneously, with no mutual exclusion. Additionally `cron_fetch` (every 15 min) and `cron_enrich` (every 30 min) are not chained — articles fetched at 14:15 may wait until 14:30 to be enriched.
+
+**Goal**: Eliminate the three Railway cron services. Move all scheduled execution into the `refresh-worker` using APScheduler. The worker becomes the single point of truth for scheduled and on-demand pipeline execution.
+
+**API changes**: none — `POST /admin/refresh` continues to proxy to `refresh-worker.railway.internal/run`.
+
+**Worker changes** (`api/niouzou/workers/refresh_worker.py`):
+- Add `apscheduler[asyncio]` dependency (or `APScheduler>=3.10`)
+- Extract a shared `_guarded_run()` coroutine that both the scheduler and the `POST /run` endpoint call — this is the critical point for correct mutual exclusion:
+  ```python
+  async def _guarded_run() -> None:
+      if _lock.locked():
+          logger.info("refresh_worker: scheduled run skipped — already running")
+          return
+      async with _lock:
+          await _run_pipeline()
+  ```
+  The existing `POST /run` handler is updated to `asyncio.create_task(_guarded_run())` instead of its current inline `_guarded()` closure. If both paths called `_run_pipeline()` directly without this wrapper, the lock would never be acquired by the scheduler and the two paths could race.
+- On FastAPI `startup` event, create an `AsyncIOScheduler` and register:
+  - `_guarded_run` via `CronTrigger("*/15 * * * *")` (wall-clock aligned, same as the current Railway cron) — `misfire_grace_time=300` so a restart close to the trigger doesn't skip the job. Use `CronTrigger` rather than `IntervalTrigger` so the fire times are predictable and `last_fetched_at + 15 min` (computed in E7-S27) remains a valid client-side estimate.
+  - `cron_refresh_weights.run()` directly (no pipeline lock needed — it's independent) daily at 03:00 — `misfire_grace_time=3600`
+
+**Concurrency behaviour**:
+- Scheduled run in progress → manual `POST /run` → `_lock.locked()` is True → returns `{"status": "already_running"}` immediately. PWA shows the button grayed as "Triggered". No double run.
+- Manual run in progress → scheduler fires → `_lock.locked()` is True → `_guarded_run()` logs "skipped" server-side and returns. Next scheduled slot is in ≤15 min. No user-visible message needed (user triggered the run themselves).
+- First-come, first-served: no priority between manual and scheduled. Whoever acquires `_lock` first runs; the other yields.
+- Log scheduler start, job fire, and job completion at INFO level.
+
+**Railway cleanup**:
+- Delete `api/cron-fetch.railway.toml`, `api/cron-enrich.railway.toml`, `api/cron-refresh-weights.railway.toml`
+- Remove the three cron services from the Railway dashboard **before** deploying the updated worker, to avoid a double-run window.
+
+**Docker Compose changes** (`docker-compose.yml`):
+- Replace the three cron services (currently wrapping one-shot scripts in a restart loop) with a single `worker` service using the same image as `api`, start command `uvicorn niouzou.workers.refresh_worker:app --host 0.0.0.0 --port 8001`, `restart: unless-stopped`. No `depends_on` change needed (worker already depends on `db` and `miniflux` indirectly via the scripts).
+
+**Environment variable additions**:
+- `CRON_FETCH_INTERVAL` (already documented, default `15`) — used by the scheduler to set the interval in minutes
+- `CRON_ENRICH_AFTER_FETCH` — not needed; enrich is always chained after fetch in `_run_pipeline()`
+- `CRON_REFRESH_WEIGHTS_HOUR` — optional, default `3` — UTC hour for the daily weight refresh
+
+**Acceptance criteria**:
+- After deployment, the Railway project shows 3 services: `api`, `pwa`, `refresh-worker`
+- The worker logs show scheduled job fires at approximately every 15 min and once at 03:00 UTC
+- `POST /admin/refresh` continues to work: returns `{"status": "started"}` or `{"status": "already_running"}` correctly
+- A manual `POST /admin/refresh` during a running scheduled job returns `already_running` (the lock is shared)
+- Docker Compose: `docker-compose up` starts the stack with a single `worker` service; no separate cron containers
+- No regression on `cron_refresh_weights` — keyword weights are recomputed daily
+
+**Out of scope**:
+- Persistent job state (APScheduler memory scheduler is sufficient; a missed daily job on restart is acceptable)
+- Exposing schedule configuration via the Admin UI (E8-S2/S3 scope)
+- Per-user cron isolation
 
 ---
 

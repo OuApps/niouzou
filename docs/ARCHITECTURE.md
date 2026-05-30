@@ -3,31 +3,42 @@
 ## Service Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Railway / Docker Compose              │
-│                                                             │
-│  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐  │
-│  │ Miniflux │    │   FastAPI    │    │   React PWA      │  │
-│  │  :8080   │◄───│   :8000      │◄───│   :3000          │  │
-│  └──────────┘    └──────┬───────┘    └──────────────────┘  │
-│                         │                                   │
-│                  ┌──────▼───────┐                          │
-│                  │  PostgreSQL  │                          │
-│                  │   :5432      │                          │
-│                  └──────────────┘                          │
-│                                                             │
-│  ┌─────────────────────────────────────────────────┐       │
-│  │  Cron Jobs (same Docker image as FastAPI)        │       │
-│  │  cron_fetch           — pull Miniflux → DB       │       │
-│  │  cron_enrich          — extract + score articles │       │
-│  │  cron_refresh_weights — daily keyword recompute  │       │
-│  └─────────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        Railway / Docker Compose                   │
+│                                                                  │
+│  ┌──────────┐    ┌──────────────┐    ┌──────────────────────┐   │
+│  │ Miniflux │    │   FastAPI    │    │     React PWA        │   │
+│  │  :8080   │◄───│   :8000      │◄───│  (nginx / :3000)     │   │
+│  └──────────┘    └──────┬───────┘    └──────────────────────┘   │
+│                         │  POST /admin/refresh                   │
+│                  ┌──────▼────────────┐                          │
+│                  │  Refresh Worker   │  ← always-on             │
+│                  │  :8000 (internal) │                          │
+│                  │  POST /run        │                          │
+│                  │  ├─ cron_fetch    │  every 15 min            │
+│                  │  ├─ cron_enrich   │  chained after fetch     │
+│                  │  └─ refresh_wts   │  daily 03:00             │
+│                  └──────┬────────────┘                          │
+│                         │                                        │
+│                  ┌──────▼───────┐                               │
+│                  │  PostgreSQL  │                               │
+│                  │   :5432      │                               │
+│                  └──────────────┘                               │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
 
 External:
   OpenRouter API  (optional, LLM routing)
   Miniflux        (RSS collection, official Docker image)
 ```
+
+> **Note — current vs target topology**: As of 2026-05-30 the three cron jobs
+> (`cron_fetch`, `cron_enrich`, `cron_refresh_weights`) are implemented as
+> separate Railway cron services that run the Python scripts one-shot on a
+> schedule, independently of the Refresh Worker. The diagram above shows the
+> **target** topology after the planned cron consolidation (see E9-S1). In the
+> current state there are 6 Railway services total: `api`, `pwa`,
+> `refresh-worker`, `cron-fetch`, `cron-enrich`, `cron-refresh-weights`.
 
 ---
 
@@ -209,11 +220,15 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
   Postgres with Miniflux, so they resolve a token directly from Miniflux's
   `api_keys` table on first call (see `services/miniflux_bootstrap.py`).
   The token is generated and INSERTed idempotently; no env var, no UI step.
-- Services communicate via Railway's internal network
-  (`*.railway.internal`).
-- Cron jobs use Railway's `cronSchedule` (the cron scripts are one-shot, so no
-  sleep loop is needed there); each cron service uses `RAILWAY_CONFIG_FILE`
-  to point at its `cron-*.railway.toml`.
+- Services communicate via Railway's internal network (`*.railway.internal`).
+- **Current cron setup (6 services total)**:
+  - `api` — FastAPI, `railway.toml`, always-on
+  - `pwa` — nginx, `pwa/railway.toml`, always-on
+  - `refresh-worker` — FastAPI mini-app, `refresh-worker.railway.toml`, always-on; receives `POST /run` proxied from the API's `POST /admin/refresh`; runs `cron_fetch → cron_enrich` chained with a single `asyncio.Lock`
+  - `cron-fetch` — Railway cron `*/15 * * * *`, `cron-fetch.railway.toml`, one-shot `python -m niouzou.crons.fetch`
+  - `cron-enrich` — Railway cron `*/30 * * * *`, `cron-enrich.railway.toml`, one-shot `python -m niouzou.crons.enrich`
+  - `cron-refresh-weights` — Railway cron `0 3 * * *`, `cron-refresh-weights.railway.toml`, one-shot `python -m niouzou.crons.refresh_weights`
+- **Known limitation**: the three Railway cron services call the DB directly, independently of the `refresh-worker`. There is no coordination lock between a Railway cron run and a simultaneous manual `POST /admin/refresh`. See E9-S1 for the planned consolidation.
 
 ### Docker Compose (self-hosted)
 - `docker-compose.yml` at repo root — one-command stack
