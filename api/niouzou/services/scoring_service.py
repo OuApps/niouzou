@@ -47,7 +47,21 @@ class ScoringService:
         """
         text = " ".join(filter(None, [article.title, article.content]))
         keywords = self.pipeline.extract_keywords(text)
-        # Top-N by salience; ties broken by the scorer's own ordering.
+        return await self.store_keywords(session, article, keywords)
+
+    async def store_keywords(
+        self,
+        session: AsyncSession,
+        article: Article,
+        keywords: list[ScoredKeyword],
+    ) -> list[ScoredKeyword]:
+        """Persist a pre-extracted keyword set (idempotent).
+
+        Used by the combined-LLM enrichment path where summaries and keywords
+        come from a single call — bypasses the pipeline's extractor while
+        keeping the same persistence semantics as ``extract_and_store_keywords``
+        (cap + upsert on ``(article_id, term)``).
+        """
         keywords = sorted(keywords, key=lambda k: -k.salience)[
             : self.max_keywords_per_article
         ]

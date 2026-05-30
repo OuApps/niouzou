@@ -5,11 +5,14 @@ orchestration (per docs/CONVENTIONS.md). Two responsibilities:
 
   * ``extract_content`` — fetch the article URL with newspaper4k, falling back
     to the RSS body when the fetch fails (paywall, block, network).
-  * ``generate_summaries`` — when AI is enabled, ask the LLM for an engaging
-    ``summary_short`` and a bullet-point ``summary_executive``.
+  * ``generate_enrichment`` — when AI is enabled, ask the LLM for engaging
+    summaries AND salient keywords in a single combined call (E8 perf fix).
+    A previous design split this into two roundtrips; combining them halves
+    the OpenRouter latency per article on a slow model.
 
-Keyword extraction and relevance scoring are NOT here — those go through
-``ScoringService`` (the pipeline + persistence bridge from Epic 3).
+Relevance scoring lives in ``ScoringService`` (Epic 3); keyword persistence
+also goes through it. The cron passes the LLM-extracted keywords to
+``ScoringService.store_keywords`` to avoid re-extracting on the AI path.
 
 All network calls here are blocking; the cron runs them off the event loop via
 ``asyncio.to_thread`` so the async DB session isn't starved.
@@ -19,6 +22,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from niouzou.scoring.base import ScoredKeyword
+from niouzou.scoring.stopwords import is_meaningful_term
 from niouzou.services.openrouter_client import OpenRouterClient
 
 logger = logging.getLogger("niouzou.enrichment")
@@ -27,11 +32,19 @@ logger = logging.getLogger("niouzou.enrichment")
 # self-hosted instance shouldn't need nltk corpora just to truncate text.
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
-_SUMMARY_SYSTEM = (
-    "You summarise news articles for a feed. Return ONLY a JSON object: "
-    '{"summary_short": "<3 engaging sentences that make the reader want to '
-    'click>", "summary_executive": "<exhaustive factual summary as markdown '
-    'bullet points, one per line starting with \'- \'>"}. '
+# Input cap for the combined LLM call. The lede + first paragraphs carry the
+# topic; sending more just inflates latency and cost on slow models. Down from
+# the previous 8000/6000 split for summaries/keywords.
+_MAX_INPUT_CHARS = 2500
+# Keyword cap negotiated in the prompt — persistence still applies its own cap.
+_MAX_KEYWORDS = 10
+
+_ENRICHMENT_SYSTEM = (
+    "You enrich news articles for a feed. Return ONLY a JSON object of the form "
+    '{"summary_short": "<2 engaging sentences that make the reader want to click>", '
+    '"summary_executive": "<3-5 markdown bullet points, one per line starting with \'- \'>", '
+    '"keywords": [{"term": "<lowercase 1-3 word topic>", "salience": <0.0-1.0>}]}. '
+    "At most 10 keywords. salience = how central the topic is (1.0 = main subject). "
     "Write in the article's language. No preamble, no commentary."
 )
 
@@ -45,9 +58,18 @@ class ExtractedContent:
 
 
 @dataclass(slots=True)
-class Summaries:
+class Enrichment:
+    """Combined output of the single LLM call: summaries + raw keywords.
+
+    ``keywords`` is ``None`` when AI is disabled or the call failed — the cron
+    then falls back to TF-IDF for keyword extraction. An empty list means the
+    LLM ran but returned no usable keywords (kept distinct from ``None`` so
+    the cron doesn't trigger fallback on a clean-but-empty reply).
+    """
+
     summary_short: str | None
     summary_executive: str | None
+    keywords: list[ScoredKeyword] | None = None
 
 
 def _first_sentences(text: str, n: int = 3) -> str | None:
@@ -110,38 +132,72 @@ class EnrichmentService:
             fallback_summary=_first_sentences(_strip_html(rss_fallback) or ""),
         )
 
-    def generate_summaries(self, title: str, content: str | None) -> Summaries:
-        """LLM summaries when AI is on; newspaper fallback otherwise / on failure.
+    def generate_enrichment(self, title: str, content: str | None) -> Enrichment:
+        """One combined LLM call: summaries + keywords. Newspaper fallback otherwise.
 
-        Never raises: a failed LLM call degrades to the fallback summary so the
-        article is still enriched. Blocking — call via ``asyncio.to_thread``.
+        Never raises: a failed LLM call degrades to a fallback ``Enrichment``
+        with ``keywords=None`` so the cron triggers its TF-IDF fallback path.
+        Blocking — call via ``asyncio.to_thread``.
         """
-        fallback = Summaries(_first_sentences(content or ""), None)
+        fallback = Enrichment(
+            summary_short=_first_sentences(content or ""),
+            summary_executive=None,
+            keywords=None,
+        )
         if self._client is None or not (content and content.strip()):
             return fallback
 
         body = f"Title: {title}\n\n{content}"
         try:
             return self._client.complete_json(
-                system=_SUMMARY_SYSTEM,
-                user=body[:8000],
-                parse=_parse_summaries,
+                system=_ENRICHMENT_SYSTEM,
+                user=body[:_MAX_INPUT_CHARS],
+                parse=_parse_enrichment,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to fallback, log it
-            logger.warning("enrich: LLM summary failed (%s), using fallback", exc)
+            logger.warning("enrich: LLM enrichment failed (%s), using fallback", exc)
             return fallback
 
 
-def _parse_summaries(data: object) -> Summaries:
+def _parse_enrichment(data: object) -> Enrichment:
     if not isinstance(data, dict):
-        raise ValueError("Expected a JSON object for summaries")
+        raise ValueError("Expected a JSON object for enrichment")
     short = data.get("summary_short")
     executive = data.get("summary_executive")
     short = str(short).strip() if short else None
     executive = str(executive).strip() if executive else None
     if not short:
-        raise ValueError("LLM summary missing summary_short")
-    return Summaries(summary_short=short, summary_executive=executive)
+        raise ValueError("LLM enrichment missing summary_short")
+    keywords = _parse_keywords(data.get("keywords"))
+    return Enrichment(
+        summary_short=short, summary_executive=executive, keywords=keywords
+    )
+
+
+def _parse_keywords(raw: object) -> list[ScoredKeyword]:
+    """Parse the keywords array; drops malformed/stopword/duplicate entries.
+
+    Returns ``[]`` (not ``None``) when the LLM omitted the field or returned
+    nothing usable — distinct from the outer ``keywords=None`` which signals
+    a transport-level failure to the cron.
+    """
+    if not isinstance(raw, list):
+        return []
+    keywords: list[ScoredKeyword] = []
+    seen: set[str] = set()
+    for item in raw:
+        try:
+            term = str(item["term"]).strip().lower()
+            salience = max(0.0, min(1.0, float(item["salience"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not term or term in seen or not is_meaningful_term(term):
+            continue
+        keywords.append(ScoredKeyword(term=term, salience=round(salience, 4)))
+        seen.add(term)
+        if len(keywords) >= _MAX_KEYWORDS:
+            break
+    return keywords
 
 
 def _strip_html(html: str | None) -> str | None:

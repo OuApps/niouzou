@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     openrouter_timeout: float = 60.0
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
-    feed_gravity: float = 1.5
+    feed_gravity: float = 2.0
     # Number of feedbacks below which the feed bypasses SCORE_THRESHOLD entirely
     # (E7-S6). A brand-new user has weight 0 for every keyword, so every score
     # ends up near 0.5 — a positive threshold would yield an empty feed on day
