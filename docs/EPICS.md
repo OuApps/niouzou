@@ -888,6 +888,145 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
+#### [x] E7-S20 — Saved screen: scroll & text overflow
+
+**Problem**: The Saved articles screen is missing proper scroll behaviour and long titles / sources overflow without being truncated, breaking the layout on mobile.
+
+**Changes**:
+
+- Ensure the list container is scrollable (overflow-y: auto or infinite scroll already in place via E7-S12 — verify it works end-to-end on real content).
+- Add `truncate` (single-line ellipsis) or `line-clamp-2` (two-line cap) on article titles in the Saved list rows, consistent with the Feed card style.
+- Add `truncate` on source names.
+- Tooltip (`title` attribute) on truncated text so the full string is readable on long-press / hover.
+
+**Acceptance criteria**:
+
+- A very long title never overflows its row container.
+- The list scrolls smoothly to the bottom on a full saved list.
+- Truncated text is readable in full via the native tooltip.
+
+---
+
+#### [x] E7-S21 — Premium articles: surface paywall limitations clearly
+
+**Problem**: When Miniflux fetches a paywalled article, the stored content is only the teaser visible before login. Nothing in the UI signals this to the user, so they tap "Read article" expecting full content and land on a paywall.
+
+**Changes**:
+
+- Detect premium/partial content: an article is considered partial when its `content` length is significantly shorter than its `summary_short` would suggest, or when a flag is returned by Miniflux (investigate available fields — `reading_time`, content length heuristic, or a dedicated field).
+- On the **article detail view**: show a banner or badge ("Contenu partiel — article premium") above the summary.
+- On the **"Read article" button**: change the label to something like "Voir sur le site (contenu limité)" and add a lock icon to make it clear the full article is behind a paywall.
+- On **Feed cards**: add a small lock icon badge on the thumbnail when the article is detected as premium.
+
+**Acceptance criteria**:
+
+- Premium articles are visually distinct from free articles on the card and in the detail view.
+- The CTA button wording sets the right expectation before the user taps it.
+- Non-premium articles are unaffected.
+
+---
+
+#### [ ] E7-S22 — Premium articles: exploration of credential-based full-content fetching
+
+**Goal**: Investigate whether Niouzou can retrieve the full content of paywalled articles by supplying user credentials (login / password) to the underlying fetch mechanism.
+
+**Questions to answer**:
+
+- Does Miniflux support per-feed cookie injection or HTTP Basic Auth that would allow fetching behind a paywall?
+- Could a headless browser step (e.g. Playwright) be added to the enrichment pipeline to log in and scrape full content, and is this feasible to self-host?
+- What are the legal and ToS implications for the target publications?
+- What would the architecture look like if credentials were stored per-source in the DB (encrypted)?
+
+**Output**: A short design note (added to `docs/ARCHITECTURE.md` or a new `docs/PREMIUM_FETCHING.md`) summarising findings, what is feasible, and a recommended approach or an explicit "out of scope" decision with rationale.
+
+**Acceptance criteria**: Design note written and reviewed — no code required for this story.
+
+---
+
+#### [x] E7-S23 — Article detail: back button returns to same feed position
+
+**Problem**: Tapping the back button from the article detail view triggers a "next article" action instead of restoring the feed at the article that was being viewed. The user loses their place.
+
+**Root cause to investigate**: The Feed state (current article index / stack) is likely reset on navigation, causing the feed to advance one position when the detail view unmounts or the back event is handled.
+
+**Expected behaviour**:
+
+- Tapping back from article detail returns to the Feed (or Saved / History, depending on the entry point) with the same article still shown — no advance, no scroll jump.
+- The article stack position is preserved across the detail route.
+
+**Implementation notes**:
+
+- Preserve the current article in Zustand (or React Router state) when navigating to `/articles/:id`.
+- On back navigation, restore that state rather than calling `nextArticle()`.
+- Cover the case where the user arrived from Saved or History — back should return to the correct list at the correct scroll position.
+
+**Acceptance criteria**:
+
+- Open an article from the Feed → tap back → the same article is displayed in the Feed (not the next one).
+- Open an article from Saved → tap back → Saved list is restored at the same scroll position.
+- No regression on the normal swipe-to-next flow.
+
+---
+
+#### [x] E7-S24 — Article detail: icon colours consistent with Feed
+
+**Problem**: The action icons on the article detail view (like, dislike, save, share…) use different colours than their counterparts on the Feed home screen, creating visual inconsistency.
+
+**Changes**:
+
+- Audit all icon colours in `ArticleDetail.tsx` (or equivalent) against the Feed card action icons.
+- Align them to the design tokens defined in `docs/DESIGN_SYSTEM.md` — do not hardcode new values.
+- Ensure hover / active states also match.
+
+**Acceptance criteria**:
+
+- Like icon: same colour on Feed card and article detail.
+- Dislike icon: same colour on Feed card and article detail.
+- Save icon: same colour on Feed card and article detail.
+- No new colour values introduced outside `DESIGN_SYSTEM.md`.
+
+---
+
+#### [ ] E7-S25 — CI: automated unit test pipeline
+
+**Goal**: Run the unit test suite automatically on every push and pull request so regressions are caught before merge.
+
+**Scope**:
+
+- API (Python / pytest) — existing and future unit tests under `api/`
+- PWA (TypeScript / Vitest or Jest) — if a test suite exists or is added
+
+**Implementation**:
+
+- Add a GitHub Actions workflow file at `.github/workflows/ci.yml`
+- Triggered on: `push` to `main`, and `pull_request` targeting `main`
+- Jobs:
+
+  **`test-api`**:
+  - Runs on `ubuntu-latest`
+  - Sets up Python 3.13
+  - Installs dependencies (`pip install -e ".[dev]"` or `pip install -r requirements-dev.txt`)
+  - Spins up a PostgreSQL service container (same major version as production) for tests that need a real DB
+  - Sets the required env vars (`DATABASE_URL` pointing to the service container, `JWT_SECRET`, `MINIFLUX_URL` as a dummy value)
+  - Runs `pytest api/ -q --tb=short`
+
+  **`test-pwa`** *(conditional — only if a test script exists in `pwa/package.json`)*:
+  - Runs on `ubuntu-latest`
+  - Sets up Node.js (match `.nvmrc` or `engines` field in `package.json`)
+  - Runs `npm ci && npm test -- --run` (non-interactive, no watch mode)
+
+- Both jobs must pass for the workflow to be green; either job failing blocks the PR.
+- Secrets: `JWT_SECRET` and any other sensitive values are stored as GitHub Actions secrets, not hardcoded.
+
+**Acceptance criteria**:
+
+- Pushing to `main` or opening a PR triggers the workflow automatically.
+- A failing test causes the workflow to exit non-zero and the check is marked red on the PR.
+- The workflow completes in under 3 minutes on a cold runner for the current test suite size.
+- No secrets appear in workflow logs.
+
+---
+
 ## EPIC 8 — Admin Panel
 
 **Goal**: Introduce an admin role. Admin users can view and update runtime configuration (LLM model, API keys) from within the app — no SSH or env-var editing required after initial setup.
@@ -952,11 +1091,34 @@ Add the following endpoints (all require `require_admin`):
   ```
   Returns the updated config (masked). Sending an empty string for an API key deletes the DB override (falls back to env var).
 
+- `GET /admin/models` — proxies the OpenRouter models catalogue, applies server-side filters, and returns a curated list ready for the PWA selector:
+  - Calls `GET https://openrouter.ai/api/v1/models` with the stored OpenRouter API key.
+  - **Filters applied**:
+    - Input price ≤ $0.10 / 1 M tokens
+    - Output price ≤ $0.40 / 1 M tokens
+    - Modality is `text→text` only (exclude multimodal-only, image-generation, embedding, etc.)
+    - Architecture suited for instruction-following / summarisation: exclude base/completion-only models (no instruct or chat variant). In practice: keep models whose `id` or `description` indicates chat/instruct capability, or whose `context_length` ≥ 8 000 (proxy for capable models).
+  - Response shape per item:
+    ```json
+    {
+      "id": "mistralai/mistral-7b-instruct",
+      "name": "Mistral 7B Instruct",
+      "input_price_per_m": 0.07,
+      "output_price_per_m": 0.07,
+      "context_length": 32768
+    }
+    ```
+  - Results are sorted by `input_price_per_m ASC` then `name ASC`.
+  - If the OpenRouter API key is not configured, returns `424 Failed Dependency` with a descriptive message.
+  - Results are cached in-process for 1 hour to avoid hammering the OpenRouter catalogue on every admin page open.
+
 **Acceptance criteria**:
 
 - `GET /admin/config` never returns a plaintext API key
 - `PATCH /admin/config` with a new model value is reflected immediately in subsequent calls to `GET /admin/config`
-- Non-admin calling either endpoint receives `403`
+- `GET /admin/models` returns only models within the price caps, text-to-text only, sorted by input price
+- `GET /admin/models` with no API key configured returns `424`
+- Non-admin calling any of these endpoints receives `403`
 
 ---
 
@@ -975,7 +1137,7 @@ Add the following endpoints (all require `require_admin`):
 - Header: "Administration" with a back button
 - Three config rows, each with a label, masked current value, and an edit button:
   - **OpenRouter API key** — masked display; edit opens an inline input (password type)
-  - **OpenRouter model** — shows current model string; edit opens a text input pre-filled with the current value
+  - **OpenRouter model** — shows current model name; edit opens a searchable `<select>` (or dropdown list) populated by `GET /admin/models`. Each option displays `{name} — {input_price}$ in / {output_price}$ out per M tokens`. A loading state is shown while the model list is fetching; if the call fails (no API key, network error) the field falls back to a plain text input so the admin can still type a model ID manually.
   - **Miniflux API key** — masked display; edit opens an inline input (password type)
 - Each row has a "Save" button that calls `PATCH /admin/config` with only that key; shows a success checkmark or error inline
 - Unsaved changes are discarded on navigation (no dirty-state warning needed)
@@ -983,7 +1145,9 @@ Add the following endpoints (all require `require_admin`):
 **Acceptance criteria**:
 
 - Non-admin users do not see the "Administration" link on Profile and are redirected away from `/admin`
-- Saving a new model string updates the value shown without a full page reload
+- The model dropdown is populated from `GET /admin/models`; each option shows name + input/output price
+- Selecting a model from the dropdown and saving sends its `id` to `PATCH /admin/config`; the displayed value updates without a full page reload
+- If `GET /admin/models` fails, the field degrades to a plain text input (no broken UI)
 - API key fields never show the plaintext value fetched from the server (masked on display, only the new value typed by the user is sent)
 
 ---

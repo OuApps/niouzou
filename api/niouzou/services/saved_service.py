@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 
+from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.models import (
     Article,
@@ -33,6 +34,7 @@ class SavedService:
         self, user_id: uuid.UUID, cursor: str | None, limit: int | None
     ) -> SavedResponse:
         page_size = _clamp_limit(limit)
+        premium_max_chars = get_settings().premium_content_max_chars
 
         # Returns NULL when the article has no keywords; coerced to [] in Python.
         keywords_subq = (
@@ -110,6 +112,10 @@ class SavedService:
                 scorer=r.scorer,
                 saved_at=r.saved_at,
                 keywords=list(r.keywords or []),
+                is_premium=(
+                    r.Article.content is not None
+                    and len(r.Article.content) < premium_max_chars
+                ),
             )
             for r in rows
         ]

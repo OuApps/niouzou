@@ -36,3 +36,6 @@ class ArticleDetail(BaseModel):
     feedback: ArticleFeedbackInfo | None
     # All keywords sorted by salience DESC (E7-S10). Empty list when unenriched.
     keywords: list[str] = []
+    # True when the stored content is suspiciously short for an enriched
+    # article — typically a paywall teaser (E7-S21).
+    is_premium: bool = False

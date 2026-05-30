@@ -9,6 +9,7 @@ import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { useFeedbackStore } from '../store/feedback'
+import { useFeedStore } from '../store/feed'
 import { getSaved, ApiError } from '../api'
 import type { SavedArticle } from '../types/api'
 
@@ -17,14 +18,29 @@ const PAGE_SIZE = 20
 
 export const Saved = () => {
   const navigate = useNavigate()
-  const [articles, setArticles] = useState<SavedArticle[]>([])
-  const [cursor, setCursor] = useState<string | null>(null)
-  const [hasMore, setHasMore] = useState(false)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  // Snapshot from a prior mount (e.g. came back from /articles/:id). When
+  // present, rehydrate state and skip the initial fetch so scroll + loaded
+  // pages are preserved (E7-S23).
+  const savedSnapshot = useFeedStore((s) => s.savedSnapshot)
+  const setSavedSnapshot = useFeedStore((s) => s.setSavedSnapshot)
+  const clearSavedSnapshot = useFeedStore((s) => s.clearSavedSnapshot)
+
+  const [articles, setArticles] = useState<SavedArticle[]>(
+    () => savedSnapshot?.articles ?? [],
+  )
+  const [cursor, setCursor] = useState<string | null>(
+    () => savedSnapshot?.cursor ?? null,
+  )
+  const [hasMore, setHasMore] = useState(() => savedSnapshot?.hasMore ?? false)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(
+    () => (savedSnapshot ? 'ready' : 'loading'),
+  )
   const [errorMsg, setErrorMsg] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
   const loadingMoreRef = useRef(false)
+  const hadSnapshotOnMount = useRef(savedSnapshot !== null)
+  const restoredScrollY = useRef(savedSnapshot?.scrollY ?? 0)
 
   // Session overlay: hide unsaved rows, prepend optimistically-saved articles.
   const feedbacks = useFeedbackStore((s) => s.feedbacks)
@@ -32,6 +48,13 @@ export const Saved = () => {
 
   // ── Initial load + reload ──────────────────────────────────────────────────
   useEffect(() => {
+    if (hadSnapshotOnMount.current) {
+      hadSnapshotOnMount.current = false
+      // Restore scroll on the next paint, once the rendered rows occupy
+      // enough height for the scroll position to be reachable.
+      requestAnimationFrame(() => window.scrollTo(0, restoredScrollY.current))
+      return
+    }
     let active = true
     setStatus('loading')
     getSaved(undefined, PAGE_SIZE)
@@ -52,7 +75,39 @@ export const Saved = () => {
     }
   }, [reloadKey])
 
-  const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+  const reload = useCallback(() => {
+    clearSavedSnapshot()
+    hadSnapshotOnMount.current = false
+    setReloadKey((k) => k + 1)
+  }, [clearSavedSnapshot])
+
+  // Persist a snapshot of the loaded list so navigating to an article detail
+  // and back doesn't lose the user's place. Scroll position is captured at
+  // the moment of navigation by the row's onClick (see below).
+  useEffect(() => {
+    if (status !== 'ready') return
+    setSavedSnapshot({
+      articles,
+      cursor,
+      hasMore,
+      scrollY: 0,
+    })
+  }, [status, articles, cursor, hasMore, setSavedSnapshot])
+
+  const openArticle = useCallback(
+    (id: string) => {
+      // Capture scroll at the click moment — the unmount can race a state
+      // update so we write it directly into the store.
+      setSavedSnapshot({
+        articles,
+        cursor,
+        hasMore,
+        scrollY: window.scrollY,
+      })
+      navigate(`/articles/${id}`)
+    },
+    [articles, cursor, hasMore, navigate, setSavedSnapshot],
+  )
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMore || !cursor) return
@@ -190,7 +245,7 @@ export const Saved = () => {
             {visibleArticles.map((article) => (
               <button
                 key={article.id}
-                onClick={() => navigate(`/articles/${article.id}`)}
+                onClick={() => openArticle(article.id)}
                 className="glass-sm flex items-start gap-3 w-full text-left"
                 style={{
                   borderRadius: 16,
@@ -218,19 +273,35 @@ export const Saved = () => {
                     className="flex items-center gap-2"
                     style={{ fontSize: 10, color: 'var(--text-tertiary)', marginBottom: 4 }}
                   >
-                    <span>{article.source.name}</span>
-                    <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
+                    <span
+                      title={article.source.name}
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        minWidth: 0,
+                        flexShrink: 1,
+                      }}
+                    >
+                      {article.source.name}
+                    </span>
+                    <span style={{ flexShrink: 0 }}>
+                      <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
+                    </span>
                   </div>
                   <h3
+                    title={article.title}
                     style={{
                       fontSize: 13,
                       fontWeight: 600,
                       lineHeight: 1.35,
                       margin: '0 0 4px',
                       color: 'var(--text-primary)',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
                       overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      wordBreak: 'break-word',
                     }}
                   >
                     {article.title}

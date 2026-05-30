@@ -8,6 +8,7 @@ import { ArticleCard } from '../components/ArticleCard'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useFeedbackStore } from '../store/feedback'
+import { useFeedStore } from '../store/feed'
 import { getFeed, postFeedback, postImpression, ApiError } from '../api'
 import type { FeedArticle, FeedbackAction } from '../types/api'
 
@@ -82,22 +83,45 @@ function EmptyDeck({
 }
 
 export const Feed = () => {
-  const [articles, setArticles] = useState<FeedArticle[]>([])
-  const [cursor, setCursor] = useState<string | null>(null)
-  const [hasMore, setHasMore] = useState(false)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  // Snapshot from a prior mount (e.g. user navigated to /articles/:id and
+  // tapped back). Hydrate state from it so the deck position is preserved.
+  const snapshot = useFeedStore((s) => s.snapshot)
+  const setSnapshot = useFeedStore((s) => s.setSnapshot)
+  const clearSnapshot = useFeedStore((s) => s.clearSnapshot)
+
+  const [articles, setArticles] = useState<FeedArticle[]>(
+    () => snapshot?.articles ?? [],
+  )
+  const [cursor, setCursor] = useState<string | null>(
+    () => snapshot?.cursor ?? null,
+  )
+  const [hasMore, setHasMore] = useState(() => snapshot?.hasMore ?? false)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(
+    () => (snapshot ? 'ready' : 'loading'),
+  )
   const [errorMsg, setErrorMsg] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
   // null = use server default. When the user opts into the relaxed empty
   // state, this becomes the active min_score override.
-  const [minScore, setMinScore] = useState<number | null>(null)
+  const [minScore, setMinScore] = useState<number | null>(
+    () => snapshot?.minScore ?? null,
+  )
   const loadingMoreRef = useRef(false) // re-entrancy guard (not read during render)
 
-  const [gone] = useState(() => new Set<number>())
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const impressed = useRef(new Set<string>())
+  const [gone] = useState<Set<number>>(
+    () => new Set<number>(snapshot?.goneIndices ?? []),
+  )
+  const [currentIndex, setCurrentIndex] = useState(
+    () => snapshot?.currentIndex ?? 0,
+  )
+  const impressed = useRef<Set<string>>(
+    new Set<string>(snapshot?.impressedIds ?? []),
+  )
   const setFeedback = useFeedbackStore((s) => s.setFeedback)
+  // True after the first mount has consumed any restored snapshot. Used to
+  // skip the initial-load effect when we already restored data.
+  const hadSnapshotOnMount = useRef(snapshot !== null)
 
   // Pull-to-refresh state
   const [pullY, setPullY] = useState(0)
@@ -118,6 +142,13 @@ export const Feed = () => {
   // First page (and pull-to-refresh / retry re-fetches via reloadKey). State is
   // only set from the resolved promise, never synchronously in the effect body.
   useEffect(() => {
+    // Initial mount with a restored snapshot: skip the fetch — the deck is
+    // already loaded. Subsequent reloadKey bumps clear this guard so refresh
+    // and retry still re-fetch.
+    if (hadSnapshotOnMount.current) {
+      hadSnapshotOnMount.current = false
+      return
+    }
     let active = true
     getFeed(undefined, PAGE_SIZE, minScore ?? undefined)
       .then((page) => {
@@ -140,11 +171,37 @@ export const Feed = () => {
     }
   }, [reloadKey, gone, minScore])
 
+  // Persist the current state into the snapshot store. Runs on every change so
+  // navigating away mid-deck (article detail) leaves a fresh snapshot behind.
+  useEffect(() => {
+    if (status !== 'ready') return
+    setSnapshot({
+      articles,
+      cursor,
+      hasMore,
+      currentIndex,
+      goneIndices: Array.from(gone),
+      impressedIds: Array.from(impressed.current),
+      minScore,
+    })
+  }, [
+    status,
+    articles,
+    cursor,
+    hasMore,
+    currentIndex,
+    gone,
+    minScore,
+    setSnapshot,
+  ])
+
   const refresh = useCallback(() => {
+    clearSnapshot()
+    hadSnapshotOnMount.current = false
     setStatus('loading')
     setErrorMsg('')
     setReloadKey((k) => k + 1)
-  }, [])
+  }, [clearSnapshot])
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMore || !cursor) return
@@ -333,6 +390,8 @@ export const Feed = () => {
         >
           <button
             onClick={() => {
+              clearSnapshot()
+              hadSnapshotOnMount.current = false
               setStatus('loading')
               setMinScore(null)
             }}
@@ -369,6 +428,8 @@ export const Feed = () => {
             <EmptyDeck
               currentFloor={minScore}
               onLower={(next) => {
+                clearSnapshot()
+                hadSnapshotOnMount.current = false
                 setStatus('loading')
                 setMinScore(next)
               }}

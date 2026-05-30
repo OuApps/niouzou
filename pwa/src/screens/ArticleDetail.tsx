@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ThumbsUp, ThumbsDown, Bookmark, BookmarkCheck, ExternalLink } from 'lucide-react'
+import { ArrowLeft, ThumbsUp, ThumbsDown, Bookmark, BookmarkCheck, ExternalLink, Lock } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { ScoreBadge } from '../components/ScoreBadge'
 import { KeywordTag } from '../components/KeywordTag'
@@ -46,6 +46,7 @@ export const ArticleDetail = () => {
             relevance_score: article.relevance_score ?? 0,
             scorer: article.scorer,
             keywords: article.keywords ?? [],
+            is_premium: article.is_premium,
           }
         : undefined
     setFeedback(id, next, asFeedArticle)
@@ -206,6 +207,28 @@ export const ArticleDetail = () => {
           {article.title}
         </h1>
 
+        {/* Paywall banner — flags partial content before the user reads it
+            (E7-S21). Mirrored by the CTA wording below and the card badge. */}
+        {article.is_premium && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid var(--accent-border)',
+              background: 'var(--accent-subtle)',
+              color: 'var(--accent-text)',
+              fontSize: 12,
+              marginBottom: 16,
+            }}
+          >
+            <Lock size={14} style={{ flexShrink: 0 }} />
+            <span>Contenu partiel — article premium</span>
+          </div>
+        )}
+
         {/* Executive summary */}
         {bullets && (
           <div
@@ -274,7 +297,8 @@ export const ArticleDetail = () => {
           </div>
         )}
 
-        {/* Read full article */}
+        {/* Read full article — label + icon switch on premium articles so the
+            user knows the original page is behind a paywall (E7-S21). */}
         <a
           href={article.url}
           target="_blank"
@@ -293,8 +317,8 @@ export const ArticleDetail = () => {
             marginBottom: 16,
           }}
         >
-          Read full article
-          <ExternalLink size={16} />
+          {article.is_premium ? 'Voir sur le site (contenu limité)' : 'Read full article'}
+          {article.is_premium ? <Lock size={16} /> : <ExternalLink size={16} />}
         </a>
 
         {submitError && (
@@ -311,7 +335,8 @@ export const ArticleDetail = () => {
           </div>
         )}
 
-        {/* Action buttons */}
+        {/* Action buttons — colours mirror the Feed (E7-S24): each icon always
+            wears its semantic action colour, regardless of selection state. */}
         <div className="flex justify-center items-center gap-8">
           <button
             onClick={() => apply('dislike')}
@@ -322,10 +347,11 @@ export const ArticleDetail = () => {
               padding: 8,
               borderRadius: '50%',
               cursor: 'pointer',
-              color: action === 'dislike' ? 'var(--action-dislike)' : 'var(--text-secondary)',
+              color: 'var(--action-dislike)',
+              fontSize: 26,
             }}
           >
-            <ThumbsDown size={24} />
+            <ThumbsDown size={26} />
           </button>
           <button
             onClick={toggleSave}
@@ -336,10 +362,11 @@ export const ArticleDetail = () => {
               padding: 8,
               borderRadius: '50%',
               cursor: 'pointer',
-              color: isSaved ? 'var(--action-save)' : 'var(--text-secondary)',
+              color: 'var(--action-save)',
+              fontSize: 26,
             }}
           >
-            {isSaved ? <BookmarkCheck size={24} /> : <Bookmark size={24} />}
+            {isSaved ? <BookmarkCheck size={26} /> : <Bookmark size={26} />}
           </button>
           <button
             onClick={() => apply('like')}
@@ -350,10 +377,11 @@ export const ArticleDetail = () => {
               padding: 8,
               borderRadius: '50%',
               cursor: 'pointer',
-              color: action === 'like' ? 'var(--action-like)' : 'var(--text-secondary)',
+              color: 'var(--action-like)',
+              fontSize: 26,
             }}
           >
-            <ThumbsUp size={24} />
+            <ThumbsUp size={26} />
           </button>
         </div>
       </div>

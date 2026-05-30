@@ -60,6 +60,7 @@ class FeedService:
             "threshold": threshold,
             "random_rate": settings.random_surface_rate,
             "limit": page_size + 1,  # +1 row tells us whether more remain
+            "premium_max_chars": settings.premium_content_max_chars,
         }
 
         keyset = ""
@@ -83,6 +84,9 @@ class FeedService:
                     s.name AS source_name,
                     ars.relevance_score AS relevance_score,
                     ars.scorer AS scorer,
+                    (a.content IS NOT NULL
+                     AND char_length(a.content) < :premium_max_chars
+                    ) AS is_premium,
                     {_FEED_RANK} AS feed_rank,
                     COALESCE(
                         (SELECT array_agg(ak.term ORDER BY ak.salience DESC, ak.term ASC)
@@ -125,6 +129,7 @@ class FeedService:
                 relevance_score=r["relevance_score"],
                 scorer=r["scorer"],
                 keywords=list(r["keywords"] or []),
+                is_premium=bool(r["is_premium"]),
             )
             for r in rows
         ]

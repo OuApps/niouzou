@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 
+from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.errors import not_found
 from niouzou.models import (
@@ -83,6 +84,7 @@ class ArticlesService:
             else None
         )
 
+        premium_max_chars = get_settings().premium_content_max_chars
         return ArticleDetail(
             id=article.id,
             title=article.title,
@@ -99,4 +101,8 @@ class ArticlesService:
             scorer=row.scorer,
             feedback=feedback,
             keywords=list(row.keywords or []),
+            is_premium=(
+                article.content is not None
+                and len(article.content) < premium_max_chars
+            ),
         )

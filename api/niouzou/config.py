@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # Cap on keywords persisted per article; applied after extraction so it
     # works uniformly for TF-IDF and AI scorers (E7-S5).
     max_keywords_per_article: int = 6
+    # Below this content length (chars), an enriched article is flagged as
+    # partial / premium (E7-S21). Paywalled feeds typically give a short
+    # teaser; full articles are several kilobytes. Tune per deployment.
+    premium_content_max_chars: int = 800
     cron_fetch_interval: int = 15
     cron_enrich_interval: int = 30
 

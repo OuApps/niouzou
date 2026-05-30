@@ -26,6 +26,9 @@ export interface FeedArticle {
   scorer?: Scorer | null
   keywords?: string[]
   read_time_minutes?: number
+  // Set by the server when the stored content looks like a paywall teaser
+  // (E7-S21). The PWA uses it to badge the card / detail view.
+  is_premium?: boolean
 }
 
 export interface ArticleDetail {
@@ -42,6 +45,7 @@ export interface ArticleDetail {
   scorer?: Scorer | null
   feedback: { action: FeedbackAction; updated_at: string } | null
   keywords?: string[]
+  is_premium?: boolean
 }
 
 export interface SavedArticle extends FeedArticle {

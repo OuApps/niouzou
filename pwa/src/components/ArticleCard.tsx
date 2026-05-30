@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Clock } from 'lucide-react'
+import { Clock, Lock } from 'lucide-react'
 import { ScoreBadge } from './ScoreBadge'
 import { KeywordTag } from './KeywordTag'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
@@ -80,6 +80,30 @@ export const ArticleCard = ({ article, style }: ArticleCardProps) => {
         <div style={{ position: 'absolute', top: 10, right: 10 }}>
           <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
         </div>
+        {/* Premium / paywall lock icon — surfaces partial content before the
+            user taps the card (E7-S21). */}
+        {article.is_premium && (
+          <span
+            aria-label="Contenu premium"
+            title="Contenu partiel — article premium"
+            style={{
+              position: 'absolute',
+              top: 10,
+              left: 10,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 26,
+              height: 26,
+              borderRadius: '50%',
+              background: 'rgba(12, 16, 24, 0.75)',
+              backdropFilter: 'blur(8px)',
+              color: 'var(--accent)',
+            }}
+          >
+            <Lock size={13} />
+          </span>
+        )}
       </div>
 
       {/* Content */}

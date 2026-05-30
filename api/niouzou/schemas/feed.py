@@ -25,6 +25,10 @@ class FeedArticle(BaseModel):
     # Top keywords sorted by salience DESC (E7-S10). Empty list when the article
     # has no extracted keywords yet (e.g. pending enrichment).
     keywords: list[str] = []
+    # True when the stored content is suspiciously short for an enriched
+    # article — typically a paywall teaser (E7-S21). Lets the PWA warn the
+    # user before they tap through to a locked page.
+    is_premium: bool = False
 
 
 class FeedResponse(BaseModel):
