@@ -21,9 +21,9 @@ from typing import Final
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from niouzou.config import get_settings
+from niouzou.deps import SessionDep
 from niouzou.models import AppSetting
 
 # Public registry of keys an admin may override at runtime.
@@ -90,7 +90,7 @@ class UnknownSettingError(KeyError):
 
 
 class SettingsService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: SessionDep) -> None:
         self.session = session
 
     @staticmethod

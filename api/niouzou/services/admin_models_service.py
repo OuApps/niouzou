@@ -96,7 +96,7 @@ def _to_admin_model(item: dict) -> AdminModel:
     )
 
 
-async def fetch_models(api_key: str) -> list[AdminModel]:
+async def fetch_models(api_key: str | None) -> list[AdminModel]:
     """Hit the OpenRouter catalogue and apply the curation filters.
 
     Raises ``APIError(424)`` when the key is missing — the caller surfaces
