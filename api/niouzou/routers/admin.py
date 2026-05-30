@@ -154,25 +154,3 @@ async def reset_password(
     if user is None:
         raise not_found("User not found")
     user.password_hash = hash_password(body.new_password)
-
-
-@router.get("/diagnose")
-async def diagnose(session: SessionDep) -> dict:
-    """Diagnostic endpoint to check DB state."""
-    try:
-        # Try to fetch a user with is_admin column
-        user = (await session.execute(select(User.email, User.is_admin).limit(1))).first()
-        if user:
-            return {"status": "ok", "is_admin_column_exists": True, "sample_user": user.email, "is_admin": user.is_admin}
-        else:
-            return {"status": "ok", "is_admin_column_exists": True, "users_count": 0}
-    except Exception as e:
-        return {"status": "error", "is_admin_column_exists": False, "error": str(e)}
-
-
-@router.post("/bootstrap-promote")
-async def bootstrap_promote(session: SessionDep) -> dict[str, int]:
-    """Emergency bootstrap: promote all users to admin."""
-    result = await session.execute(update(User).values(is_admin=True))
-    await session.commit()
-    return {"promoted": result.rowcount or 0}
