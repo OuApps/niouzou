@@ -32,13 +32,11 @@ External:
   Miniflux        (RSS collection, official Docker image)
 ```
 
-> **Note — current vs target topology**: As of 2026-05-30 the three cron jobs
-> (`cron_fetch`, `cron_enrich`, `cron_refresh_weights`) are implemented as
-> separate Railway cron services that run the Python scripts one-shot on a
-> schedule, independently of the Refresh Worker. The diagram above shows the
-> **target** topology after the planned cron consolidation (see E8-S6). In the
-> current state there are 6 Railway services total: `api`, `pwa`,
-> `refresh-worker`, `cron-fetch`, `cron-enrich`, `cron-refresh-weights`.
+> **Note — E8-S6 consolidation complete (2026-05-30)**: The three cron jobs
+> (`cron_fetch`, `cron_enrich`, `cron_refresh_weights`) have been consolidated
+> into the `refresh-worker` service using APScheduler. The old Railway cron
+> services have been removed. The diagram above reflects the current (simplified)
+> topology: 4 services total (`api`, `pwa`, `refresh-worker`, PostgreSQL).
 
 ---
 
@@ -221,14 +219,15 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
   `api_keys` table on first call (see `services/miniflux_bootstrap.py`).
   The token is generated and INSERTed idempotently; no env var, no UI step.
 - Services communicate via Railway's internal network (`*.railway.internal`).
-- **Current cron setup (6 services total)**:
-  - `api` — FastAPI, `railway.toml`, always-on
-  - `pwa` — nginx, `pwa/railway.toml`, always-on
-  - `refresh-worker` — FastAPI mini-app, `refresh-worker.railway.toml`, always-on; receives `POST /run` proxied from the API's `POST /admin/refresh`; runs `cron_fetch → cron_enrich` chained with a single `asyncio.Lock`
-  - `cron-fetch` — Railway cron `*/15 * * * *`, `cron-fetch.railway.toml`, one-shot `python -m niouzou.crons.fetch`
-  - `cron-enrich` — Railway cron `*/30 * * * *`, `cron-enrich.railway.toml`, one-shot `python -m niouzou.crons.enrich`
-  - `cron-refresh-weights` — Railway cron `0 3 * * *`, `cron-refresh-weights.railway.toml`, one-shot `python -m niouzou.crons.refresh_weights`
-- **Known limitation**: the three Railway cron services call the DB directly, independently of the `refresh-worker`. There is no coordination lock between a Railway cron run and a simultaneous manual `POST /admin/refresh`. See E8-S6 for the planned consolidation.
+- **Cron consolidation (E8-S6, 2026-05-30)**:
+  - Old separate Railway cron services (`cron-fetch`, `cron-enrich`, `cron-refresh-weights`) have been **removed**.
+  - Cron jobs now consolidated into the `refresh-worker` service using APScheduler (Python).
+  - `refresh-worker` runs:
+    - `cron_fetch → cron_enrich` chain every `CRON_FETCH_INTERVAL` minutes (default 15)
+    - `cron_refresh_weights` daily at hour `CRON_REFRESH_WEIGHTS_HOUR` UTC (default 03:00)
+  - Mutual exclusion lock (`asyncio.Lock`) between scheduled runs and manual `POST /admin/refresh` prevents concurrent execution.
+  - Configuration (fetch interval, weights refresh hour) is overridable via `PATCH /admin/config` (E8-S3) and persisted in `app_settings` table (E8-S2).
+- **Service count**: Reduced from 6 to 4 services (`api`, `pwa`, `refresh-worker`, PostgreSQL).
 
 ### Docker Compose (self-hosted)
 - `docker-compose.yml` at repo root — one-command stack
@@ -264,9 +263,8 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
 | `COLD_START_THRESHOLD` | ❌ | Number of feedbacks below which `SCORE_THRESHOLD` is bypassed — prevents an empty feed on day one (default: `10`) |
 | `MAX_KEYWORDS_PER_ARTICLE` | ❌ | Cap on keywords stored per article — applied after extraction (default: `6`) |
-| `CRON_FETCH_INTERVAL` | ❌ | Fetch interval in minutes, Docker Compose only (default: `15`) |
-| `CRON_ENRICH_INTERVAL` | ❌ | Enrichment interval in minutes, Docker Compose only (default: `30`) |
-| `CRON_REFRESH_INTERVAL` | ❌ | Keyword-weight recompute interval in minutes, Docker Compose only (default: `1440` — daily) |
+| `CRON_FETCH_INTERVAL` | ❌ | Fetch + enrich chain interval in minutes (1–1440, default: `15`) — overridable via `PATCH /admin/config` (E8-S3) |
+| `CRON_REFRESH_WEIGHTS_HOUR` | ❌ | Hour (0–23 UTC) when daily keyword-weight recompute runs (default: `3`) — overridable via `PATCH /admin/config` (E8-S3) |
 | `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`) |
 
 ---

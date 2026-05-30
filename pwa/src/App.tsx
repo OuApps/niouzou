@@ -6,6 +6,7 @@ import { Saved } from './screens/Saved'
 import { Keywords } from './screens/Keywords'
 import { Profile } from './screens/Profile'
 import { Sources } from './screens/Sources'
+import { Admin } from './screens/Admin'
 import { Login } from './screens/Login'
 import { Register } from './screens/Register'
 import { useAuthStore } from './store/auth'
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/keywords" element={<RequireAuth><Keywords /></RequireAuth>} />
         <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
         <Route path="/sources" element={<RequireAuth><Sources /></RequireAuth>} />
+        <Route path="/admin" element={<RequireAuth><Admin /></RequireAuth>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
       </Routes>

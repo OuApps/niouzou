@@ -213,6 +213,7 @@ async def test_run_closes_openrouter_client(monkeypatch):
     import contextlib
 
     import niouzou.crons.enrich as enrich_mod
+    from niouzou.services.settings_service import EffectiveConfig
 
     class _ClosableClient:
         def __init__(self):
@@ -223,7 +224,9 @@ async def test_run_closes_openrouter_client(monkeypatch):
 
     client = _ClosableClient()
     monkeypatch.setattr(
-        enrich_mod.OpenRouterClient, "from_settings", classmethod(lambda cls: client)
+        enrich_mod.OpenRouterClient,
+        "from_overrides",
+        classmethod(lambda cls, api_key, model: client),
     )
 
     @contextlib.asynccontextmanager
@@ -233,6 +236,18 @@ async def test_run_closes_openrouter_client(monkeypatch):
     async def _no_pending(session, limit):
         return []
 
+    async def _fake_get_effective(self):
+        return EffectiveConfig(
+            openrouter_api_key="sk-test",
+            openrouter_model="test/model",
+            max_keywords_per_article=6,
+            cron_fetch_interval=15,
+            cron_refresh_weights_hour=3,
+        )
+
+    monkeypatch.setattr(
+        enrich_mod.SettingsService, "get_effective", _fake_get_effective
+    )
     monkeypatch.setattr(enrich_mod, "session_scope", _fake_scope)
     monkeypatch.setattr(enrich_mod, "_pending_article_ids", _no_pending)
 

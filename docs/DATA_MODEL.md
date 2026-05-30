@@ -27,9 +27,25 @@ CREATE TABLE users (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email         TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  is_admin      BOOLEAN NOT NULL DEFAULT false,     -- first registered user auto-promoted to admin (E8-S1)
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
+
+---
+
+### app_settings
+```sql
+CREATE TABLE app_settings (
+  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article)
+  value         TEXT NOT NULL,                     -- setting value (overrides env var at runtime)
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+> Stores system-wide settings that override env vars at runtime (E8-S2).
+> Used by cron jobs and admin endpoints to persist configuration changes.
+> Sensitive keys (openrouter_api_key) are masked when returned to PWA.
 
 ---
 

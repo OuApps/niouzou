@@ -455,6 +455,7 @@ System and AI-enrichment health. All counts scoped to the authenticated user's s
 **Response `200`**
 ```json
 {
+  "cron_fetch_interval_minutes": 15,
   "articles": {
     "total": 1842,
     "pending_enrichment": 7,
@@ -491,8 +492,7 @@ Trigger `cron_fetch` followed by `cron_enrich` as a background task.
 Concurrent runs are debounced server-side; the response is identical whether a
 new run started or one was already in flight.
 
-> Open to any authenticated user. Will be restricted to admins when the admin
-> role (E8-S1) is implemented.
+**Requires admin role (E8-S1)**
 
 **Response `202`**
 ```json
@@ -502,3 +502,122 @@ or
 ```json
 { "status": "already_running" }
 ```
+
+---
+
+## Admin
+
+### GET /admin/config
+Fetch current system configuration. All fields reflect either the database
+override (app_settings) or the corresponding environment variable.
+Sensitive fields (API keys) are masked.
+
+**Requires admin role (E8-S1)**
+
+**Response `200`**
+```json
+{
+  "openrouter_model": "openrouter/auto",
+  "openrouter_api_key": "sk-...a3f9",
+  "max_keywords_per_article": 25,
+  "cron_fetch_interval": 15,
+  "cron_refresh_weights_hour": 3
+}
+```
+
+---
+
+### PATCH /admin/config
+Update system configuration. All fields are optional; omitted fields are unchanged.
+Changes persist to the database (app_settings) and take effect immediately for
+the next cron run.
+
+**Requires admin role (E8-S1)**
+
+**Request**
+```json
+{
+  "openrouter_model": "openrouter/auto",
+  "openrouter_api_key": "sk-...",
+  "max_keywords_per_article": 25,
+  "cron_fetch_interval": 15,
+  "cron_refresh_weights_hour": 3
+}
+```
+
+> `openrouter_api_key` accepts the full secret key (or empty string to disable AI).
+> `cron_fetch_interval` is in minutes (1–1440).
+> `cron_refresh_weights_hour` is 0–23 (UTC hour).
+
+**Response `200`** — same shape as `GET /admin/config`.
+
+---
+
+### GET /admin/models
+Fetch the curated list of OpenRouter models available for selection.
+Fetched from the OpenRouter API (once per hour), filtered by price and capability.
+
+**Requires admin role (E8-S1)**
+
+**Response `200`**
+```json
+[
+  {
+    "id": "openrouter/auto",
+    "name": "Auto (best value)",
+    "input_price_per_m": 0.0,
+    "output_price_per_m": 0.0,
+    "context_length": 128000
+  },
+  {
+    "id": "anthropic/claude-3-5-sonnet",
+    "name": "Claude 3.5 Sonnet",
+    "input_price_per_m": 0.003,
+    "output_price_per_m": 0.015,
+    "context_length": 200000
+  }
+]
+```
+
+---
+
+### GET /admin/users
+Fetch all registered users. Includes email, admin status, and registration date.
+
+**Requires admin role (E8-S1)**
+
+**Response `200`**
+```json
+[
+  {
+    "id": "uuid",
+    "email": "admin@example.com",
+    "is_admin": true,
+    "created_at": "2026-01-01T00:00:00Z"
+  },
+  {
+    "id": "uuid",
+    "email": "user@example.com",
+    "is_admin": false,
+    "created_at": "2026-02-15T10:00:00Z"
+  }
+]
+```
+
+---
+
+### PATCH /admin/users/{id}/password
+Reset a user's password to a new value.
+
+**Requires admin role (E8-S1)**
+
+**Request**
+```json
+{
+  "new_password": "new-secure-password"
+}
+```
+
+**Response `200`** — no content (204)
+
+> Returns `404` if the user does not exist.

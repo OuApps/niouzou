@@ -151,9 +151,12 @@ export function resetKeywords(): Promise<void> {
   return request<void>('/keywords', { method: 'DELETE' })
 }
 
-// ── Stats / Admin (E7-S15, E7-S16) ───────────────────────────────────────────
+// ── Stats / Admin (E7-S15, E7-S16, E8-S3) ───────────────────────────────────
 
 export interface Stats {
+  // E8-S3: surfaced so the PWA can render "Next fetch" against the live
+  // setting rather than a hardcoded constant.
+  cron_fetch_interval_minutes: number
   articles: {
     total: number
     pending_enrichment: number
@@ -177,4 +180,65 @@ export function getStats(): Promise<Stats> {
 
 export function triggerRefresh(): Promise<{ status: string }> {
   return request<{ status: string }>('/admin/refresh', { method: 'POST' })
+}
+
+// ── Admin config (E8-S3 / E8-S4) ─────────────────────────────────────────────
+
+export interface AdminConfig {
+  openrouter_model: string
+  openrouter_api_key: string | null
+  max_keywords_per_article: number
+  cron_fetch_interval: number
+  cron_refresh_weights_hour: number
+}
+
+export interface AdminConfigPatch {
+  openrouter_model?: string
+  openrouter_api_key?: string
+  max_keywords_per_article?: number
+  cron_fetch_interval?: number
+  cron_refresh_weights_hour?: number
+}
+
+export interface AdminModel {
+  id: string
+  name: string
+  input_price_per_m: number
+  output_price_per_m: number
+  context_length: number
+}
+
+export function getAdminConfig(): Promise<AdminConfig> {
+  return request<AdminConfig>('/admin/config')
+}
+
+export function patchAdminConfig(body: AdminConfigPatch): Promise<AdminConfig> {
+  return request<AdminConfig>('/admin/config', { method: 'PATCH', body })
+}
+
+export function getAdminModels(): Promise<AdminModel[]> {
+  return request<AdminModel[]>('/admin/models')
+}
+
+// ── Admin users (E8-S5) ──────────────────────────────────────────────────────
+
+export interface AdminUser {
+  id: string
+  email: string
+  is_admin: boolean
+  created_at: string
+}
+
+export function getAdminUsers(): Promise<AdminUser[]> {
+  return request<AdminUser[]>('/admin/users')
+}
+
+export function resetUserPassword(
+  userId: string,
+  newPassword: string,
+): Promise<void> {
+  return request<void>(`/admin/users/${userId}/password`, {
+    method: 'PATCH',
+    body: { new_password: newPassword },
+  })
 }

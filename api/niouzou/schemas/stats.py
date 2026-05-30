@@ -33,6 +33,10 @@ class EnrichmentStats(BaseModel):
 
 
 class Stats(BaseModel):
+    # Surfaced so the PWA can render the "Next fetch" countdown (E7-S27)
+    # against the live setting rather than a hardcoded number — also tracks
+    # changes made via /admin/config (E8-S3).
+    cron_fetch_interval_minutes: int
     articles: ArticlesStats
     sources: SourcesStats
     keywords: KeywordsStats

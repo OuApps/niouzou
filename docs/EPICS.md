@@ -1073,7 +1073,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ### Stories
 
-#### [ ] E8-S1 — Admin role
+#### [x] E8-S1 — Admin role
 
 **API changes**:
 
@@ -1092,7 +1092,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E8-S2 — App config persistence layer
+#### [x] E8-S2 — App config persistence layer
 
 **Problem**: Settings like `OPENROUTER_MODEL` and API keys are currently env-var-only. Changing them requires a redeploy or container restart.
 
@@ -1114,7 +1114,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E8-S3 — Admin config endpoints
+#### [x] E8-S3 — Admin config endpoints
 
 Add the following endpoints (all require `require_admin`):
 
@@ -1174,7 +1174,7 @@ Add the following endpoints (all require `require_admin`):
 
 ---
 
-#### [ ] E8-S4 — PWA admin screen
+#### [x] E8-S4 — PWA admin screen
 
 **New route**: `/admin` — only reachable if `current_user.is_admin`.
 
@@ -1208,7 +1208,7 @@ Add the following endpoints (all require `require_admin`):
 
 ---
 
-#### [ ] E8-S5 — User management (listing + password reset)
+#### [x] E8-S5 — User management (listing + password reset)
 
 **Goal**: Admins can see all registered users and reset any user's password from the admin screen — without SSH or DB access.
 
@@ -1248,7 +1248,7 @@ Add the following endpoints (all require `require_admin`):
 
 ---
 
-#### [ ] E8-S6 — Cron consolidation: move scheduled jobs into the Refresh Worker
+#### [x] E8-S6 — Cron consolidation: move scheduled jobs into the Refresh Worker
 
 **Problem**: As of E7-S16, there are **6 Railway services** for the backend: `api`, `pwa`, `refresh-worker`, `cron-fetch`, `cron-enrich`, `cron-refresh-weights`. The three cron services execute the pipeline scripts one-shot directly against the DB, completely bypassing the `refresh-worker`. This creates two parallel execution paths with no coordination:
 - Railway crons call the DB directly (no lock, no awareness of each other)

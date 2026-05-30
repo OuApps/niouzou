@@ -1,7 +1,7 @@
 """Authentication business logic: registration, login, token refresh."""
 
 from jose import JWTError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from niouzou.deps import SessionDep
@@ -29,7 +29,16 @@ class AuthService:
         )
 
     async def register(self, email: str, password: str) -> TokenPair:
-        user = User(email=email, password_hash=hash_password(password))
+        # E8-S1: the first user on a fresh instance is promoted to admin so the
+        # self-hoster never has to flip the column manually.
+        existing_admin = await self.session.scalar(
+            select(func.count()).select_from(User).where(User.is_admin.is_(True))
+        )
+        user = User(
+            email=email,
+            password_hash=hash_password(password),
+            is_admin=not existing_admin,
+        )
         self.session.add(user)
         try:
             await self.session.flush()

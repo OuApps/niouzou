@@ -1,0 +1,57 @@
+"""Admin config + models schemas (E8-S3)."""
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class AdminConfig(BaseModel):
+    """Effective values for every overridable setting.
+
+    ``openrouter_api_key`` is masked (``sk-...a3f9``) on every read — the
+    plaintext value never leaves the API.
+    """
+
+    openrouter_model: str
+    openrouter_api_key: str | None
+    max_keywords_per_article: int
+    cron_fetch_interval: int
+    cron_refresh_weights_hour: int
+
+
+class AdminConfigPatch(BaseModel):
+    """Partial update for ``PATCH /admin/config``.
+
+    Every field is optional; omitted fields are left untouched. An empty
+    string on ``openrouter_api_key`` deletes the DB override and falls back
+    to the env var.
+    """
+
+    openrouter_model: str | None = None
+    openrouter_api_key: str | None = None
+    max_keywords_per_article: int | None = Field(default=None, ge=1, le=50)
+    cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
+    cron_refresh_weights_hour: int | None = Field(default=None, ge=0, le=23)
+
+
+class AdminModel(BaseModel):
+    """OpenRouter model curated for the admin selector (GET /admin/models)."""
+
+    id: str
+    name: str
+    input_price_per_m: float
+    output_price_per_m: float
+    context_length: int
+
+
+class AdminUser(BaseModel):
+    """Single row in GET /admin/users (E8-S5)."""
+
+    id: str
+    email: str
+    is_admin: bool
+    created_at: datetime
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(min_length=8)

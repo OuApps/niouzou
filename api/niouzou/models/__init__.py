@@ -1,3 +1,4 @@
+from niouzou.models.app_setting import AppSetting
 from niouzou.models.article import Article
 from niouzou.models.article_feedback import ArticleFeedback
 from niouzou.models.article_impression import ArticleImpression
@@ -8,6 +9,7 @@ from niouzou.models.source import Source
 from niouzou.models.user import User
 
 __all__ = [
+    "AppSetting",
     "Article",
     "ArticleFeedback",
     "ArticleImpression",

@@ -19,9 +19,11 @@ class MeService:
         self.session = session
 
     async def get(self, user_id: uuid.UUID) -> Me:
-        email = await self.session.scalar(
-            select(User.email).where(User.id == user_id)
-        )
+        user_row = (
+            await self.session.execute(
+                select(User.email, User.is_admin).where(User.id == user_id)
+            )
+        ).one()
 
         saved_count = await self.session.scalar(
             select(func.count())
@@ -48,10 +50,8 @@ class MeService:
         )
 
         return Me(
-            email=email,
-            # Hardcoded until E8-S1 introduces the column; PWA can already
-            # branch on it without a follow-up wire-up.
-            is_admin=False,
+            email=user_row.email,
+            is_admin=user_row.is_admin,
             saved_count=saved_count or 0,
             keyword_count=keyword_count or 0,
             source_count=source_count or 0,

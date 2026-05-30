@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     premium_content_max_chars: int = 800
     cron_fetch_interval: int = 15
     cron_enrich_interval: int = 30
+    # UTC hour for the daily keyword-weight recompute (E8-S6). Read once at
+    # refresh-worker startup; live changes via /admin/config take effect on
+    # the next restart.
+    cron_refresh_weights_hour: int = 3
 
     # Max entries pulled from Miniflux per cron_fetch run.
     miniflux_fetch_batch_size: int = 100

@@ -1,7 +1,0 @@
-[build]
-builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
-
-[deploy]
-startCommand = "python -m niouzou.crons.enrich"
-cronSchedule = "*/30 * * * *"

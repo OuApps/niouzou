@@ -16,6 +16,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
     "bcrypt>=4.0,<4.1",
     "newspaper4k>=0.9.3",
+    "apscheduler>=3.10",
     # Pinned >=6.1 to get the safe default `resolve_entities='internal'` for
     # iterparse + ETCompatXMLParser (CVE-2026-XXXX). newspaper4k feeds untrusted
     # HTML/XML from RSS sources through lxml — older defaults allowed XXE-style

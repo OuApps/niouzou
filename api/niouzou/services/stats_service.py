@@ -23,6 +23,7 @@ from niouzou.schemas.stats import (
     SourcesStats,
     Stats,
 )
+from niouzou.services.settings_service import SettingsService
 
 
 class StatsService:
@@ -30,6 +31,12 @@ class StatsService:
         self.session = session
 
     async def get(self, user_id: uuid.UUID) -> Stats:
+        # E8-S3: the PWA renders "Next fetch" against this value, so read it
+        # via SettingsService — admin overrides via PATCH /admin/config flow
+        # through immediately.
+        fetch_interval = await SettingsService(self.session).get(
+            "cron_fetch_interval"
+        )
         # ── Articles (scoped to user's sources, ignoring soft-deleted) ────
         article_join = (
             select(Article)
@@ -104,6 +111,7 @@ class StatsService:
         ).one()
 
         return Stats(
+            cron_fetch_interval_minutes=int(fetch_interval or 15),
             articles=ArticlesStats(
                 total=articles_row.total or 0,
                 pending_enrichment=articles_row.pending or 0,

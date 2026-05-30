@@ -25,6 +25,8 @@ x-api-env: &api-env
   SCORE_THRESHOLD: ${SCORE_THRESHOLD:-0.0}
   RANDOM_SURFACE_RATE: ${RANDOM_SURFACE_RATE:-0.05}
   FEED_GRAVITY: ${FEED_GRAVITY:-1.5}
+  # The API proxies POST /admin/refresh here (E7-S16 + E8-S6).
+  REFRESH_WORKER_URL: http://worker:8001
 
 services:
   # ── Single Postgres serving both Niouzou and Miniflux ───────────────────────
@@ -120,51 +122,29 @@ services:
     depends_on:
       - api
 
-  # ── Cron jobs: one-shot scripts wrapped in a sleep loop ──────────────────────
-  # Each runs once on start, then every N minutes. restart: unless-stopped keeps
-  # the loop alive across daemon restarts; a crash inside the loop is retried on
-  # the next tick rather than killing the container.
-  cron_fetch:
+  # ── Refresh worker (E8-S6) ──────────────────────────────────────────────────
+  # Single always-on service that:
+  #   * exposes POST /run for the API's "Run now" admin trigger (E7-S16)
+  #   * schedules fetch+enrich every CRON_FETCH_INTERVAL minutes via APScheduler
+  #   * schedules the daily keyword-weight refresh at CRON_REFRESH_WEIGHTS_HOUR
+  # The scheduler shares an asyncio.Lock with /run, so manual + scheduled runs
+  # are mutually exclusive — replaces the three one-shot cron containers we had
+  # before E8-S6.
+  worker:
     <<: *api-build
     restart: unless-stopped
+    command: ["uvicorn", "niouzou.workers.refresh_worker:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:
       <<: *api-env
       CRON_FETCH_INTERVAL: ${CRON_FETCH_INTERVAL:-15}
-    command:
-      - sh
-      - -c
-      - 'while true; do python -m niouzou.crons.fetch || echo "cron_fetch run failed"; sleep $$(( ${CRON_FETCH_INTERVAL:-15} * 60 )); done'
+      CRON_REFRESH_WEIGHTS_HOUR: ${CRON_REFRESH_WEIGHTS_HOUR:-3}
+      # The API forwards /admin/refresh here.
+      REFRESH_WORKER_URL: http://worker:8001
     depends_on:
+      postgres:
+        condition: service_healthy
       miniflux:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-
-  cron_enrich:
-    <<: *api-build
-    restart: unless-stopped
-    environment:
-      <<: *api-env
-      CRON_ENRICH_INTERVAL: ${CRON_ENRICH_INTERVAL:-30}
-    command:
-      - sh
-      - -c
-      - 'while true; do python -m niouzou.crons.enrich || echo "cron_enrich run failed"; sleep $$(( ${CRON_ENRICH_INTERVAL:-30} * 60 )); done'
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-
-  cron_refresh_weights:
-    <<: *api-build
-    restart: unless-stopped
-    environment:
-      <<: *api-env
-      CRON_REFRESH_INTERVAL: ${CRON_REFRESH_INTERVAL:-1440}
-    command:
-      - sh
-      - -c
-      - 'while true; do python -m niouzou.crons.refresh_weights || echo "cron_refresh_weights run failed"; sleep $$(( ${CRON_REFRESH_INTERVAL:-1440} * 60 )); done'
-    depends_on:
       migrate:
         condition: service_completed_successfully
 

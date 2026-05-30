@@ -52,7 +52,8 @@ async def db_session():
             text(
                 "TRUNCATE users, sources, articles, article_keywords, "
                 "article_relevance_scores, article_impressions, "
-                "article_feedbacks, keyword_weights RESTART IDENTITY CASCADE"
+                "article_feedbacks, keyword_weights, app_settings "
+                "RESTART IDENTITY CASCADE"
             )
         )
         await session.commit()

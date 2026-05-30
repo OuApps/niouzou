@@ -67,6 +67,26 @@ class OpenRouterClient:
             timeout=settings.openrouter_timeout,
         )
 
+    @classmethod
+    def from_overrides(
+        cls, api_key: str | None, model: str
+    ) -> "OpenRouterClient | None":
+        """Build a client using runtime-resolved values (E8-S2).
+
+        ``cron_enrich`` calls this with values from ``SettingsService`` so a
+        live ``OPENROUTER_MODEL`` change picks up on the next run without a
+        restart. Base URL and timeout still come from env (no admin override).
+        """
+        if not api_key:
+            return None
+        settings = get_settings()
+        return cls(
+            api_key,
+            model,
+            base_url=settings.openrouter_base_url,
+            timeout=settings.openrouter_timeout,
+        )
+
     def __enter__(self) -> "OpenRouterClient":
         return self
 

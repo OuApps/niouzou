@@ -8,7 +8,7 @@ from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from niouzou.db import get_session
-from niouzou.errors import unauthorized
+from niouzou.errors import APIError, unauthorized
 from niouzou.models import User
 from niouzou.security import TOKEN_ACCESS, decode_token
 
@@ -36,3 +36,13 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def get_current_admin(user: CurrentUser) -> User:
+    """E8-S1: 403 unless the JWT belongs to an admin user."""
+    if not user.is_admin:
+        raise APIError(403, "forbidden", "Admin privileges required")
+    return user
+
+
+CurrentAdmin = Annotated[User, Depends(get_current_admin)]

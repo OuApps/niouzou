@@ -44,6 +44,7 @@ from niouzou.scoring import ScoringPipeline, TFIDFScorer
 from niouzou.services.enrichment_service import EnrichmentService
 from niouzou.services.openrouter_client import OpenRouterClient, OpenRouterError
 from niouzou.services.scoring_service import ScoringService
+from niouzou.services.settings_service import SettingsService
 
 logger = logging.getLogger("niouzou.cron_enrich")
 
@@ -184,14 +185,25 @@ async def enrich_article(
 async def run() -> int:
     """Enrich one batch of pending articles. Returns the number enriched."""
     settings = get_settings()
+    # Resolve runtime overrides (E8-S2): the admin may have flipped the model
+    # or pasted a fresh API key since the last run. Snapshot once per batch so
+    # the rest of the pipeline sees a consistent view.
+    async with session_scope() as cfg_session:
+        effective = await SettingsService(cfg_session).get_effective()
+
     # One OpenRouter client, shared by summaries and keyword extraction (None
     # when no key — the AI path is then skipped entirely). Closed in finally so
     # the httpx connection pool isn't leaked.
-    client = OpenRouterClient.from_settings()
+    client = OpenRouterClient.from_overrides(
+        effective.openrouter_api_key, effective.openrouter_model
+    )
     enrichment = EnrichmentService(client)
     # Dependency-free fallback: used for scoring (DB-only maths) and whenever
     # the LLM keyword path fails or AI is off.
-    tfidf_scoring = ScoringService(ScoringPipeline(TFIDFScorer()))
+    tfidf_scoring = ScoringService(
+        ScoringPipeline(TFIDFScorer()),
+        max_keywords_per_article=effective.max_keywords_per_article,
+    )
     if client is None:
         # Same object as the fallback so _store_keywords takes the direct path.
         ai_scoring = tfidf_scoring
@@ -199,13 +211,16 @@ async def run() -> int:
         # Lazy import keeps the AI module off the no-key path.
         from niouzou.scoring.ai_keyword import AIKeywordScorer
 
-        ai_scoring = ScoringService(ScoringPipeline(AIKeywordScorer(client)))
+        ai_scoring = ScoringService(
+            ScoringPipeline(AIKeywordScorer(client)),
+            max_keywords_per_article=effective.max_keywords_per_article,
+        )
 
     logger.info(
         "cron_enrich: start (batch_size=%d, ai_enabled=%s, model=%s)",
         settings.enrich_batch_size,
         enrichment.ai_enabled,
-        settings.openrouter_model if client is not None else "n/a",
+        effective.openrouter_model if client is not None else "n/a",
     )
     try:
         async with session_scope() as session:
