@@ -1,4 +1,4 @@
-"""Keyword-weight recompute tests (E3-S6 synchronous + E3-S8 cron).
+"""Keyword-weight recompute tests (E3-S6 synchronous + E3-S8 cron + E9-S1 model).
 
 DB-backed; skipped automatically when Postgres is unreachable (see conftest).
 """
@@ -8,7 +8,13 @@ from sqlalchemy import select
 from niouzou.models import KeywordWeight
 from niouzou.services.feedback_service import FeedbackService
 from niouzou.services.weights import recompute_all
-from tests.factories import add_keyword, make_article, make_source, make_user
+from tests.factories import (
+    add_keyword,
+    feedback_request,
+    make_article,
+    make_source,
+    make_user,
+)
 
 
 async def _weight(session, user, term) -> KeywordWeight | None:
@@ -26,7 +32,9 @@ async def test_like_creates_positive_weight(db_session):
     await add_keyword(db_session, article, "rust", 0.8)
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "like")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, reaction="like")
+    )
     await db_session.commit()
 
     kw = await _weight(db_session, user, "rust")
@@ -43,9 +51,9 @@ async def test_changing_like_to_dislike_flips_weight(db_session):
     await db_session.commit()
 
     svc = FeedbackService(db_session)
-    await svc.record(user.id, article.id, "like")
+    await svc.record(user.id, feedback_request(article.id, reaction="like"))
     await db_session.commit()
-    await svc.record(user.id, article.id, "dislike")
+    await svc.record(user.id, feedback_request(article.id, reaction="dislike"))
     await db_session.commit()
 
     kw = await _weight(db_session, user, "rust")
@@ -54,18 +62,22 @@ async def test_changing_like_to_dislike_flips_weight(db_session):
     assert kw.dislike_count == 1
 
 
-async def test_save_counts_as_like(db_session):
+async def test_save_alone_contributes_half_salience(db_session):
+    """E9-S1: save is now a half-strength positive signal (was full-strength)."""
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     article = await make_article(db_session, source)
     await add_keyword(db_session, article, "rust", 0.6)
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "save")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, is_saved=True)
+    )
     await db_session.commit()
 
     kw = await _weight(db_session, user, "rust")
-    assert kw.weight == 0.6
+    assert kw.weight == 0.3  # 0.6 salience × 0.5 save signal
+    # E9-S1: like_count counts both likes and saves (positive contributors).
     assert kw.like_count == 1
 
 
@@ -78,7 +90,7 @@ async def test_repeated_like_is_idempotent(db_session):
 
     svc = FeedbackService(db_session)
     for _ in range(4):  # like × 4 == like × 1
-        await svc.record(user.id, article.id, "like")
+        await svc.record(user.id, feedback_request(article.id, reaction="like"))
         await db_session.commit()
 
     kw = await _weight(db_session, user, "rust")
@@ -96,9 +108,9 @@ async def test_weight_sums_across_articles(db_session):
     await db_session.commit()
 
     svc = FeedbackService(db_session)
-    await svc.record(user.id, a1.id, "like")
+    await svc.record(user.id, feedback_request(a1.id, reaction="like"))
     await db_session.commit()
-    await svc.record(user.id, a2.id, "dislike")
+    await svc.record(user.id, feedback_request(a2.id, reaction="dislike"))
     await db_session.commit()
 
     kw = await _weight(db_session, user, "rust")
@@ -113,7 +125,9 @@ async def test_cron_recompute_is_idempotent_and_matches_sync(db_session):
     await add_keyword(db_session, article, "rust", 0.4)
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "like")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, reaction="like")
+    )
     await db_session.commit()
 
     await recompute_all(db_session)
@@ -134,7 +148,9 @@ async def test_cron_preserves_manually_overridden(db_session):
     await add_keyword(db_session, article, "rust", 0.9)
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "like")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, reaction="like")
+    )
     await db_session.commit()
 
     # Manually pin the weight.
@@ -164,7 +180,9 @@ async def test_sync_recompute_skips_overridden(db_session):
     )
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "like")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, reaction="like")
+    )
     await db_session.commit()
 
     assert (await _weight(db_session, user, "rust")).weight == 3.0

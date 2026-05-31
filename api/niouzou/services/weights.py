@@ -1,13 +1,22 @@
 """Keyword-weight recomputation, shared by the feedback path and the cron.
 
-The weight of a (user, term) pair is, per docs/DATA_MODEL.md:
+Per E9-S1, an article's contribution to its keywords' weights is:
 
-    weight = Σ salience(term, article) × feedback_value(action)
-    feedback_value: like|save = +1, dislike = -1, skip = 0
+    salience(term, article) × (
+        +1.0 if reaction = 'like'  else
+        -1.0 if reaction = 'dislike' else 0
+      + 0.5 if is_saved
+      + 0.5 if read_full_article
+    )
 
-Both entry points recompute from scratch over ``article_feedbacks`` (the source
-of truth), so the operation is idempotent. Rows flagged ``manually_overridden``
-are never touched.
+Signals accumulate across articles. Like+save+read = +2.0 × salience.
+Dislike+save = -0.5 × salience (rare but legal — user wants the article for
+reference but disagrees with its premise). All-neutral rows (which used to
+exist as `action='skip'` and were dropped at migration time) contribute 0.
+
+Both entry points recompute from scratch over ``article_feedbacks`` (the
+source of truth), so the operation is idempotent. Rows flagged
+``manually_overridden`` are never touched.
 """
 
 import uuid
@@ -15,20 +24,28 @@ import uuid
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Maps an action to its weight contribution. `save` counts as a like.
+# Per-feedback signal contribution. Mirrors the formula in docs/EPICS.md (E9-S1).
 _FEEDBACK_VALUE = (
-    "CASE fb.action "
-    "WHEN 'like' THEN 1 WHEN 'save' THEN 1 WHEN 'dislike' THEN -1 ELSE 0 END"
+    "("
+    "CASE fb.reaction WHEN 'like' THEN 1.0 "
+    "WHEN 'dislike' THEN -1.0 ELSE 0 END "
+    "+ CASE WHEN fb.is_saved          THEN 0.5 ELSE 0 END "
+    "+ CASE WHEN fb.read_full_article THEN 0.5 ELSE 0 END"
+    ")"
 )
 
-# Aggregate (user, term) → weight + counts from feedbacks joined to keywords.
+# Per E9-S1, like_count / dislike_count are repurposed for the Keywords UI:
+#   like_count    = rows with a positive contribution (liked OR saved)
+#   dislike_count = rows with a disliked reaction (saved/read don't downweight)
 _AGGREGATE = f"""
 SELECT
     fb.user_id AS user_id,
     ak.term AS term,
     COALESCE(SUM(ak.salience * {_FEEDBACK_VALUE}), 0) AS weight,
-    COUNT(*) FILTER (WHERE fb.action IN ('like', 'save')) AS like_count,
-    COUNT(*) FILTER (WHERE fb.action = 'dislike') AS dislike_count
+    COUNT(*) FILTER (
+        WHERE fb.reaction = 'like' OR fb.is_saved
+    ) AS like_count,
+    COUNT(*) FILTER (WHERE fb.reaction = 'dislike') AS dislike_count
 FROM article_keywords ak
 JOIN article_feedbacks fb ON fb.article_id = ak.article_id
 """

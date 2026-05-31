@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from niouzou.deps import CurrentUser
 from niouzou.schemas.feedback import FeedbackRequest, FeedbackResponse
@@ -17,4 +17,10 @@ FeedbackServiceDep = Annotated[FeedbackService, Depends()]
 async def submit_feedback(
     body: FeedbackRequest, user: CurrentUser, service: FeedbackServiceDep
 ) -> FeedbackResponse:
-    return await service.record(user.id, body.article_id, body.action)
+    if body.is_no_op():
+        # E9-S1 — an empty payload signals a client bug; reject loudly.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of reaction, is_saved, read_full_article must be set",
+        )
+    return await service.record(user.id, body)

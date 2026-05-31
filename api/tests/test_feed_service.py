@@ -128,7 +128,7 @@ async def test_cold_start_ends_after_threshold_reached(db_session, monkeypatch):
             )
             db_session.add(
                 ArticleFeedback(
-                    article_id=other.id, user_id=user.id, action="like"
+                    article_id=other.id, user_id=user.id, reaction="like"
                 )
             )
         await db_session.commit()

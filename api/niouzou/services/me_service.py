@@ -30,7 +30,7 @@ class MeService:
             .select_from(ArticleFeedback)
             .where(
                 ArticleFeedback.user_id == user_id,
-                ArticleFeedback.action == "save",
+                ArticleFeedback.is_saved.is_(True),
             )
         )
 

@@ -13,6 +13,7 @@ from niouzou.services.saved_service import SavedService
 from niouzou.services.stats_service import StatsService
 from tests.factories import (
     add_keyword,
+    feedback_request,
     make_article,
     make_source,
     make_user,
@@ -31,7 +32,10 @@ async def test_article_detail_shape(db_session):
     assert detail.title == "Why Rust"
     assert detail.relevance_score == 0.87
     assert detail.source.name == "Feed"
-    assert detail.feedback is None  # no interaction yet
+    # No interaction yet — defaults apply.
+    assert detail.reaction == "none"
+    assert detail.is_saved is False
+    assert detail.read_full_article is False
 
 
 async def test_article_detail_includes_feedback_after_action(db_session):
@@ -40,12 +44,14 @@ async def test_article_detail_includes_feedback_after_action(db_session):
     article = await make_article(db_session, source)
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "like")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, reaction="like")
+    )
     await db_session.commit()
 
     detail = await ArticlesService(db_session).get(user.id, article.id)
-    assert detail.feedback is not None
-    assert detail.feedback.action == "like"
+    assert detail.reaction == "like"
+    assert detail.is_saved is False
 
 
 async def test_article_of_another_user_is_not_found(db_session):
@@ -68,7 +74,9 @@ async def test_feedback_on_foreign_article_404(db_session):
     await db_session.commit()
 
     with pytest.raises(APIError) as exc:
-        await FeedbackService(db_session).record(intruder.id, article.id, "like")
+        await FeedbackService(db_session).record(
+            intruder.id, feedback_request(article.id, reaction="like")
+        )
     assert exc.value.status_code == 404
 
 
@@ -81,11 +89,11 @@ async def test_saved_lists_only_saved_newest_first(db_session):
     await db_session.commit()
 
     svc = FeedbackService(db_session)
-    await svc.record(user.id, a1.id, "save")
+    await svc.record(user.id, feedback_request(a1.id, is_saved=True))
     await db_session.commit()
-    await svc.record(user.id, a2.id, "save")
+    await svc.record(user.id, feedback_request(a2.id, is_saved=True))
     await db_session.commit()
-    await svc.record(user.id, liked.id, "like")
+    await svc.record(user.id, feedback_request(liked.id, reaction="like"))
     await db_session.commit()
 
     saved = await SavedService(db_session).list_saved(user.id, cursor=None, limit=None)
@@ -102,7 +110,9 @@ async def test_keywords_listed_by_absolute_weight(db_session):
     await add_keyword(db_session, article, "php", 0.2)
     await db_session.commit()
 
-    await FeedbackService(db_session).record(user.id, article.id, "dislike")
+    await FeedbackService(db_session).record(
+        user.id, feedback_request(article.id, reaction="dislike")
+    )
     await db_session.commit()
 
     listed = await KeywordsService(db_session).list_keywords(

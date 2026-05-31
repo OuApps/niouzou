@@ -133,7 +133,11 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
       "published_at": "2024-01-15T10:30:00Z",
       "relevance_score": 0.87,
       "scorer": "ai_keyword",
-      "keywords": ["rust", "memory safety", "c++"]
+      "keywords": ["rust", "memory safety", "c++"],
+      "is_premium": false,
+      "reaction": "none",
+      "is_saved": false,
+      "read_full_article": false
     }
   ],
   "next_cursor": "eyJsYXN0X2lkIjoiLi4uIn0=",
@@ -147,6 +151,9 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 > `scorer` is `"tfidf"` or `"ai_keyword"`; null for legacy rows written before the scorer column existed.
 > `keywords` is sorted by salience desc; empty array when the article has none.
 > `cold_start` is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
+> **E9-S1** — `reaction`, `is_saved`, `read_full_article` reflect the user's
+> feedback state on the article. Defaults (`"none"`, `false`, `false`) apply
+> when no feedback row exists.
 
 ---
 
@@ -161,28 +168,46 @@ Prevents the article from appearing again in the feed.
 ## Feedback
 
 ### POST /feedback
-Record or update user feedback on an article. Idempotent — last action wins.
-Also triggers synchronous recompute of `keyword_weights` for affected keywords.
+Record or update user feedback on an article (**E9-S1**). Partial-update
+semantics — only the fields present in the body are touched. Also triggers
+a synchronous recompute of `keyword_weights` for the article's keywords.
 
-**Request**
+**Request** — at least one of the three optional fields must be set:
 ```json
 {
   "article_id": "uuid",
-  "action": "like"
+  "reaction": "like",
+  "is_saved": true,
+  "read_full_article": true
 }
 ```
 
-`action` must be one of: `like`, `dislike`, `skip`, `save`
-`save` counts as `like` for keyword_weight computation.
+| Field | Type | Semantics |
+|---|---|---|
+| `reaction` | `"like"` \| `"dislike"` \| `"none"` \| omitted | omitted = unchanged. `"none"` clears an existing like/dislike. |
+| `is_saved` | `bool` \| omitted | omitted = unchanged. `false` is legal (un-save). |
+| `read_full_article` | `bool` \| omitted | **monotone**: `true` sticks. `false` is silently dropped (never downgrades an existing `true`). |
 
-**Response `200`**
+> All three fields independent. An article may simultaneously be liked,
+> saved and read. Per E9-S1, signal contributions to keyword weight are
+> `like = +1`, `dislike = -1`, `is_saved = +0.5`, `read_full_article = +0.5`
+> (accumulated per article × salience).
+
+**Response `200`** — full persisted state for the (user, article) row:
 ```json
 {
   "article_id": "uuid",
-  "action": "like",
+  "reaction": "like",
+  "is_saved": true,
+  "read_full_article": false,
   "updated_at": "2024-01-15T10:31:00Z"
 }
 ```
+
+**Errors**:
+- `400 Bad Request` — empty payload (all three optional fields `null`); signals
+  a client bug.
+- `404 Not Found` — article does not belong to one of the user's sources.
 
 ---
 
@@ -208,17 +233,20 @@ Returns full article details. Called when user taps to expand an article before 
   "published_at": "2024-01-15T10:30:00Z",
   "enriched_at": "2024-01-15T10:35:00Z",
   "relevance_score": 0.87,
-  "feedback": {
-    "action": "like",
-    "updated_at": "2024-01-15T10:31:00Z"
-  },
-  "keywords": ["rust", "memory safety", "c++"]
+  "scorer": "ai_keyword",
+  "keywords": ["rust", "memory safety", "c++"],
+  "is_premium": false,
+  "reaction": "like",
+  "is_saved": false,
+  "read_full_article": false
 }
 ```
 
-> `feedback` is null if the user has not interacted with the article yet.
 > `summary_executive` is null when AI enrichment is disabled.
 > `keywords` is sorted by salience desc; empty array when the article has none.
+> **E9-S1** — `reaction`, `is_saved`, `read_full_article` are top-level fields
+> (previously nested under a `feedback` object). Defaults (`"none"`, `false`,
+> `false`) apply when no feedback row exists.
 
 ---
 
@@ -250,14 +278,23 @@ Returns articles the user has saved (Watch Later). Ordered by feedback `updated_
       },
       "published_at": "2024-01-15T10:30:00Z",
       "relevance_score": 0.87,
+      "scorer": "ai_keyword",
       "saved_at": "2024-01-15T10:31:00Z",
-      "keywords": ["rust", "memory safety", "c++"]
+      "keywords": ["rust", "memory safety", "c++"],
+      "is_premium": false,
+      "reaction": "none",
+      "is_saved": true,
+      "read_full_article": false
     }
   ],
   "next_cursor": "eyJsYXN0X2lkIjoiLi4uIn0=",
   "has_more": false
 }
 ```
+
+> Sources now filtered by `is_saved = true` (was `action = 'save'`, **E9-S1**).
+> `reaction`, `is_saved`, `read_full_article` are exposed so the PWA can show
+> the article's full feedback state at a glance.
 
 ---
 

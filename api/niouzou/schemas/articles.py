@@ -5,18 +5,13 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from niouzou.schemas.feedback import FeedbackAction
+from niouzou.schemas.feedback import Reaction
 
 
 class ArticleSourceRef(BaseModel):
     id: uuid.UUID
     name: str
     url: str
-
-
-class ArticleFeedbackInfo(BaseModel):
-    action: FeedbackAction
-    updated_at: datetime
 
 
 class ArticleDetail(BaseModel):
@@ -33,9 +28,13 @@ class ArticleDetail(BaseModel):
     relevance_score: float | None
     # "tfidf" or "ai_keyword" when known, null for unscored / legacy rows.
     scorer: str | None = None
-    feedback: ArticleFeedbackInfo | None
     # All keywords sorted by salience DESC (E7-S10). Empty list when unenriched.
     keywords: list[str] = []
     # True when the stored content is suspiciously short for an enriched
     # article — typically a paywall teaser (E7-S21).
     is_premium: bool = False
+    # Feedback state (E9-S1). Defaults applied when the user has not
+    # interacted with the article yet.
+    reaction: Reaction = "none"
+    is_saved: bool = False
+    read_full_article: bool = False

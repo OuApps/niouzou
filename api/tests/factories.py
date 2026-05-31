@@ -1,6 +1,7 @@
 """Small async helpers for seeding DB-backed tests."""
 
 import itertools
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from niouzou.models import (
     User,
 )
 from niouzou.models.article import STATUS_ENRICHED
+from niouzou.schemas.feedback import FeedbackRequest, Reaction
 
 _entry_ids = itertools.count(1000)
 
@@ -77,3 +79,19 @@ async def set_relevance(
         )
     )
     await session.flush()
+
+
+def feedback_request(
+    article_id: uuid.UUID,
+    *,
+    reaction: Reaction | None = None,
+    is_saved: bool | None = None,
+    read_full_article: bool | None = None,
+) -> FeedbackRequest:
+    """Shorthand for building partial-update payloads in tests."""
+    return FeedbackRequest(
+        article_id=article_id,
+        reaction=reaction,
+        is_saved=is_saved,
+        read_full_article=read_full_article,
+    )

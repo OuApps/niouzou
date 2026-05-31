@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from niouzou.schemas.feedback import Reaction
+
 
 class SourceRef(BaseModel):
     id: uuid.UUID
@@ -29,6 +31,11 @@ class FeedArticle(BaseModel):
     # article — typically a paywall teaser (E7-S21). Lets the PWA warn the
     # user before they tap through to a locked page.
     is_premium: bool = False
+    # Feedback state (E9-S1). Defaults applied when the user has not
+    # interacted with the article yet.
+    reaction: Reaction = "none"
+    is_saved: bool = False
+    read_full_article: bool = False
 
 
 class FeedResponse(BaseModel):

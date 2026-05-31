@@ -158,12 +158,14 @@ CREATE INDEX idx_impressions_user_id ON article_impressions(user_id);
 ### article_feedbacks
 ```sql
 CREATE TABLE article_feedbacks (
-  article_id  UUID NOT NULL REFERENCES articles(id),
-  user_id     UUID NOT NULL REFERENCES users(id),
-  action      TEXT NOT NULL CHECK (action IN ('like', 'dislike', 'skip', 'save')),
-              -- last action wins (upsert) — idempotent by design
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  article_id          UUID NOT NULL REFERENCES articles(id),
+  user_id             UUID NOT NULL REFERENCES users(id),
+  reaction            VARCHAR(10) NOT NULL DEFAULT 'none'
+                      CHECK (reaction IN ('like', 'dislike', 'none')),
+  is_saved            BOOLEAN NOT NULL DEFAULT false,
+  read_full_article   BOOLEAN NOT NULL DEFAULT false,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   PRIMARY KEY (article_id, user_id)
 );
@@ -171,8 +173,21 @@ CREATE TABLE article_feedbacks (
 CREATE INDEX idx_feedbacks_user_id ON article_feedbacks(user_id);
 ```
 
-> `save` counts as `like` for keyword_weight computation purposes.
-> Tapping like × 4 = 1 like. Only the last action is stored.
+> Restructured in **E9-S1** — the legacy `action` column is gone. The three
+> dimensions are independent: an article can simultaneously have
+> `reaction='like'`, `is_saved=true`, `read_full_article=true`.
+>
+> **Allowed transitions**:
+>
+> | Field               | Transitions | Notes |
+> |---------------------|-------------|-------|
+> | `reaction`          | like ⇄ dislike ⇄ none | re-tap clears back to `none` |
+> | `is_saved`          | bidirectional | un-save is legal |
+> | `read_full_article` | **monotone** false→true only | backend silently drops `false` payloads |
+>
+> **Idempotent upsert**: `POST /feedback` does a partial update — only the
+> fields present in the payload are touched (`COALESCE(:val, existing)`). An
+> empty payload returns `400`. See `services/feedback_service.py`.
 
 ---
 
@@ -198,13 +213,31 @@ CREATE TABLE keyword_weights (
 CREATE INDEX idx_keyword_weights_user_id ON keyword_weights(user_id);
 ```
 
-> `like_count` and `dislike_count` are kept for:
-> - the "view and edit keyword scores" UI (Should Have)
-> - efficient daily recompute in cron_refresh_weights
+> `like_count` and `dislike_count` are kept for the Keywords UI and for the
+> daily recompute. Their semantics changed in **E9-S1**:
 >
-> weight formula:
->   weight(term, user) = Σ salience(term, article) * feedback_value(action)
->   where feedback_value: like|save = +1, dislike = -1, skip = 0
+> - `like_count`    = rows where `reaction='like' OR is_saved`
+> - `dislike_count` = rows where `reaction='dislike'`
+>
+> **Weight formula (E9-S1 canonical SQL)** — applied per `(user, term)` across
+> every article carrying that term:
+>
+> ```sql
+> SUM(
+>   salience(term, article) * (
+>       CASE WHEN fb.reaction = 'like'    THEN  1.0
+>            WHEN fb.reaction = 'dislike' THEN -1.0
+>            ELSE 0 END
+>     + CASE WHEN fb.is_saved          THEN 0.5 ELSE 0 END
+>     + CASE WHEN fb.read_full_article THEN 0.5 ELSE 0 END
+>   )
+> )
+> ```
+>
+> Per-article signal contributions: `like = +1`, `dislike = -1`, `save = +0.5`,
+> `read_full_article = +0.5`. Signals accumulate: like+save+read = +2.0;
+> dislike+save = -0.5 (rare but legal — user keeps it for reference yet
+> disagrees with the premise).
 
 ---
 

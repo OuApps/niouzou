@@ -99,6 +99,9 @@ class FeedService:
                     (a.content IS NOT NULL
                      AND char_length(a.content) < :premium_max_chars
                     ) AS is_premium,
+                    COALESCE(fb.reaction, 'none') AS reaction,
+                    COALESCE(fb.is_saved, false) AS is_saved,
+                    COALESCE(fb.read_full_article, false) AS read_full_article,
                     {_FEED_RANK} AS feed_rank,
                     COALESCE(
                         (SELECT array_agg(ak.term ORDER BY ak.salience DESC, ak.term ASC)
@@ -111,6 +114,8 @@ class FeedService:
                     ON ars.article_id = a.id AND ars.user_id = :user_id
                 LEFT JOIN article_impressions ai
                     ON ai.article_id = a.id AND ai.user_id = :user_id
+                LEFT JOIN article_feedbacks fb
+                    ON fb.article_id = a.id AND fb.user_id = :user_id
                 WHERE s.user_id = :user_id
                     AND a.status = '{STATUS_ENRICHED}'
                     AND ai.article_id IS NULL
@@ -142,6 +147,9 @@ class FeedService:
                 scorer=r["scorer"],
                 keywords=list(r["keywords"] or []),
                 is_premium=bool(r["is_premium"]),
+                reaction=r["reaction"],
+                is_saved=bool(r["is_saved"]),
+                read_full_article=bool(r["read_full_article"]),
             )
             for r in rows
         ]

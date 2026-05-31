@@ -1,7 +1,8 @@
 """Saved-articles business logic (GET /saved).
 
-Saved = articles whose latest feedback action is ``save``, ordered by when
-they were saved (feedback.updated_at) descending, keyset-paginated.
+Saved = articles whose feedback row has ``is_saved = true``, ordered by when
+the feedback was last updated (descending), keyset-paginated. Restructured
+in E9-S1 — the old ``action = 'save'`` predicate no longer exists.
 """
 
 import uuid
@@ -62,6 +63,9 @@ class SavedService:
                 ),
                 ArticleRelevanceScore.scorer.label("scorer"),
                 ArticleFeedback.updated_at.label("saved_at"),
+                ArticleFeedback.reaction.label("reaction"),
+                ArticleFeedback.is_saved.label("is_saved"),
+                ArticleFeedback.read_full_article.label("read_full_article"),
                 keywords_subq.label("keywords"),
             )
             .join(ArticleFeedback, ArticleFeedback.article_id == Article.id)
@@ -75,7 +79,7 @@ class SavedService:
             )
             .where(
                 ArticleFeedback.user_id == user_id,
-                ArticleFeedback.action == "save",
+                ArticleFeedback.is_saved.is_(True),
             )
             .order_by(ArticleFeedback.updated_at.desc(), Article.id.desc())
             .limit(page_size + 1)
@@ -116,6 +120,9 @@ class SavedService:
                     r.Article.content is not None
                     and len(r.Article.content) < premium_max_chars
                 ),
+                reaction=r.reaction,
+                is_saved=r.is_saved,
+                read_full_article=r.read_full_article,
             )
             for r in rows
         ]

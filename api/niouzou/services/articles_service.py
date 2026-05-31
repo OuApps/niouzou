@@ -15,11 +15,7 @@ from niouzou.models import (
     ArticleRelevanceScore,
     Source,
 )
-from niouzou.schemas.articles import (
-    ArticleDetail,
-    ArticleFeedbackInfo,
-    ArticleSourceRef,
-)
+from niouzou.schemas.articles import ArticleDetail, ArticleSourceRef
 
 
 class ArticlesService:
@@ -51,8 +47,11 @@ class ArticlesService:
                     Source.url.label("source_url"),
                     ArticleRelevanceScore.relevance_score,
                     ArticleRelevanceScore.scorer,
-                    ArticleFeedback.action,
-                    ArticleFeedback.updated_at.label("feedback_updated_at"),
+                    func.coalesce(ArticleFeedback.reaction, "none").label("reaction"),
+                    func.coalesce(ArticleFeedback.is_saved, False).label("is_saved"),
+                    func.coalesce(
+                        ArticleFeedback.read_full_article, False
+                    ).label("read_full_article"),
                     keywords_subq.label("keywords"),
                 )
                 .join(Source, Source.id == Article.source_id)
@@ -78,12 +77,6 @@ class ArticlesService:
             raise not_found("Article not found")
 
         article: Article = row.Article
-        feedback = (
-            ArticleFeedbackInfo(action=row.action, updated_at=row.feedback_updated_at)
-            if row.action is not None
-            else None
-        )
-
         premium_max_chars = get_settings().premium_content_max_chars
         return ArticleDetail(
             id=article.id,
@@ -99,10 +92,12 @@ class ArticlesService:
             enriched_at=article.enriched_at,
             relevance_score=row.relevance_score,
             scorer=row.scorer,
-            feedback=feedback,
             keywords=list(row.keywords or []),
             is_premium=(
                 article.content is not None
                 and len(article.content) < premium_max_chars
             ),
+            reaction=row.reaction,
+            is_saved=bool(row.is_saved),
+            read_full_article=bool(row.read_full_article),
         )
