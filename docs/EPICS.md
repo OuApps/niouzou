@@ -1334,43 +1334,65 @@ A concurrent Railway cron run and a manual "Run now" trigger can execute `cron_f
 
 ## EPIC 9 — Refonte UX TikTok-like
 
-**Objectif** : Remplacer le feed à mini-cartes par un feed fullscreen scroll-snap vertical (style TikTok), séparer le système de feedback (save / like / dislike deviennent des états indépendants), refondre le scoring en conséquence, et introduire un onglet Explore (file d'actu : history + new).
+**Objectif** : Remplacer le feed à mini-cartes par un feed fullscreen scroll-snap vertical (style TikTok), séparer le système de feedback (save / like / dislike / read deviennent des états indépendants), refondre le scoring en conséquence, et introduire un onglet Explore (file d'actu : history + new).
 
 > Dépend de EPIC 3, EPIC 4, EPIC 5.
+
+**Ordre de livraison** : `S1 → (S2, S4 en parallèle) → S3`. S1 est bloquant pour tout le reste (nouveaux champs dans les payloads d'article + nouveau shape `POST /feedback`).
 
 ---
 
 ### Nouveau modèle de feedback
 
-`article_feedbacks` est restructuré pour séparer la réaction de la sauvegarde :
+`article_feedbacks` est restructuré pour séparer la réaction, la sauvegarde et la lecture :
 
 ```sql
--- Nouvelles colonnes (migration, anciennes supprimées)
+-- Nouvelles colonnes (migration, ancienne `action` supprimée)
 reaction            VARCHAR(10) NOT NULL DEFAULT 'none'
-                    CHECK (reaction IN ('like', 'dislike', 'none'))
-is_saved            BOOLEAN NOT NULL DEFAULT false
+                    CHECK (reaction IN ('like', 'dislike', 'none')),
+is_saved            BOOLEAN NOT NULL DEFAULT false,
 read_full_article   BOOLEAN NOT NULL DEFAULT false
 ```
 
-Un article peut simultanément avoir `reaction = 'like'` **et** `is_saved = true`.
+Un article peut simultanément avoir `reaction = 'like'`, `is_saved = true` et `read_full_article = true` — les trois dimensions sont indépendantes.
+
+**Sémantique des transitions** :
+
+| Champ               | Transitions autorisées | Justification |
+|---------------------|------------------------|---------------|
+| `reaction`          | bidirectionnelle (like ⇄ dislike ⇄ none) | L'utilisateur peut changer d'avis (re-tap = retour à `none`) |
+| `is_saved`          | bidirectionnelle (un-save autorisé) | Geste bookmark classique |
+| `read_full_article` | **monotone** (`false → true` uniquement) | Un read est un événement, pas un état réversible. Le backend ignore silencieusement un payload `{ read_full_article: false }`. |
 
 **Migration des données existantes** :
 - `action = 'like'`    → `reaction = 'like'`
 - `action = 'dislike'` → `reaction = 'dislike'`
-- `action = 'save'`    → `is_saved = true`
-- `action = 'skip'`    → supprimé
+- `action = 'save'`    → `is_saved = true`, `reaction = 'none'`
+- `action = 'skip'`    → ligne supprimée (skip n'était jamais consommé en scoring)
 
-**Nouveau modèle de scoring** (poids des signaux sur `keyword_weights`) :
+**Nouveau modèle de scoring** (contribution d'un article au poids de ses keywords) :
 
-| Signal             | Poids |
-|--------------------|-------|
-| Like               | +1.0  |
-| Dislike            | −1.0  |
-| Save               | +0.5  |
-| Read full article  | +0.5  |
-| Scroll sans action | 0     |
+| Signal                       | Contribution |
+|------------------------------|--------------|
+| `reaction = 'like'`          | +1.0  |
+| `reaction = 'dislike'`       | −1.0  |
+| `is_saved = true`            | +0.5  |
+| `read_full_article = true`   | +0.5  |
+| Tous les champs neutres      | 0     |
 
-Les signaux s'accumulent par article : un article liked + saved = +1.5 pour ses keywords.
+Les signaux s'accumulent par article : un article liked + saved + read = +2.0 pour ses keywords. Un article disliked + saved (cas tordu mais légal — l'utilisateur veut le garder pour référence) = −0.5.
+
+**Expression SQL canonique** (à reproduire dans `services/weights.py`) :
+
+```sql
+salience * (
+  CASE WHEN fb.reaction = 'like'    THEN  1.0
+       WHEN fb.reaction = 'dislike' THEN -1.0
+       ELSE 0 END
+  + CASE WHEN fb.is_saved          THEN 0.5 ELSE 0 END
+  + CASE WHEN fb.read_full_article THEN 0.5 ELSE 0 END
+)
+```
 
 ---
 
@@ -1378,157 +1400,343 @@ Les signaux s'accumulent par article : un article liked + saved = +1.5 pour ses 
 
 #### [ ] E9-S1 — Data model & scoring refactor *(backend)*
 
-**Changements** :
+**Migration Alembic** :
 
-- Migration Alembic : ajouter `reaction`, `is_saved`, `read_full_article` à `article_feedbacks` ; migrer les données existantes selon la table ci-dessus ; supprimer la colonne `action`
-- `keyword_weights` : remplacer `like_count`/`dislike_count` par un calcul pondéré direct :
+- Ajouter `reaction`, `is_saved`, `read_full_article` à `article_feedbacks` (defaults ci-dessus, NOT NULL).
+- Backfill via un seul `UPDATE` selon la table de migration ci-dessus.
+- `DELETE FROM article_feedbacks WHERE action = 'skip'` **avant** de drop la colonne (sinon les skips laissent des lignes `(reaction='none', is_saved=false, read_full_article=false)` qui n'apportent rien au scoring mais polluent les `COUNT`).
+- Drop la colonne `action` et son `CHECK CONSTRAINT ck_feedbacks_action`.
+- ⚠️ **Migration destructive, pas de downgrade utile** : `downgrade()` peut être un `raise NotImplementedError` explicite. Documenter dans la note de release : *"backup PG recommandé avant migration"*.
+
+**`keyword_weights`** :
+
+- **Conserver** les colonnes `like_count` et `dislike_count` (consommées par `pwa/src/screens/Keywords.tsx:271` et `pwa/src/types/api.ts:59-60`).
+- Nouveau sens :
+  - `like_count` = `COUNT(*) FILTER (WHERE fb.reaction = 'like' OR fb.is_saved)`
+  - `dislike_count` = `COUNT(*) FILTER (WHERE fb.reaction = 'dislike')`
+- `weight` recomputé via l'expression SQL canonique ci-dessus.
+
+**`services/weights.py`** :
+
+- Remplacer la constante `_FEEDBACK_VALUE` par la nouvelle expression.
+- Adapter `_AGGREGATE` pour les `COUNT(*) FILTER (...)`.
+- Aucun autre changement structurel — le lock per-term (lignes 62-76) et l'idempotence restent identiques.
+
+**`services/feedback_service.py` + `schemas/feedback.py`** :
+
+- Nouveau payload :
+  ```python
+  class FeedbackRequest(BaseModel):
+      article_id: UUID
+      reaction:          Literal['like', 'dislike', 'none'] | None = None
+      is_saved:          bool | None = None
+      read_full_article: Literal[True]    | None = None  # monotone
   ```
-  weight(term, user) = Σ salience(term, article) × signal_value
+- **Sémantique** : `None` (champ absent) = *ne touche pas*. `False` sur `is_saved` = *unset explicite*. `'none'` sur `reaction` = *clear*.
+- Upsert partiel via un seul `INSERT … ON CONFLICT … DO UPDATE SET col = COALESCE(:val, col)` (un aller-retour DB).
+- Refuser un payload où les trois champs sont `None` (400 — *no-op interdit*, signal d'un bug côté client).
+- `recompute_for_terms` est appelé après upsert, identique à aujourd'hui — la liste des terms affectés ne change pas.
+
+**Endpoints article** :
+
+- `GET /feed`, `GET /saved`, `GET /explore/*` retournent désormais sur chaque article :
+  ```json
+  { "reaction": "like" | "dislike" | "none",
+    "is_saved": bool,
+    "read_full_article": bool }
   ```
-  où `signal_value` = somme des poids actifs sur cet article (+1.0 like, −1.0 dislike, +0.5 save, +0.5 read)
-- `cron_refresh_weights` : recompute avec la nouvelle formule
-- `POST /feedback` : nouveau shape partiel `{ article_id, reaction?, is_saved?, read_full_article? }` — chaque champ est optionnel, mis à jour indépendamment (upsert partiel)
-- Tous les endpoints renvoyant des articles (`GET /feed`, `GET /saved`, `GET /explore`) ajoutent `reaction`, `is_saved`, `read_full_article` dans leur réponse article
-- **MAJ docs** : `docs/DATA_MODEL.md` (schéma `article_feedbacks`, formule de scoring), `docs/API_SPEC.md` (`POST /feedback`)
+- LEFT JOIN sur `article_feedbacks` ; défauts (`"none"`, `false`, `false`) si pas de ligne pour l'utilisateur.
+
+**Hors scope (sera traité par S2/S4)** :
+
+- `pwa/src/screens/Feed.tsx:267` et `pwa/src/store/feedback.ts:10,27` (logique `action === 'save'`) — restera temporairement cassé entre S1 et S2/S4. Acceptable car S1 ne déploie pas seul en prod (livraison groupée S1+S2+S4 minimum).
+
+**MAJ docs** :
+
+- `docs/DATA_MODEL.md` : nouveau schéma `article_feedbacks`, table de transitions, expression SQL canonique, nouveau sens de `like_count`/`dislike_count`.
+- `docs/API_SPEC.md` : nouveau payload `POST /feedback`, nouveaux champs dans les réponses `/feed`, `/saved`, `/explore/*`.
+
+**Test plan** (obligatoire — la migration est critique) :
+
+- Unitaire `test_feedback_migration.py` : fixtures avec les 4 actions → assertions sur les colonnes après upgrade.
+- Unitaire `test_feedback_partial_upsert.py` : `is_saved=True` seul ne touche pas à `reaction` ; `reaction='none'` clear sans toucher à `is_saved` ; `read_full_article=False` ignoré silencieusement ; payload vide → 400.
+- Unitaire `test_weights_formula.py` : fixtures (like seul, like+save, dislike+saved, like+read, like+save+read) → poids attendus exacts.
+- Intégration `test_feedback_idempotence.py` : deux appels successifs de `cron_refresh_weights` produisent les mêmes rows à la microseconde près.
 
 **Acceptance criteria** :
 
-- Après migration, aucun `action` en base ; les feedbacks existants sont correctement convertis
-- `POST /feedback { "is_saved": true }` seul ne touche pas à `reaction`
-- `POST /feedback { "reaction": "like" }` seul ne touche pas à `is_saved`
-- `cron_refresh_weights` produit des résultats identiques si relancé deux fois (idempotent)
-- Un keyword liked + saved a un poids supérieur à un keyword liked seul
+- Après migration, plus aucune colonne `action` ; les feedbacks `like`/`dislike`/`save` sont convertis sans perte ; les `skip` sont supprimés.
+- `POST /feedback { "article_id": ..., "is_saved": true }` ne touche pas à `reaction` ni `read_full_article`.
+- `POST /feedback { "article_id": ..., "reaction": "like" }` ne touche pas à `is_saved` ni `read_full_article`.
+- `POST /feedback { "article_id": ..., "read_full_article": false }` retourne 200 mais n'écrit rien (no-op silencieux côté backend — la monotonie est garantie).
+- `POST /feedback { "article_id": ... }` (aucun champ) retourne 400.
+- Un keyword liked + saved a un poids strictement supérieur à un keyword liked seul (1.5 × salience vs 1.0 × salience).
+- `cron_refresh_weights` reste idempotent.
+- `GET /feed` retourne `reaction`/`is_saved`/`read_full_article` pour chaque article ; valeurs par défaut quand pas d'interaction.
 
 ---
 
 #### [ ] E9-S2 — Feed fullscreen TikTok *(frontend)*
 
-**Concept** : Le feed actuel (mini-cartes swipeables) est remplacé par un conteneur scroll-snap vertical. Chaque article occupe 100 vh et affiche le contenu complet inline — il n'y a plus de navigation vers `/articles/:id` depuis le feed.
+**Concept** : Le feed mini-carte est remplacé par un conteneur scroll-snap vertical. Chaque article occupe 100 dvh et affiche tout son contenu inline. Plus aucune navigation vers `/articles/:id` depuis le feed.
 
-**Layout de chaque article** (reprend et adapte `ArticleDetail.tsx` actuel) :
+**Layout d'un slide** (réécriture de `pwa/src/screens/Feed.tsx` + nouveau composant `FeedArticleSlide.tsx` ; on s'inspire de `ArticleDetail.tsx` actuel pour le rendu interne) :
 
 ```
-┌─────────────────────────────┐  ← 100vh
-│  og:image (fond plein écran) │
-│  + gradient overlay bas      │
-│                              │
-│  source badge  score badge   │
-│                              │
-│  Titre (15px/600)            │
-│  Keywords tags               │
-│  Summary executive (bullets) │
-│  Summary short               │
-│  ─────────────────           │
-│  [Lire l'article complet]    │
-│                              │
-│  👎  🔖  👍                  │  ← actions fixes en bas
-└─────────────────────────────┘
+┌────────────────────────────────┐  ← 100dvh (pas 100vh)
+│  og:image (background, blur)   │
+│  + gradients haut + bas        │
+│                                │
+│  source badge        score     │  ← header sticky top
+│                                │
+│  ─── conteneur scrollable ─────│
+│  Titre (24px / 600)            │
+│  Keywords tags                 │
+│  Summary executive (bullets)   │
+│  Summary short                 │
+│                                │
+│  ─── contenu crawlé (si dispo) │
+│  a.content rendu en markdown   │
+│                                │
+│  [Lire l'article complet ↗]    │  ← bouton (ouvre URL externe)
+│                                │
+│  ── BUTÉE ──                   │  ← cf. "Indicateur de butée"
+│  ▼ logo Niouzou ▼              │
+│  ── ─────────── ──             │
+│                                │
+│  👎      🔖      👍            │  ← actions sticky bottom
+└────────────────────────────────┘
 ```
 
-**Scroll** :
-- Scroll dans le panneau contenu = lire l'article (contenu plus long que l'écran)
-- Butée visuelle (séparateur ou indicateur) au bas du contenu de l'article
-- Scroll après butée = article suivant (snap au prochain item)
+**Hauteur viewport — 100dvh, pas 100vh** :
+
+- `100vh` est cassé sur Safari iOS et Chrome Android : la barre URL réduit le viewport visible, le snap déborde, le bouton actions passe sous le bord.
+- Utiliser `100dvh` (dynamic viewport height). Fallback : `100svh` puis `100vh` pour les vieux navigateurs.
+- Convention à documenter dans `DESIGN_SYSTEM.md` pour toutes les pages fullscreen.
+
+**Lecture du contenu crawlé** :
+
+- Si `article.content` est non-null (crawl réussi), il est rendu **inline avant** le bouton "Lire l'article complet". On ne perd PAS la lecture en app pour ces articles.
+- Le bouton "Lire l'article complet" est toujours présent (lien externe vers `article.url`).
+- Si `article.content` est null, seul le bouton est affiché — pas de bloc vide rendu.
+
+**Scroll dual (intra-article + inter-article)** :
+
+CSS `scroll-snap-type: y mandatory` pur ne sait pas scroller librement dans un slide puis snap au suivant. Stratégie :
+
+1. Conteneur racine `<div class="feed-snap">` : `scroll-snap-type: y mandatory; overflow-y: scroll`.
+2. Chaque slide `<article class="feed-slide">` : `scroll-snap-align: start; scroll-snap-stop: always; height: 100dvh; overflow-y: auto`.
+3. Contenu intérieur `<div class="slide-scroll">` : scrollable indépendamment tant qu'on n'est pas en bas.
+4. `overscroll-behavior-y: contain` sur `.slide-scroll` — quand le scroll interne touche le bas, l'inertie touch suivante traverse au parent qui snap.
+5. À tester en vrai sur iOS Safari, Chrome Android et desktop. Fallback JS prévu si nécessaire : `IntersectionObserver` + bascule `scroll-snap-type: none` pendant le scroll interne.
+
+**Indicateur de butée (visuel pédagogique — apprendre à re-scroller pour avancer)** :
+
+À la fin du contenu scrollable du slide, juste avant le bord bas masqué par la barre d'actions, afficher un indicateur explicite :
+
+- Nouveau composant `pwa/src/components/ScrollBoundaryHint.tsx`.
+- Anatomie verticale :
+  1. Fine ligne de séparation : `1px solid var(--border-subtle)`, largeur 60%, centrée, marge verticale 16px.
+  2. Logomark Niouzou : réutiliser `pwa/public/favicon.svg`, 32px, `opacity: 0.6`.
+  3. Chevron `ChevronDown` (lucide-react), 20px, `var(--text-tertiary)`, animation bounce :
+     ```css
+     @keyframes bounce-soft {
+       0%, 100% { transform: translateY(0); }
+       50%      { transform: translateY(4px); }
+     }
+     /* applied: animation: bounce-soft 1.6s ease-in-out infinite */
+     ```
+  4. Label *"Article suivant"* (12px, `var(--text-tertiary)`, opacity 0.5).
+- Visibilité : le hint est en fin de contenu — il devient visible quand l'utilisateur a scrollé jusqu'en bas du slide. C'est intentionnel — il sert de récompense visuelle qui confirme *"tu peux re-scroller"*.
+- L'animation bounce **s'arrête** dès que le slide suivant entre en viewport (économie batterie + évite sur-stimulation). Implémentation : `IntersectionObserver` sur le slide suivant → toggle `data-bouncing` sur le hint.
+- À documenter dans `DESIGN_SYSTEM.md`, section "Scroll boundary".
 
 **Actions — icônes à état** :
-- Like `ThumbsUp` : rempli cyan quand `reaction = 'like'`, outline sinon
-- Dislike `ThumbsDown` : rempli rouge quand `reaction = 'dislike'`, outline sinon
-- Save `Bookmark` : rempli jaune quand `is_saved = true`, outline sinon
-- Les trois icônes sont toujours visibles ; aucune action ne navigue vers l'article suivant
-- Pas de double-tap
-- L'état initial est chargé depuis `reaction`/`is_saved` retournés par `GET /feed`
 
-**"Lire l'article complet"** :
-- Ouvre l'URL originale dans le navigateur
-- Envoie `POST /feedback { "read_full_article": true }` en arrière-plan
+Barre `sticky bottom` (au-dessus de la BottomNav système), trois icônes :
+
+- Dislike `ThumbsDown` (gauche) : `fill: var(--accent-red)` si `reaction === 'dislike'`, outline sinon.
+- Save `Bookmark` (centre) : `fill: var(--accent-yellow)` si `is_saved`, outline sinon.
+- Like `ThumbsUp` (droite) : `fill: var(--accent-cyan)` si `reaction === 'like'`, outline sinon.
+
+Comportement :
+
+- Tap like/dislike : toggle (re-tap → `reaction: 'none'`).
+- Tap save : toggle `is_saved`.
+- Like et dislike mutuellement exclusifs (tap like quand disliked → passe à liked, pas à `none`).
+- Save et reaction indépendants.
+- **Optimistic update** : l'icône change instantanément, `POST /feedback` en arrière-plan. En cas d'erreur, rollback de l'état local + toast d'erreur.
+- Pas de double-tap, pas de swipe-action.
+
+**Lecture de l'article complet** :
+
+- Bouton "Lire l'article complet ↗" sous le contenu inline.
+- `onClick` :
+  1. Émettre `POST /feedback { article_id, read_full_article: true }` (fire-and-forget — la monotonie de S1 garantit que les multi-appels sont OK).
+  2. `window.open(article.url, '_blank', 'noopener')`.
+- L'icône reflétant `read_full_article` n'est pas exposée visuellement dans cette story — on persiste juste pour le scoring.
 
 **Impression** :
-- `POST /feed/:id/impression` appelé quand l'article entre dans le viewport (scroll snap)
+
+- `IntersectionObserver` sur chaque slide (`threshold: 0.7` — ≥ 70% visible).
+- Quand un slide reste ≥ 500 ms en viewport (timer `setTimeout`, annulé si l'élément ressort avant), émettre `POST /feed/:id/impression`.
+- Ce seuil évite qu'un scroll rapide n'impressionne 10 articles d'affilée.
+- Déduplication client (`Set<articleId>` en ref) pour éviter le double appel sur aller-retour rapide.
 
 **Suppression** :
-- L'écran `ArticleDetail.tsx` et la route `/articles/:id` sont supprimés — toute lecture se fait inline dans le feed
-- Le bouton retour est supprimé (remplacé par scroll vers le haut)
 
-**MAJ docs** : `docs/DESIGN_SYSTEM.md` (layout article fullscreen, icônes à état, suppression ArticleDetail)
+- Supprimer `pwa/src/screens/ArticleDetail.tsx` et la route `/articles/:id` dans `pwa/src/App.tsx:27`.
+- Supprimer les `navigate('/articles/...')` :
+  - `pwa/src/components/ArticleCard.tsx:112` (le composant est retiré ou refondu en `FeedArticleSlide`).
+  - `pwa/src/screens/Saved.tsx:112` (cf. S4 — remplacé par navigation Explore→Feed décrite en S3).
+- Conséquence : **plus de deeplink vers un article individuel**. Le partage d'URL d'article externe se fait via `article.url`, pas via une URL Niouzou. Tradeoff acté.
+
+**Préchargement / performance** :
+
+- `<img loading="lazy">` sur les `og:image` des slides au-delà de N+2.
+- Pour slides N et N+1 : `loading="eager"` + `<link rel="preload" as="image">` injecté dynamiquement.
+- Pas de virtualisation dans cette story (à reconsidérer en EPIC 10 si la pagination charge >50 slides en mémoire).
+
+**MAJ docs** :
+
+- `docs/DESIGN_SYSTEM.md` : layout slide fullscreen, convention `100dvh`, composant `ScrollBoundaryHint`, animation `bounce-soft`, suppression d'ArticleDetail.
 
 **Acceptance criteria** :
 
-- Chaque article occupe exactement 100 vh ; le scroll snap passe au suivant proprement
-- Les icônes like/dislike/save reflètent l'état persisté au chargement et se mettent à jour localement après chaque action
-- Save et like peuvent être actifs simultanément sur le même article
-- "Lire l'article complet" ouvre le navigateur ET envoie le signal `read_full_article`
-- Aucune régression sur `GET /feed` (pagination, scoring, impression)
+- Chaque slide occupe `100dvh` ; aucune zone du contenu ou des actions n'est masquée par la barre URL Safari/Chrome.
+- Le scroll dans le contenu d'un slide ne déclenche pas le snap au slide suivant tant qu'on n'a pas atteint la fin du contenu.
+- Une fois le scroll interne en bout de course, un swipe vertical supplémentaire snap au slide suivant.
+- L'indicateur de butée (logo Niouzou + chevron animé + label) apparaît en bas du contenu de chaque slide et anime un bounce léger jusqu'à ce que le slide suivant entre en viewport.
+- Les icônes like/dislike/save reflètent l'état persisté au chargement (`GET /feed` payload S1) et se mettent à jour optimistiquement après tap.
+- Save et like peuvent être actifs simultanément.
+- Re-tap sur like (quand déjà liked) ramène `reaction` à `'none'`.
+- "Lire l'article complet" ouvre `article.url` dans un nouvel onglet ET émet `POST /feedback { read_full_article: true }` même si l'impression n'a pas encore été enregistrée.
+- L'impression d'un article n'est émise qu'après ≥ 500 ms de présence en viewport (≥ 70%).
+- Un scroll-rapide à travers 5 slides n'émet pas 5 impressions instantanées (au plus l'article où l'utilisateur s'arrête).
+- `pwa/src/screens/ArticleDetail.tsx` et la route `/articles/:id` n'existent plus ; `npm run build` passe sans warning d'import cassé.
+- Si `article.content` est null, le bouton "Lire l'article complet" est la seule option de lecture exhaustive (pas de bloc vide rendu).
 
 ---
 
 #### [ ] E9-S3 — Explore tab *(backend + frontend)*
 
-**Concept** : Nouvel onglet Explore accessible depuis la BottomNav. Deux modes : **History** (articles déjà vus, triés par date de lecture) et **New** (articles enrichis non vus, triés par le même ranking que le feed).
+**Concept** : Nouvel onglet Explore (BottomNav). Deux modes — **History** (articles déjà vus, triés par `seen_at DESC`) et **New** (articles enrichis non vus, triés par le ranking gravity du feed). Permet de retrouver un article passé ou de scanner ce qui arrive sans s'engager dans le feed fullscreen.
 
-**Backend** :
+**Backend — deux endpoints distincts** (plus propre qu'un seul `?mode=` qui mélange deux requêtes très différentes) :
 
-- Nouvel endpoint `GET /explore?mode=history|new&cursor=...` (cursor-based pagination)
+- `GET /explore/history?cursor=...&limit=20`
+  - Articles avec `article_impressions` pour cet utilisateur.
+  - Tri : `article_impressions.seen_at DESC, articles.id DESC`.
+  - Keyset cursor sur `(seen_at, id)`.
+  - Chaque item : champs article + `reaction`, `is_saved`, `read_full_article`, `seen_at`.
 
-  `mode=history` :
-  - Articles pour lesquels `article_impressions.seen_at` existe pour cet utilisateur
-  - Triés par `article_impressions.seen_at DESC`
-  - Chaque item inclut : fields article + `reaction`, `is_saved`, `read_full_article`, `seen_at`
+- `GET /explore/new?cursor=...&limit=20`
+  - Articles **enrichis non impressionnés** par cet utilisateur.
+  - Tri : `feed_rank DESC, id DESC` (même expression que `FeedService._FEED_RANK`).
+  - Keyset cursor sur `(feed_rank, id)`.
+  - Hérite de `FeedService` :
+    - ✅ Gravity ranking
+    - ✅ Filtre `status = 'enriched'`
+    - ✅ Filtre `article_impressions IS NULL`
+    - ✅ Filtre `Source.user_id` (n'expose pas les sources d'autres users)
+    - ❌ **Pas** de `SCORE_THRESHOLD` — Explore New montre tout l'enrichi non vu.
+    - ❌ **Pas** de `random_surface_rate` — déterministe.
+    - ❌ **Pas** de cold-start logic — non pertinent ici.
+  - Chaque item : champs article + `reaction: 'none'`, `is_saved: false`, `read_full_article: false` (toujours ces valeurs par définition).
 
-  `mode=new` :
-  - Articles enrichis **non** impressionnés par cet utilisateur
-  - Triés par le ranking HN-gravity du feed : `relevance_score / (age_hours + 2)^FEED_GRAVITY`
-  - Même logique que `GET /feed` (réutiliser `FeedService`) mais rendu en liste, sans `SCORE_THRESHOLD` (tous les articles enrichis non vus sont visibles)
-  - Chaque item inclut : fields article + `reaction` (toujours `none`), `is_saved` (toujours `false`), `seen_at` (toujours `null`)
+**Refactor `FeedService`** : extraire la requête SQL ranked (`feed_service.py:85-125`) en méthode privée `_build_ranked_query(*, apply_threshold: bool, apply_random_surface: bool)` réutilisable par `ExploreService.list_new()`.
 
-- **MAJ docs** : `docs/API_SPEC.md` (endpoint `GET /explore`)
+**Pas d'auto-impression depuis Explore** :
+
+- Scroller Explore New **n'émet aucune impression**. L'utilisateur peut scanner sans consommer.
+- L'impression est émise uniquement quand l'utilisateur entre dans le feed fullscreen depuis cet article (cf. navigation ci-dessous) — code S2 s'en charge.
+- Conséquence : pas de risque de "vider le feed naturel" en consultant Explore.
+
+**Navigation Explore → Feed (tap sur un article)** :
+
+- Route `/feed?start=:articleId` (query param, pas de path segment — évite une nouvelle route Router).
+- `Feed.tsx` au mount lit `?start=` ; si présent, demande au backend la page de feed contenant cet article + place ce slide en haut.
+- Backend : `GET /feed?start=:articleId` accepte un nouveau query param.
+  - Si fourni, charger l'article spécifié (vérifier ownership + qu'il est `enriched`) **avant** la pagination normale.
+  - Calculer son `feed_rank` ; renvoyer une première page commençant par cet article suivi des articles `(feed_rank, id) < (start.feed_rank, start.id)`.
+  - Si l'article est déjà impressionné (cas Explore History), désactiver le filtre impression **pour cet article-là uniquement** : `AND (ai.article_id IS NULL OR a.id = :start)`.
+- L'impression de l'article `start` sera émise normalement par S2 quand le slide reste 500 ms en viewport.
 
 **Frontend** :
 
-- Nouvel écran `/explore`
-- Deux onglets en haut : **History** / **New**
-- Layout de chaque row (même que `Saved.tsx`) :
-  - Thumbnail (og:image), source, titre, score pill, timestamp relatif (`seen_at` pour History, `published_at` pour New)
-  - Ligne d'icônes d'état : `Bookmark` (jaune si `is_saved`, gris sinon) + `ThumbsUp` (cyan si liked, gris sinon) + `ThumbsDown` (rouge si disliked, gris sinon) — les trois toujours visibles
-- Tap sur un article → démarre le feed à partir de cet article (naviguer vers `/` en passant l'id comme point de départ)
-- Infinite scroll (cursor-based)
-- **Impressions en mode New** : `POST /feed/:id/impression` appelé pour chaque article visible dans la liste (vu = vu — l'article ne réapparaîtra pas dans le feed ni dans Explore New)
-- Empty state par onglet
+- Nouvel écran `pwa/src/screens/Explore.tsx`, route `/explore`.
+- Header sticky avec deux onglets (`History` / `New`) — composant `Tabs` simple.
+- Layout d'une row (reprendre la grille de `Saved.tsx`) :
+  - Thumbnail og:image à gauche (64×64).
+  - Titre + source au centre.
+  - Score pill (relevance_score, 2 décimales).
+  - Timestamp relatif (`seen_at` pour History, `published_at` pour New, format `il y a 2h`).
+  - Ligne d'icônes d'état sous le titre : `Bookmark` (jaune si `is_saved`), `ThumbsUp` (cyan si liked), `ThumbsDown` (rouge si disliked), `BookOpen` (gris subtil si `read_full_article`). Outline en `var(--text-tertiary)` quand pas d'état actif.
+  - En mode New, aucune icône n'a d'état actif par définition — on peut les omettre dans ce mode pour épargner le visuel.
+- Tap sur une row → `navigate('/feed?start=' + article.id)`.
+- Infinite scroll cursor-based (réutiliser le pattern `Saved.tsx`).
+- Empty states distincts :
+  - History vide : *"Aucun article lu pour l'instant. Reviens ici après avoir parcouru ton feed."*
+  - New vide : *"Pas de nouveaux articles. Le prochain enrichissement est prévu dans X min."* (réutiliser `cron_enrich_interval_minutes` de `/stats`).
+
+**MAJ docs** :
+
+- `docs/API_SPEC.md` : endpoints `GET /explore/history`, `GET /explore/new`, nouveau query param `GET /feed?start=...`.
+- `docs/DESIGN_SYSTEM.md` : pattern liste Explore (réutilise grille Saved).
+
+**Test plan** :
+
+- Backend `test_explore_history.py` : ordre `seen_at DESC`, cursor stable, pas de doublon.
+- Backend `test_explore_new.py` : ordre gravity, pas de seuil, pas de random, n'inclut pas les impressionnés.
+- Backend `test_feed_start_param.py` : article pivot en premier ; un article déjà impressionné est accepté en `start` (override d'exclusion).
 
 **Acceptance criteria** :
 
-- History affiche les articles dans l'ordre de `seen_at DESC`
-- New affiche les articles enrichis non vus dans l'ordre du ranking feed (gravity)
-- Les trois icônes d'état reflètent correctement `reaction` et `is_saved`
-- Tap sur un article en mode New crée une impression (l'article disparaît de New au prochain refresh)
+- `GET /explore/history` retourne les articles vus de l'utilisateur, tri `seen_at DESC`, pagination stable.
+- `GET /explore/new` retourne tous les articles enrichis non vus, tri `feed_rank DESC`, sans `SCORE_THRESHOLD` ni `random_surface_rate`.
+- Scroller la liste Explore New **n'émet aucune impression** (vérifié par absence de log/insert sur `article_impressions`).
+- Tap sur un article dans Explore (n'importe quel mode) ouvre le feed fullscreen avec cet article en premier slide.
+- En mode History, tap sur un article déjà impressionné le ré-affiche dans le feed (override de l'exclusion par impression pour cet article).
+- Les icônes d'état dans Explore History reflètent correctement `reaction`, `is_saved`, `read_full_article`.
 
 ---
 
 #### [ ] E9-S4 — Navigation & Saved update *(frontend)*
 
-**BottomNav** (`BottomNav.tsx`) :
+**BottomNav** (`pwa/src/components/BottomNav.tsx`) :
 
-- Nouveaux tabs : **Feed** / **Explore** / **Saved** / **Profile**
-- Icône Explore : `Compass` ou `Newspaper` (lucide-react)
-- Onglet Keywords retiré de la nav
+- Tabs finaux : **Feed** / **Explore** / **Saved** / **Profile** (4 tabs).
+- Icône Explore : `Compass` (lucide-react) — plus universel que `Newspaper` et ne se confond pas avec Feed.
+- Onglet Keywords retiré de la nav (route conservée, accessible via Profile).
 
-**Profile** (`Profile.tsx`) :
+**Profile** (`pwa/src/screens/Profile.tsx`) :
 
-- Ajouter un menu item **"Keywords"** entre "Manage sources" et "Administration" (ou "System" si pas admin)
-- Route `/keywords` conservée, composant inchangé
+- Ajouter un menu item **"Keywords"** entre "Manage sources" et le bloc "Administration" / "System".
+- Icône : `Tags` ou `Hash` (lucide-react).
+- Route `/keywords` conservée, composant `Keywords.tsx` inchangé.
 
-**Saved** (`Saved.tsx`) :
+**Saved** (`pwa/src/screens/Saved.tsx`) :
 
-- Basé sur `is_saved = true` (champ source change de `action = 'save'` à `is_saved = true`)
-- Chaque row affiche les mêmes trois icônes d'état que Explore : `Bookmark` (toujours jaune puisque saved), `ThumbsUp` (cyan si liked), `ThumbsDown` (rouge si disliked)
+- Source de vérité change : `SavedService` filtre désormais sur `is_saved = true` au lieu de `action = 'save'` (cohérent avec S1 — déjà couvert backend, juste à régénérer les types côté PWA).
+- Chaque row affiche la même ligne d'icônes d'état qu'Explore History :
+  - `Bookmark` (toujours jaune ici, par définition `is_saved = true`).
+  - `ThumbsUp` (cyan si `reaction === 'like'`).
+  - `ThumbsDown` (rouge si `reaction === 'dislike'`).
+  - `BookOpen` (subtil si `read_full_article`).
+- Tap sur une row → `navigate('/feed?start=' + article.id)` (cohérent avec Explore — supprime `navigate('/articles/:id')` ligne 112).
+- Supprimer la logique snapshot `Saved.tsx:20` (revenir d'`/articles/:id`) — n'a plus de sens sans ArticleDetail.
 
-**MAJ docs** : `docs/DESIGN_SYSTEM.md` (inventaire écrans, tabs nav — Feed / Explore / Saved / Profile)
+**MAJ docs** :
+
+- `docs/DESIGN_SYSTEM.md` : inventaire écrans + tabs nav (Feed / Explore / Saved / Profile), section "Profile menu items" (ajout Keywords).
 
 **Acceptance criteria** :
 
-- BottomNav affiche Feed / Explore / Saved / Profile
-- Keywords accessible via Profile → Keywords ; aucun lien cassé
-- Saved reflète correctement les articles où `is_saved = true`
-- Les icônes d'état dans Saved affichent la réaction courante
+- BottomNav affiche exactement 4 tabs : Feed / Explore / Saved / Profile.
+- L'item "Keywords" est visible et fonctionnel depuis Profile.
+- `Saved.tsx` charge la liste sans référence à `action = 'save'` ; les icônes d'état reflètent la réaction et le statut read.
+- Tap sur un article Saved ouvre le feed fullscreen sur cet article.
+- Aucun lien cassé après suppression de la route `/articles/:id` (vérifié via `npm run build` + grep `articles/` dans `pwa/src/`).
 
 ---
 
