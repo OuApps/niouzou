@@ -109,7 +109,7 @@ export const Sources = () => {
   }
 
   return (
-    <div className="flex flex-col min-h-dvh relative">
+    <div className="flex flex-col h-dvh overflow-y-auto relative">
       <BlobBackground />
 
       <header

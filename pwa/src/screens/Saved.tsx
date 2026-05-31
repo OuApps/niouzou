@@ -40,6 +40,10 @@ export const Saved = () => {
   const loadingMoreRef = useRef(false)
   const hadSnapshotOnMount = useRef(savedSnapshot !== null)
   const restoredScrollY = useRef(savedSnapshot?.scrollY ?? 0)
+  // Outer wrapper owns the scroll (h-dvh + overflow-y-auto), so snapshot
+  // save/restore reads scrollTop from this ref — `window.scrollY` would
+  // always be 0 here (E7-S29).
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 
   // Session overlay: hide unsaved rows, prepend optimistically-saved articles.
   const feedbacks = useFeedbackStore((s) => s.feedbacks)
@@ -51,7 +55,9 @@ export const Saved = () => {
       hadSnapshotOnMount.current = false
       // Restore scroll on the next paint, once the rendered rows occupy
       // enough height for the scroll position to be reachable.
-      requestAnimationFrame(() => window.scrollTo(0, restoredScrollY.current))
+      requestAnimationFrame(() => {
+        scrollContainerRef.current?.scrollTo({ top: restoredScrollY.current })
+      })
       return
     }
     let active = true
@@ -101,7 +107,7 @@ export const Saved = () => {
         articles,
         cursor,
         hasMore,
-        scrollY: window.scrollY,
+        scrollY: scrollContainerRef.current?.scrollTop ?? 0,
       })
       navigate(`/articles/${id}`)
     },
@@ -152,7 +158,10 @@ export const Saved = () => {
   )
 
   return (
-    <div className="flex flex-col min-h-dvh relative">
+    <div
+      ref={scrollContainerRef}
+      className="flex flex-col h-dvh overflow-y-auto relative"
+    >
       <BlobBackground onRefresh={reload} />
 
       <header

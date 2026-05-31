@@ -12,7 +12,7 @@
 | EPIC 6 | Packaging & open source | EPIC 3, EPIC 4, EPIC 5 |
 | EPIC 7 | PWA polish & follow-up | EPIC 4 |
 | EPIC 8 | Admin panel | EPIC 3, EPIC 4 |
-| EPIC 9 | Article history | EPIC 3, EPIC 4 |
+| EPIC 9 | Refonte UX TikTok-like | EPIC 3, EPIC 4, EPIC 5 |
 | EPIC 10 | Scaling | EPIC 5 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
@@ -1065,28 +1065,7 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 
 ---
 
-#### [ ] E7-S28 — Sources: crawler toggle discret + feedback de confirmation
-
-**Problème** : Le bloc "Récupérer l'article complet" est toujours visible en bas de chaque carte source, même pour les sources où le crawl n'est pas pertinent. Il prend de la place et le message "Ce réglage s'applique à tous les utilisateurs…" est redondant. De plus, quand l'utilisateur coche la case, il n'a aucun retour visuel confirmant que l'action a été prise en compte.
-
-**Changements (PWA uniquement)** :
-
-- Remplacer le bloc `FullContentToggle` toujours visible par une icône "More" (`MoreHorizontal` ou `MoreVertical`, lucide-react, 16px, couleur `var(--text-tertiary)`) dans la ligne d'actions de chaque carte source (à droite du bouton de suppression).
-- Au clic sur cette icône, déplier/replier un panneau inline (non modal) en bas de la carte, contenant uniquement le toggle "Récupérer l'article complet" (label + checkbox, même style qu'actuellement).
-- Supprimer entièrement la phrase "Ce réglage s'applique à tous les utilisateurs abonnés à cette source."
-- Après un toggle réussi (appel API OK), afficher un bref retour visuel : remplacer temporairement (1,5 s) l'icône "More" par une icône `Check` verte (`#4ade80`), puis revenir à l'icône d'origine. Si l'appel échoue, revenir à l'état précédent sans crash.
-
-**Acceptance criteria** :
-
-- Le bloc "Récupérer l'article complet" n'est pas visible par défaut sur une carte source.
-- Un clic sur l'icône "More" affiche le panneau inline ; un second clic ou un clic ailleurs le referme.
-- Après un toggle réussi, l'icône `Check` verte apparaît pendant ~1,5 s avant de repasser à l'icône "More".
-- En cas d'erreur réseau, l'état du toggle est remis à sa valeur précédente et un message d'erreur inline est affiché (même pattern que les autres erreurs de la page).
-- La phrase "s'applique à tous les utilisateurs" n'apparaît plus nulle part.
-
----
-
-#### [ ] E7-S29 — Scroll cassé sur Sources, Saved et Keywords
+#### [x] E7-S29 — Scroll cassé sur Sources, Saved et Keywords
 
 **Problème** : Le défilement ne fonctionne pas sur trois écrans — Manage Sources (`/sources`), Saved (`/saved`) et Keywords (`/keywords`). L'utilisateur ne peut pas atteindre les éléments en bas de liste si la liste dépasse la hauteur du viewport.
 
@@ -1103,58 +1082,6 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 - Sur chaque écran, si la liste dépasse le viewport, l'utilisateur peut défiler jusqu'au dernier élément.
 - Le contenu ne déborde pas par-dessus la `BottomNav`.
 - Aucune régression sur l'infinite scroll de Saved et Keywords (E7-S12).
-
----
-
-#### [ ] E7-S30 — Feed : article courant perdu au pull-to-refresh
-
-**Problème** : Quand l'utilisateur effectue un pull-to-refresh sur le feed, l'article affiché au top de la pile disparaît et ne réapparaît pas, alors qu'aucune action n'a été prise dessus (pas de like, dislike, save ou swipe).
-
-**Cause** : `postImpression` est appelé dès qu'un article atteint le top de la pile (Feed.tsx, hook `useEffect` sur `[articles, currentIndex]`). L'impression est persistée en base. Au pull-to-refresh, `clearSnapshot()` + `reloadKey++` déclenchent un nouveau `GET /feed`, qui filtre les articles déjà impressionnés (`ai.article_id IS NULL` dans `feed_service.py`). L'article courant est donc exclu du résultat, alors que l'utilisateur ne l'a pas encore traité.
-
-**Approche (frontend uniquement — pas de changement API)** :
-
-1. Dans le callback `refresh` (Feed.tsx), avant de vider le snapshot, capturer l'article courant (`articles[currentIndex]`) si aucune action n'a été prise dessus (c'est-à-dire si son index n'est pas dans `gone`). Stocker cet article dans un `useRef`.
-2. Après que le premier `GET /feed` frais a renvoyé ses résultats, vérifier si l'article capturé est absent de la nouvelle liste (par id). Si absent, le réinsérer en tête de liste.
-3. L'article réinséré est déjà dans `impressed.current`, donc aucun deuxième appel `postImpression` ne sera émis.
-
-**Acceptance criteria** :
-
-- Après un pull-to-refresh, l'article qui était au top sans action préalable apparaît en premier dans le feed rechargé.
-- Si l'utilisateur a swipé ou aimé l'article avant de puller, il n'est pas réinséré (comportement actuel correct préservé).
-- Aucun doublon dans la liste (l'article réinséré ne doit pas apparaître aussi dans la liste normale si l'API venait à le renvoyer malgré l'impression — protéger par déduplication sur `id`).
-- Le pull-to-refresh reste fluide, sans flash ni saut de position.
-
----
-
-#### [ ] E7-S31 — System card : timer "Next enrichment" + statut fetch ambigu
-
-**Problème** : Deux lacunes d'information dans la System card (Profile) :
-
-1. **"Next enrichment" absent** : il y a "Last enrichment" mais pas d'estimation du prochain passage. L'utilisateur ne sait pas combien de temps attendre avant que les nouveaux articles soient enrichis.
-2. **"Next fetch: soon" persistant** : quand le fetch est en retard (le cron n'a pas encore démarré ou est en cours), `nextFetchLabel` retourne `'soon'` indéfiniment. L'utilisateur ne sait pas si le cron tourne ou s'il est bloqué.
-
-**Changements** :
-
-**Backend — `GET /stats` (admin.py + schemas/stats.py)** :
-- Ajouter `cron_enrich_interval_minutes: int` à `StatsResponse` (lire depuis `SettingsService`, même pattern que `cron_fetch_interval_minutes` ajouté en E8-S3).
-
-**PWA — Profile.tsx** :
-
-- Ajouter une row **"Next enrichment"** sous "Last enrichment", calculée côté client comme `last_enriched_at + cron_enrich_interval_minutes`. Même rendu que "Next fetch" : `in ~X min` ou `soon`.
-- Améliorer `nextFetchLabel` : distinguer trois états au lieu de deux :
-  - `diffMs > 0` → `in ~X min` (inchangé)
-  - `-2 min < diffMs ≤ 0` → `soon` (inchangé, le cron va se lancer)
-  - `diffMs ≤ -2 min` → `running…` (le cron est probablement en cours d'exécution)
-- Appliquer la même logique à une nouvelle fonction `nextEnrichLabel` pour la row "Next enrichment".
-- Lire `cron_enrich_interval_minutes` depuis `stats` (API), ne pas le hardcoder.
-
-**Acceptance criteria** :
-
-- La System card affiche une row "Next enrichment" avec un countdown ou "soon" / "running…".
-- "Next fetch" affiche "running…" quand le fetch est en retard de plus de 2 minutes.
-- `cron_enrich_interval_minutes` est exposé par `GET /stats` et utilisé côté client (pas de constante hardcodée pour l'intervalle d'enrichissement).
-- Aucune régression sur les rows existantes (Last fetch, Next fetch, Last enrichment, Articles pending, AI status, Run now).
 
 ---
 
@@ -1405,143 +1332,214 @@ A concurrent Railway cron run and a manual "Run now" trigger can execute `cron_f
 
 ---
 
-## EPIC 9 — Article History
+## EPIC 9 — Refonte UX TikTok-like
 
-**Goal**: Users can browse all articles they have already seen (any impression) in an infinite-scroll list, accessible from the main navigation. To free up the navbar slot, the Keywords screen is moved into Profile settings.
+**Objectif** : Remplacer le feed à mini-cartes par un feed fullscreen scroll-snap vertical (style TikTok), séparer le système de feedback (save / like / dislike deviennent des états indépendants), refondre le scoring en conséquence, et introduire un onglet Explore (file d'actu : history + new).
 
-> Depends on EPIC 3 (impressions in DB) and EPIC 4 (PWA navigation).
+> Dépend de EPIC 3, EPIC 4, EPIC 5.
+
+---
+
+### Nouveau modèle de feedback
+
+`article_feedbacks` est restructuré pour séparer la réaction de la sauvegarde :
+
+```sql
+-- Nouvelles colonnes (migration, anciennes supprimées)
+reaction            VARCHAR(10) NOT NULL DEFAULT 'none'
+                    CHECK (reaction IN ('like', 'dislike', 'none'))
+is_saved            BOOLEAN NOT NULL DEFAULT false
+read_full_article   BOOLEAN NOT NULL DEFAULT false
+```
+
+Un article peut simultanément avoir `reaction = 'like'` **et** `is_saved = true`.
+
+**Migration des données existantes** :
+- `action = 'like'`    → `reaction = 'like'`
+- `action = 'dislike'` → `reaction = 'dislike'`
+- `action = 'save'`    → `is_saved = true`
+- `action = 'skip'`    → supprimé
+
+**Nouveau modèle de scoring** (poids des signaux sur `keyword_weights`) :
+
+| Signal             | Poids |
+|--------------------|-------|
+| Like               | +1.0  |
+| Dislike            | −1.0  |
+| Save               | +0.5  |
+| Read full article  | +0.5  |
+| Scroll sans action | 0     |
+
+Les signaux s'accumulent par article : un article liked + saved = +1.5 pour ses keywords.
+
+---
 
 ### Stories
 
-#### [ ] E9-S1 — `GET /history` endpoint
+#### [ ] E9-S1 — Data model & scoring refactor *(backend)*
 
-- Returns all articles for which the current user has an `article_impression`, sorted by `impression.created_at DESC`
-- Cursor-based pagination (same pattern as `GET /feed` and `GET /saved`)
-- Each item includes the article fields (title, source, og_image, summary_short, relevance_score, keywords) plus `feedback_action` (`"like"` / `"dislike"` / `"save"` / `null`) and `impressed_at`
-- Filtering: optional `action` query param to filter by feedback action (`like`, `dislike`, `save`, `none`)
+**Changements** :
 
-**Acceptance criteria**:
+- Migration Alembic : ajouter `reaction`, `is_saved`, `read_full_article` à `article_feedbacks` ; migrer les données existantes selon la table ci-dessus ; supprimer la colonne `action`
+- `keyword_weights` : remplacer `like_count`/`dislike_count` par un calcul pondéré direct :
+  ```
+  weight(term, user) = Σ salience(term, article) × signal_value
+  ```
+  où `signal_value` = somme des poids actifs sur cet article (+1.0 like, −1.0 dislike, +0.5 save, +0.5 read)
+- `cron_refresh_weights` : recompute avec la nouvelle formule
+- `POST /feedback` : nouveau shape partiel `{ article_id, reaction?, is_saved?, read_full_article? }` — chaque champ est optionnel, mis à jour indépendamment (upsert partiel)
+- Tous les endpoints renvoyant des articles (`GET /feed`, `GET /saved`, `GET /explore`) ajoutent `reaction`, `is_saved`, `read_full_article` dans leur réponse article
+- **MAJ docs** : `docs/DATA_MODEL.md` (schéma `article_feedbacks`, formule de scoring), `docs/API_SPEC.md` (`POST /feedback`)
 
-- Articles with no feedback appear with `feedback_action: null`
-- Cursor pagination returns non-overlapping pages in stable order
-- An article appears at most once (most recent impression wins if duplicates exist)
+**Acceptance criteria** :
 
----
-
-#### [ ] E9-S2 — History screen (`History.tsx`)
-
-- New screen at `/history`
-- Layout mirrors `Saved.tsx`: thumbnail, source, title, score pill, relative timestamp
-- Add a feedback badge per row: a small coloured dot or icon indicating the action (cyan = liked, red = disliked, yellow = saved, grey = no action / skip)
-- Infinite scroll: load next page on scroll-to-bottom (follow `next_cursor`)
-- Filter tabs at the top: All / Liked / Disliked / Saved (maps to `action` query param)
-- Tap row → navigate to `/articles/:id`
-- Empty state per filter tab with a friendly message
-
-**Acceptance criteria**:
-
-- Filter tabs switch instantly (client-side if data already loaded, otherwise re-fetches)
-- Empty state visible and consistent with the rest of the design system
+- Après migration, aucun `action` en base ; les feedbacks existants sont correctement convertis
+- `POST /feedback { "is_saved": true }` seul ne touche pas à `reaction`
+- `POST /feedback { "reaction": "like" }` seul ne touche pas à `is_saved`
+- `cron_refresh_weights` produit des résultats identiques si relancé deux fois (idempotent)
+- Un keyword liked + saved a un poids supérieur à un keyword liked seul
 
 ---
 
-#### [ ] E9-S3 — Navbar & routing changes
+#### [ ] E9-S2 — Feed fullscreen TikTok *(frontend)*
 
-**Navbar** (`BottomNav.tsx`): replace the Keywords tab with a History tab (use a clock or history icon). The navbar now has: Feed / History / Saved / Profile.
+**Concept** : Le feed actuel (mini-cartes swipeables) est remplacé par un conteneur scroll-snap vertical. Chaque article occupe 100 vh et affiche le contenu complet inline — il n'y a plus de navigation vers `/articles/:id` depuis le feed.
 
-**Keywords screen relocation**:
+**Layout de chaque article** (reprend et adapte `ArticleDetail.tsx` actuel) :
 
-- Remove the `/keywords` route from React Router's main routes (keep the component — it is reused)
-- Add a "Keywords" menu item in `Profile.tsx` (below "Manage sources", above "Administration" if admin) that navigates to `/keywords`
-- The Keywords screen itself requires no changes
+```
+┌─────────────────────────────┐  ← 100vh
+│  og:image (fond plein écran) │
+│  + gradient overlay bas      │
+│                              │
+│  source badge  score badge   │
+│                              │
+│  Titre (15px/600)            │
+│  Keywords tags               │
+│  Summary executive (bullets) │
+│  Summary short               │
+│  ─────────────────           │
+│  [Lire l'article complet]    │
+│                              │
+│  👎  🔖  👍                  │  ← actions fixes en bas
+└─────────────────────────────┘
+```
 
-**Acceptance criteria**:
+**Scroll** :
+- Scroll dans le panneau contenu = lire l'article (contenu plus long que l'écran)
+- Butée visuelle (séparateur ou indicateur) au bas du contenu de l'article
+- Scroll après butée = article suivant (snap au prochain item)
 
-- Tapping the History tab in the navbar opens `/history`
-- Keywords are still accessible via Profile → Keywords
-- No broken links or dead routes after the navbar change- No broken links or dead routes after the navbar change
+**Actions — icônes à état** :
+- Like `ThumbsUp` : rempli cyan quand `reaction = 'like'`, outline sinon
+- Dislike `ThumbsDown` : rempli rouge quand `reaction = 'dislike'`, outline sinon
+- Save `Bookmark` : rempli jaune quand `is_saved = true`, outline sinon
+- Les trois icônes sont toujours visibles ; aucune action ne navigue vers l'article suivant
+- Pas de double-tap
+- L'état initial est chargé depuis `reaction`/`is_saved` retournés par `GET /feed`
+
+**"Lire l'article complet"** :
+- Ouvre l'URL originale dans le navigateur
+- Envoie `POST /feedback { "read_full_article": true }` en arrière-plan
+
+**Impression** :
+- `POST /feed/:id/impression` appelé quand l'article entre dans le viewport (scroll snap)
+
+**Suppression** :
+- L'écran `ArticleDetail.tsx` et la route `/articles/:id` sont supprimés — toute lecture se fait inline dans le feed
+- Le bouton retour est supprimé (remplacé par scroll vers le haut)
+
+**MAJ docs** : `docs/DESIGN_SYSTEM.md` (layout article fullscreen, icônes à état, suppression ArticleDetail)
+
+**Acceptance criteria** :
+
+- Chaque article occupe exactement 100 vh ; le scroll snap passe au suivant proprement
+- Les icônes like/dislike/save reflètent l'état persisté au chargement et se mettent à jour localement après chaque action
+- Save et like peuvent être actifs simultanément sur le même article
+- "Lire l'article complet" ouvre le navigateur ET envoie le signal `read_full_article`
+- Aucune régression sur `GET /feed` (pagination, scoring, impression)
 
 ---
 
-## EPIC 10 — Scaling
+#### [ ] E9-S3 — Explore tab *(backend + frontend)*
 
-**Goal**: Reduce the cost and improve the quality of the AI enrichment pipeline — smarter keyword extraction, token economy, and keyword deduplication — without degrading the feed relevance.
+**Concept** : Nouvel onglet Explore accessible depuis la BottomNav. Deux modes : **History** (articles déjà vus, triés par date de lecture) et **New** (articles enrichis non vus, triés par le même ranking que le feed).
 
-> Depends on EPIC 5 (AI enrichment pipeline in place).
+**Backend** :
+
+- Nouvel endpoint `GET /explore?mode=history|new&cursor=...` (cursor-based pagination)
+
+  `mode=history` :
+  - Articles pour lesquels `article_impressions.seen_at` existe pour cet utilisateur
+  - Triés par `article_impressions.seen_at DESC`
+  - Chaque item inclut : fields article + `reaction`, `is_saved`, `read_full_article`, `seen_at`
+
+  `mode=new` :
+  - Articles enrichis **non** impressionnés par cet utilisateur
+  - Triés par le ranking HN-gravity du feed : `relevance_score / (age_hours + 2)^FEED_GRAVITY`
+  - Même logique que `GET /feed` (réutiliser `FeedService`) mais rendu en liste, sans `SCORE_THRESHOLD` (tous les articles enrichis non vus sont visibles)
+  - Chaque item inclut : fields article + `reaction` (toujours `none`), `is_saved` (toujours `false`), `seen_at` (toujours `null`)
+
+- **MAJ docs** : `docs/API_SPEC.md` (endpoint `GET /explore`)
+
+**Frontend** :
+
+- Nouvel écran `/explore`
+- Deux onglets en haut : **History** / **New**
+- Layout de chaque row (même que `Saved.tsx`) :
+  - Thumbnail (og:image), source, titre, score pill, timestamp relatif (`seen_at` pour History, `published_at` pour New)
+  - Ligne d'icônes d'état : `Bookmark` (jaune si `is_saved`, gris sinon) + `ThumbsUp` (cyan si liked, gris sinon) + `ThumbsDown` (rouge si disliked, gris sinon) — les trois toujours visibles
+- Tap sur un article → démarre le feed à partir de cet article (naviguer vers `/` en passant l'id comme point de départ)
+- Infinite scroll (cursor-based)
+- **Impressions en mode New** : `POST /feed/:id/impression` appelé pour chaque article visible dans la liste (vu = vu — l'article ne réapparaîtra pas dans le feed ni dans Explore New)
+- Empty state par onglet
+
+**Acceptance criteria** :
+
+- History affiche les articles dans l'ordre de `seen_at DESC`
+- New affiche les articles enrichis non vus dans l'ordre du ranking feed (gravity)
+- Les trois icônes d'état reflètent correctement `reaction` et `is_saved`
+- Tap sur un article en mode New crée une impression (l'article disparaît de New au prochain refresh)
+
+---
+
+#### [ ] E9-S4 — Navigation & Saved update *(frontend)*
+
+**BottomNav** (`BottomNav.tsx`) :
+
+- Nouveaux tabs : **Feed** / **Explore** / **Saved** / **Profile**
+- Icône Explore : `Compass` ou `Newspaper` (lucide-react)
+- Onglet Keywords retiré de la nav
+
+**Profile** (`Profile.tsx`) :
+
+- Ajouter un menu item **"Keywords"** entre "Manage sources" et "Administration" (ou "System" si pas admin)
+- Route `/keywords` conservée, composant inchangé
+
+**Saved** (`Saved.tsx`) :
+
+- Basé sur `is_saved = true` (champ source change de `action = 'save'` à `is_saved = true`)
+- Chaque row affiche les mêmes trois icônes d'état que Explore : `Bookmark` (toujours jaune puisque saved), `ThumbsUp` (cyan si liked), `ThumbsDown` (rouge si disliked)
+
+**MAJ docs** : `docs/DESIGN_SYSTEM.md` (inventaire écrans, tabs nav — Feed / Explore / Saved / Profile)
+
+**Acceptance criteria** :
+
+- BottomNav affiche Feed / Explore / Saved / Profile
+- Keywords accessible via Profile → Keywords ; aucun lien cassé
+- Saved reflète correctement les articles où `is_saved = true`
+- Les icônes d'état dans Saved affichent la réaction courante
+
+---
+
+## EPIC 10 — Scaling : performance du pipeline fetch/enrich
+
+**Objectif** : Résoudre les problèmes de performance et de fiabilité du pipeline `cron_fetch` / `cron_enrich` à mesure que le volume d'articles augmente — latence, coûts LLM, déduplication de keywords, gestion des erreurs. Les stories de cette epic seront spécifiées après la livraison d'EPIC 9.
+
+> Dépend de EPIC 5, EPIC 9.
+
+> **Note** : Les stories E10-S1 (keyword dedup), E10-S2 (token economy), E10-S3 (keyword quality) de l'ancienne spec sont reportées dans le backlog — elles seront reprises et respecifiées ici en tenant compte du nouveau modèle de feedback introduit en E9-S1.
 
 ### Stories
 
-#### [ ] E10-S1 — Keyword deduplication: merge similar keywords with existing ones
-
-*(Migrated from E7-S18)*
-
-**Problem**: When the LLM extracts keywords for a new article, it may produce surface forms that are semantically identical to keywords already in the database — e.g. `"Cuisiner"` or `"Faire à Manger"` when `"cuisine"` already exists. Storing these as distinct keywords fragments the user's weight signal: likes/dislikes on `"cuisine"` don't propagate to `"Cuisiner"`, so the feed degrades silently over time.
-
-**Goal**: During keyword enrichment, before inserting new keyword rows, look up existing keywords and collapse near-duplicates onto the canonical (legacy) form already in the DB.
-
-**Approach** (LLM-assisted, no heavy ML dependency):
-
-1. After the scorer produces its candidate keyword list for an article, collect all **distinct** keyword strings currently in the `keyword` table.
-2. Send both lists to the LLM in a single prompt: *"Given these existing keywords: `[cuisine, sport, politique, …]`, map each candidate below onto the most similar existing keyword if they are semantically equivalent (same concept, different inflection / synonym / phrasing). Return a JSON object `{candidate: existing_keyword_or_null}`."*
-3. For each candidate where the LLM returns a non-null mapping, replace the candidate string with the existing keyword string before upserting into the DB.
-4. Candidates with no match are inserted as new keywords as usual.
-
-**Constraints**:
-
-- Only applies when `OPENROUTER_API_KEY` is set; TF-IDF path is unchanged.
-- The existing keyword list sent to the LLM must be capped (e.g. top 200 by frequency) to stay within token limits.
-- The dedup call is separate from the extraction call — a failure must not block enrichment (log warning, proceed with raw candidates).
-- Never mutate existing `keyword` rows — only remap the candidate string.
-
-**Where to implement**: `api/niouzou/scoring/` — inside `AIKeywordScorer` or a new `KeywordDeduplicator` helper called from `ScoringPipeline`.
-
-**Acceptance criteria**:
-
-- Given existing keyword `"cuisine"` and a new article whose LLM extraction returns `["cuisiner", "faire à manger", "technologie"]`, after dedup the article is linked to `"cuisine"` (existing) and `"technologie"` (new).
-- If the dedup LLM call fails, enrichment completes normally (no exception propagates).
-- The keyword list sent to the LLM is capped and does not exceed the configured token budget.
-- Unit test: mock the LLM response and assert the correct keyword strings are persisted.
-
----
-
-#### [ ] E10-S2 — Token economy: exploration of cost-reduction strategies
-
-**Goal**: Investigate and benchmark techniques to reduce the number of tokens consumed per article enrichment cycle, without significantly degrading summary quality or keyword relevance.
-
-**Questions to answer**:
-
-- **Prompt compression**: can the system prompt and article content be compressed (e.g. truncation strategy, stripping boilerplate HTML artefacts) to reduce input tokens by a meaningful amount without quality loss?
-- **Batching**: can multiple articles be enriched in a single LLM call (one prompt, N articles)? What is the quality trade-off vs. per-article calls?
-- **Caching**: are there recurring article structures or sources where prompt prefixes could be cached (OpenRouter / provider-level prompt caching)?
-- **Model tiering**: can cheaper/smaller models handle keyword extraction while a more capable model handles executive summaries? What is the quality delta?
-- **Selective enrichment**: should articles below a certain TF-IDF pre-score skip LLM enrichment entirely (saving tokens on low-quality content)?
-
-**Output**: A ranked list of strategies with estimated token savings, quality impact assessment, and implementation complexity for each. Written as a design note in `docs/SCALING.md`. No code required for this story.
-
-**Acceptance criteria**:
-
-- `docs/SCALING.md` exists and covers at least the five strategies above.
-- Each strategy has: estimated token saving (%), quality risk (low/medium/high), implementation effort (S/M/L).
-- A recommended prioritisation order is included.
-
----
-
-#### [ ] E10-S3 — Keyword quality: reduction and precision exploration
-
-**Goal**: Investigate why the current keyword extraction produces noisy, redundant, or overly generic keywords, and define a strategy to improve precision and reduce the total keyword count per article.
-
-**Questions to answer**:
-
-- What is the current average keyword count per article, and what share are stop words, named entities (person names, place names), or overly generic terms (e.g. "article", "information")?
-- Would a stricter salience threshold reduce noise without losing useful signal?
-- Should named entities (persons, organisations, locations) be kept, filtered, or stored in a separate dimension from topical keywords?
-- Can the LLM prompt be refined (few-shot examples, explicit exclusion rules) to produce fewer, higher-quality keywords?
-- Is there a maximum useful vocabulary size for the keyword weight system before it becomes counterproductive?
-
-**Output**: A design note appended to `docs/SCALING.md` (created in E10-S2) with findings, proposed prompt changes, and a recommended keyword quality strategy. No code required for this story.
-
-**Acceptance criteria**:
-
-- Findings section covers current keyword distribution (average count, noise categories).
-- Proposed prompt changes are written out and ready to be tested.
-- A recommended keyword count cap and salience threshold are justified with rationale.
+*À spécifier après EPIC 9.*
