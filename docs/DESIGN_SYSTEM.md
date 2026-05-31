@@ -167,53 +167,73 @@ Base card used across all screens.
 
 ---
 
-## Article Card (Feed)
+## Feed Slide (fullscreen — E9-S2)
 
-Structure:
+The feed is a vertical scroll-snap container; each article fills the screen.
+
 ```
-┌─────────────────────────────┐
-│  [image / og:image]         │  185px tall
-│  [source badge]  [score %]  │  absolute overlays
-├─────────────────────────────┤
-│  Title (15px/600)           │
-│  Summary (12px, muted)      │
-│  [keyword] [keyword] ...    │
-│  ─────────────────          │
-│  🕐 2h ago · 4 min read     │
-└─────────────────────────────┘
+┌────────────────────────────────┐  ← 100dvh (never 100vh — see below)
+│  [og:image blurred bg]         │
+│  source badge      [score %]   │  sticky top
+├────────────────────────────────┤
+│  [og:image hero, rounded]      │
+│  Title (24px / 600)            │
+│  [keyword] [keyword] ...       │
+│  ┌── exec summary bullets ──┐  │  (AI-only)
+│  Summary (14px, muted)         │
+│  Crawled content (when present)│
+│  [Lire l'article complet ↗]    │
+│  ── scroll boundary ──         │
+│  ▼ Niouzou logo ▼              │
+│  ── ─────────── ──             │
+├────────────────────────────────┤
+│  👎       🔖       👍          │  sticky bottom, above BottomNav
+└────────────────────────────────┘
 ```
 
-- Source badge: bottom-left of image, dark glass pill
-- Score badge: top-right of image, accent orange pill — shows `relevance_score` as `87%`
-- Keywords: pill tags, `rgba(255,255,255,0.06)` bg
-- Meta row: clock icon + time ago + read time, separated by `·`
+### Viewport — `100dvh`, never `100vh`
+
+Safari iOS and Chrome Android shrink the visible viewport whenever the URL
+bar is in view. `100vh` reports the *expanded* viewport, which overflows the
+scroll-snap container and clips the bottom action bar / hides the chevron.
+Use `100dvh` for any screen that owns the full viewport (Feed slides, login,
+empty state shells). Fallback chain: `100dvh` → `100svh` → `100vh`.
+
+### Scroll boundary hint (`ScrollBoundaryHint`)
+
+End-of-slide pedagogical marker so users learn to re-scroll for the next
+article:
+- 1px horizontal divider (60% width, centred)
+- Niouzou logomark (32px, `opacity: 0.6`)
+- `ChevronDown` (20px, `var(--text-tertiary)`) — animated:
+  ```css
+  @keyframes bounce-soft {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(4px); }
+  }
+  ```
+- Label *"Article suivant"* (12px, `var(--text-tertiary)`, opacity 0.5)
+
+The bounce stops automatically when the next slide enters the viewport: the
+parent slide flips `data-bouncing="false"` via `IntersectionObserver`, and
+the chevron animation detaches.
+
+### Feed action bar (sticky bottom)
+
+Three circular glass buttons, 56×56, sitting above the BottomNav.
+
+| Button | Outline color | Active fill |
+|---|---|---|
+| Dislike (`ThumbsDown`) | `rgba(255,255,255,0.18)` border | `var(--action-dislike)` |
+| Save (`Bookmark`) | same | `var(--action-save)` |
+| Like (`ThumbsUp`) | same | `var(--action-like)` |
+
+Re-tap on the active reaction returns it to `none`. Save and like are
+mutually independent. Like and dislike are mutually exclusive.
 
 ---
 
-## Action Buttons (Feed)
-
-Three icon-only buttons, no border, no label:
-
-```
-👎 dislike    🔖 save    👍 like
-```
-
-```css
-.action-btn {
-  background: none;
-  border: none;
-  padding: 8px;
-  border-radius: 50%;
-  font-size: 26px;
-}
-.action-btn.dislike i { color: rgba(248, 113, 113, 0.70); }
-.action-btn.save    i { color: rgba(249, 199, 79,  0.70); }
-.action-btn.like    i { color: rgba(72,  202, 228, 0.85); }
-```
-
----
-
-## Bottom Navigation
+## Bottom Navigation (E9-S4)
 
 4 icon-only items. Active state: accent orange + subtle bg.
 
@@ -221,8 +241,10 @@ Three icon-only buttons, no border, no label:
 .bottom-nav {
   display: flex;
   justify-content: space-around;
-  padding: 8px 20px 16px;
+  padding: 8px 20px calc(env(safe-area-inset-bottom, 0px) + 16px);
   border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(12, 16, 24, 0.85);
+  backdrop-filter: blur(20px);
 }
 .nav-item {
   padding: 8px 14px;
@@ -238,10 +260,13 @@ Three icon-only buttons, no border, no label:
 
 | Tab | Icon | Route |
 |---|---|---|
-| Feed | `ti-layout-cards` | `/` |
-| Saved | `ti-bookmark` | `/saved` |
-| Keywords | `ti-adjustments-horizontal` | `/keywords` |
-| Profile | `ti-user` | `/profile` |
+| Feed | `LayoutGrid` | `/` |
+| Explore | `Compass` | `/explore` |
+| Saved | `Bookmark` | `/saved` |
+| Profile | `User` | `/profile` |
+
+Keywords is no longer a top-level tab — it lives in the Profile menu now
+(between "Manage sources" and the Admin/System group).
 
 ---
 
@@ -270,30 +295,51 @@ Library: **Lucide React** (`lucide-react`) for React components.
 
 | Screen | Route | Nav tab |
 |---|---|---|
-| Feed (swipe) | `/` | Feed |
-| Article detail | `/articles/:id` | — |
+| Feed (fullscreen slides) | `/` | Feed |
+| Explore | `/explore` | Explore (stub until E9-S3) |
 | Saved | `/saved` | Saved |
-| Keywords | `/keywords` | Keywords |
 | Profile | `/profile` | Profile |
+| Keywords | `/keywords` | — (from Profile) |
 | Manage sources | `/sources` | — (from Profile) |
+| Admin | `/admin` | — (admins only, from Profile) |
 | Login | `/login` | — |
 | Register | `/register` | — |
 
+The standalone Article detail view (`/articles/:id`) was removed in **E9-S2**
+— the fullscreen slide carries the same information inline. Any stale link
+redirects to `/`.
+
+### Profile menu items (top to bottom)
+
+1. Manage sources
+2. Keywords (E9-S4)
+3. Administration (if `is_admin`)
+4. Sign out
+5. System (collapsible health panel)
+
 ---
 
-## Swipe Gestures (Feed)
+## Feed Interaction Model (E9-S2)
 
 | Gesture | Action |
 |---|---|
-| Swipe right | like |
-| Swipe left | dislike |
-| Swipe up | skip (next) |
-| Tap card | open article detail |
-| Tap ❤️ button | like |
-| Tap 👎 button | dislike |
-| Tap 🔖 button | save |
+| Vertical scroll inside slide content | scroll the article (content scrolls until end) |
+| Continue scrolling past the end | snap to the next slide |
+| Tap `ThumbsUp` | toggle reaction `like ⇄ none` |
+| Tap `ThumbsDown` | toggle reaction `dislike ⇄ none` |
+| Tap `Bookmark` | toggle `is_saved` |
+| Tap "Lire l'article complet" | marks `read_full_article=true` + opens external URL in a new tab |
 
-Recommended library: **`react-spring`** + **`@use-gesture/react`** for swipe detection and card animation.
+All feedback dispatches are **optimistic** — the icon flips instantly,
+`POST /feedback` is fire-and-forget in the background. On failure the
+overlay is rolled back so the user can re-tap. Like and dislike are
+mutually exclusive; save and reaction are independent.
+
+The scroll-snap pattern relies on:
+- container `scroll-snap-type: y mandatory`
+- slide `scroll-snap-align: start; scroll-snap-stop: always; height: 100dvh; overflow-y: auto`
+- inner scrollable `overscroll-behavior-y: contain` so swipe inertia at the
+  end of the content propagates to the parent (next slide), not the body.
 
 ---
 

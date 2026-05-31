@@ -1,4 +1,11 @@
-export type FeedbackAction = 'like' | 'dislike' | 'skip' | 'save'
+// E9-S1 — reaction/save/read are independent dimensions on every article.
+export type Reaction = 'like' | 'dislike' | 'none'
+
+export interface FeedbackState {
+  reaction: Reaction
+  is_saved: boolean
+  read_full_article: boolean
+}
 
 export interface SourceRef {
   id: string
@@ -15,10 +22,14 @@ export interface SourceFull {
 
 export type Scorer = 'tfidf' | 'ai_keyword'
 
-export interface FeedArticle {
+export interface FeedArticle extends FeedbackState {
   id: string
   title: string
   summary_short: string
+  // Full crawled content (E9-S2 renders it inline when present).
+  content?: string | null
+  // Bullet-point exec summary, AI-only (null without OpenRouter).
+  summary_executive?: string | null
   og_image_url: string | null
   url: string
   source: SourceRef
@@ -29,23 +40,6 @@ export interface FeedArticle {
   read_time_minutes?: number
   // Set by the server when the stored content looks like a paywall teaser
   // (E7-S21). The PWA uses it to badge the card / detail view.
-  is_premium?: boolean
-}
-
-export interface ArticleDetail {
-  id: string
-  title: string
-  url: string
-  summary_short: string
-  summary_executive: string | null
-  og_image_url: string | null
-  source: SourceRef & { url: string }
-  published_at: string
-  enriched_at: string | null
-  relevance_score: number
-  scorer?: Scorer | null
-  feedback: { action: FeedbackAction; updated_at: string } | null
-  keywords?: string[]
   is_premium?: boolean
 }
 

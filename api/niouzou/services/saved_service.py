@@ -108,6 +108,8 @@ class SavedService:
                 id=r.Article.id,
                 title=r.Article.title,
                 summary_short=r.Article.summary_short,
+                summary_executive=r.Article.summary_executive,
+                content=r.Article.content,
                 og_image_url=r.Article.og_image_url,
                 url=r.Article.url,
                 source=SourceRef(id=r.source_id, name=r.source_name),

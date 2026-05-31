@@ -17,6 +17,11 @@ class FeedArticle(BaseModel):
     id: uuid.UUID
     title: str
     summary_short: str | None
+    # E9-S2 — bullet-point exec summary (AI-only) and the full crawled article
+    # are now exposed inline so the fullscreen slide can render them without an
+    # extra round-trip via the now-gone GET /articles/{id}.
+    summary_executive: str | None = None
+    content: str | None = None
     og_image_url: str | None
     url: str
     source: SourceRef

@@ -1,10 +1,12 @@
 import { useLocation, useNavigate } from 'react-router-dom'
-import { LayoutGrid, Bookmark, SlidersHorizontal, User } from 'lucide-react'
+import { LayoutGrid, Compass, Bookmark, User } from 'lucide-react'
 
+// E9-S4 — 4 tabs (Feed / Explore / Saved / Profile). Keywords moved to the
+// Profile menu since it's a config-style screen, not a daily destination.
 const TABS = [
   { icon: LayoutGrid, route: '/', label: 'Feed' },
+  { icon: Compass, route: '/explore', label: 'Explore' },
   { icon: Bookmark, route: '/saved', label: 'Saved' },
-  { icon: SlidersHorizontal, route: '/keywords', label: 'Keywords' },
   { icon: User, route: '/profile', label: 'Profile' },
 ] as const
 

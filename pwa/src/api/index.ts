@@ -3,11 +3,11 @@
 
 import { request, tokens } from './http'
 import type {
-  ArticleDetail,
   AuthTokens,
   FeedArticle,
-  FeedbackAction,
+  FeedbackState,
   KeywordWeight,
+  Reaction,
   SavedArticle,
   SourceFull,
 } from '../types/api'
@@ -23,6 +23,7 @@ interface Page {
 
 export interface FeedPage extends Page {
   articles: FeedArticle[]
+  cold_start?: boolean
 }
 export interface SavedPage extends Page {
   articles: SavedArticle[]
@@ -69,19 +70,30 @@ export function postImpression(articleId: string): Promise<void> {
   return request<void>(`/feed/${articleId}/impression`, { method: 'POST' })
 }
 
-// ── Feedback ─────────────────────────────────────────────────────────────────
+// ── Feedback (E9-S1 partial update) ─────────────────────────────────────────
 
-export function postFeedback(articleId: string, action: FeedbackAction) {
-  return request<{ article_id: string; action: FeedbackAction; updated_at: string }>('/feedback', {
-    method: 'POST',
-    body: { article_id: articleId, action },
-  })
+export interface FeedbackUpdate {
+  reaction?: Reaction
+  is_saved?: boolean
+  // Monotone: send `true` to mark as read. `false` is silently dropped by the
+  // backend, but never include it in a payload — it makes the empty-payload
+  // detection slightly less efficient.
+  read_full_article?: true
 }
 
-// ── Articles ─────────────────────────────────────────────────────────────────
+export interface FeedbackResponse extends FeedbackState {
+  article_id: string
+  updated_at: string
+}
 
-export function getArticle(id: string): Promise<ArticleDetail> {
-  return request<ArticleDetail>(`/articles/${id}`)
+export function postFeedback(
+  articleId: string,
+  update: FeedbackUpdate,
+): Promise<FeedbackResponse> {
+  return request<FeedbackResponse>('/feedback', {
+    method: 'POST',
+    body: { article_id: articleId, ...update },
+  })
 }
 
 // ── Saved ──────────────────────────────────────────────────────────────────

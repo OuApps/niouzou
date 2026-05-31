@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import type { ReactElement } from 'react'
 import { Feed } from './screens/Feed'
-import { ArticleDetail } from './screens/ArticleDetail'
 import { Saved } from './screens/Saved'
 import { Keywords } from './screens/Keywords'
 import { Profile } from './screens/Profile'
@@ -9,6 +8,7 @@ import { Sources } from './screens/Sources'
 import { Admin } from './screens/Admin'
 import { Login } from './screens/Login'
 import { Register } from './screens/Register'
+import { ExplorePlaceholder } from './screens/ExplorePlaceholder'
 import { useAuthStore } from './store/auth'
 
 /** Gate authenticated screens: bounce to /login when there is no token. */
@@ -24,7 +24,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<RequireAuth><Feed /></RequireAuth>} />
-        <Route path="/articles/:id" element={<RequireAuth><ArticleDetail /></RequireAuth>} />
+        {/* E9-S3 — placeholder until the Explore tab ships. */}
+        <Route path="/explore" element={<RequireAuth><ExplorePlaceholder /></RequireAuth>} />
         <Route path="/saved" element={<RequireAuth><Saved /></RequireAuth>} />
         <Route path="/keywords" element={<RequireAuth><Keywords /></RequireAuth>} />
         <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
@@ -32,6 +33,9 @@ export default function App() {
         <Route path="/admin" element={<RequireAuth><Admin /></RequireAuth>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        {/* E9-S2 — the standalone article view is gone; any stale link falls
+            back to the feed (so we don't 404 a previously-shared URL). */}
+        <Route path="/articles/*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )

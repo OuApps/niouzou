@@ -9,6 +9,7 @@ import {
   Activity,
   AlertTriangle,
   RefreshCw,
+  Tags,
 } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
@@ -178,6 +179,39 @@ export const Profile = () => {
               <Rss size={16} />
             </div>
             <span className="flex-1 text-left">Manage sources</span>
+            <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
+          </button>
+
+          {/* Keywords moved here (E9-S4) — out of the BottomNav, into the
+              less-used Profile menu where config-style screens live. */}
+          <button
+            onClick={() => navigate('/keywords')}
+            className="glass-sm flex items-center gap-3 w-full"
+            style={{
+              borderRadius: 16,
+              padding: '14px 16px',
+              cursor: 'pointer',
+              border: '1px solid rgba(255,255,255,0.10)',
+              background: 'var(--glass-bg)',
+              color: 'var(--text-primary)',
+              fontSize: 14,
+            }}
+          >
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                background: 'var(--accent-subtle)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--accent)',
+              }}
+            >
+              <Tags size={16} />
+            </div>
+            <span className="flex-1 text-left">Keywords</span>
             <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
           </button>
 

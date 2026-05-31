@@ -150,6 +150,47 @@ html, body, #root {
   to { transform: rotate(360deg); }
 }
 
+/* ── Feed slide scroll boundary (E9-S2) ── */
+@keyframes bounce-soft {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(4px); }
+}
+
+/* Bounce stops once the next slide is in viewport — the boundary hint
+   wrapper flips `data-bouncing` and the animation is detached. */
+[data-bouncing="true"] .boundary-chevron {
+  animation: bounce-soft 1.6s ease-in-out infinite;
+}
+
+/* ── Feed fullscreen slide container (E9-S2) ── */
+.feed-snap {
+  height: 100dvh;
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  /* Hide the native scrollbar — the slide itself signals scrollability. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.feed-snap::-webkit-scrollbar { display: none; }
+
+.feed-slide {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  height: 100dvh;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.slide-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.slide-scroll::-webkit-scrollbar { display: none; }
+
 /* ── Pull-to-refresh indicator (E7-S19) ── */
 .pull-indicator-top {
   position: fixed;
