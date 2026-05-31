@@ -20,10 +20,10 @@ from niouzou.schemas.explore import (
     ExploreNewResponse,
 )
 from niouzou.schemas.feed import SourceRef
-from niouzou.services.feed_service import (
-    _build_ranked_query,
-    _clamp_limit,
-    _row_to_article,
+from niouzou.services.ranked_query import (
+    build_ranked_query,
+    clamp_limit,
+    row_to_article,
 )
 
 
@@ -39,7 +39,7 @@ class ExploreService:
     ) -> ExploreHistoryResponse:
         """Already-impressed articles, newest seen first. Keyset on (seen_at, id)
         so pages never overlap even when many impressions share a timestamp."""
-        page_size = _clamp_limit(limit)
+        page_size = clamp_limit(limit)
         params: dict = {
             "user_id": user_id,
             "limit": page_size + 1,
@@ -145,7 +145,7 @@ class ExploreService:
         score threshold / random-surface gates — the user is explicitly
         scanning the queue."""
         settings = get_settings()
-        page_size = _clamp_limit(limit)
+        page_size = clamp_limit(limit)
 
         params: dict = {
             "user_id": user_id,
@@ -161,7 +161,7 @@ class ExploreService:
             params["cursor_id"] = uuid.UUID(str(decoded["id"]))
             keyset = "AND (feed_rank, id) < (:cursor_rank, :cursor_id)"
 
-        query = _build_ranked_query(
+        query = build_ranked_query(
             apply_threshold=False,
             apply_random_surface=False,
             keyset=keyset,
@@ -170,7 +170,7 @@ class ExploreService:
         has_more = len(rows) > page_size
         rows = rows[:page_size]
 
-        articles = [_row_to_article(r) for r in rows]
+        articles = [row_to_article(r) for r in rows]
 
         next_cursor: str | None = None
         if has_more and rows:

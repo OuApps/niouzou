@@ -9,8 +9,8 @@ the RANDOM_SURFACE_RATE branch is inert and ordering is fully deterministic;
 it only kicks in to occasionally surface sub-threshold articles when a positive
 threshold is configured (anti echo chamber).
 
-The ranked SELECT projection is shared with ExploreService.list_new (E9-S3)
-via ``_build_ranked_query`` — Explore reuses the same gravity ordering but
+The ranked SELECT projection is shared with ExploreService (E9-S3) via
+``services.ranked_query`` — Explore reuses the same gravity ordering but
 turns the threshold + random-surface filters off.
 """
 
@@ -25,123 +25,15 @@ from niouzou.errors import not_found
 from niouzou.models import Article, ArticleFeedback, ArticleImpression, Source
 from niouzou.models.article import STATUS_ENRICHED
 from niouzou.pagination import decode_cursor, encode_cursor
-from niouzou.schemas.feed import FeedArticle, FeedResponse, SourceRef
-
-_DEFAULT_LIMIT = 20
-_MAX_LIMIT = 50
-
-# feed_rank, computed once and reused in SELECT, ORDER BY and the keyset filter.
-_FEED_RANK = (
-    "ars.relevance_score / power("
-    "GREATEST(EXTRACT(EPOCH FROM (now() - COALESCE(a.published_at, a.created_at)))"
-    "/ 3600.0, 0) + 2, :gravity)"
+from niouzou.schemas.feed import FeedArticle, FeedResponse
+from niouzou.services.ranked_query import (
+    FEED_RANK,
+    FROM_JOINS,
+    RANKED_COLUMNS,
+    build_ranked_query,
+    clamp_limit,
+    row_to_article,
 )
-
-# Projection shared by /feed and /explore/new. Aliased so the outer SELECT
-# can keyset on (feed_rank, id) without recomputing the rank.
-_RANKED_COLUMNS = f"""
-    a.id AS id,
-    a.title AS title,
-    a.summary_short AS summary_short,
-    a.summary_executive AS summary_executive,
-    a.content AS content,
-    a.og_image_url AS og_image_url,
-    a.url AS url,
-    a.published_at AS published_at,
-    s.id AS source_id,
-    s.name AS source_name,
-    ars.relevance_score AS relevance_score,
-    ars.scorer AS scorer,
-    (a.content IS NOT NULL
-     AND char_length(a.content) < :premium_max_chars
-    ) AS is_premium,
-    COALESCE(fb.reaction, 'none') AS reaction,
-    COALESCE(fb.is_saved, false) AS is_saved,
-    COALESCE(fb.read_full_article, false) AS read_full_article,
-    {_FEED_RANK} AS feed_rank,
-    COALESCE(
-        (SELECT array_agg(ak.term ORDER BY ak.salience DESC, ak.term ASC)
-         FROM article_keywords ak WHERE ak.article_id = a.id),
-        ARRAY[]::text[]
-    ) AS keywords
-"""
-
-_FROM_JOINS = """
-FROM articles a
-JOIN sources s ON s.id = a.source_id
-JOIN article_relevance_scores ars
-    ON ars.article_id = a.id AND ars.user_id = :user_id
-LEFT JOIN article_impressions ai
-    ON ai.article_id = a.id AND ai.user_id = :user_id
-LEFT JOIN article_feedbacks fb
-    ON fb.article_id = a.id AND fb.user_id = :user_id
-"""
-
-
-def _build_ranked_query(
-    *,
-    apply_threshold: bool,
-    apply_random_surface: bool,
-    keyset: str = "",
-    impression_exclusion: str = "AND ai.article_id IS NULL",
-) -> text:
-    """Assemble the ranked SELECT used by /feed and /explore/new.
-
-    Args:
-        apply_threshold: keep ``ars.relevance_score >= :threshold`` filter.
-        apply_random_surface: enable the random-surface escape hatch.
-        keyset: extra ``AND (feed_rank, id) < (:cursor_rank, :cursor_id)``
-            predicate, or empty string for the first page.
-        impression_exclusion: overridable so /feed?start=:id can let one
-            already-impressed article through.
-    """
-    score_filter = ""
-    if apply_threshold and apply_random_surface:
-        score_filter = "AND (ars.relevance_score >= :threshold OR random() < :random_rate)"
-    elif apply_threshold:
-        score_filter = "AND ars.relevance_score >= :threshold"
-    elif apply_random_surface:
-        score_filter = "AND random() < :random_rate"
-    # else: no score gate at all (Explore New).
-
-    return text(
-        f"""
-        WITH ranked AS (
-            SELECT
-                {_RANKED_COLUMNS}
-            {_FROM_JOINS}
-            WHERE s.user_id = :user_id
-                AND a.status = '{STATUS_ENRICHED}'
-                {impression_exclusion}
-                {score_filter}
-        )
-        SELECT * FROM ranked
-        WHERE true {keyset}
-        ORDER BY feed_rank DESC, id DESC
-        LIMIT :limit
-        """
-    )
-
-
-def _row_to_article(row) -> FeedArticle:
-    return FeedArticle(
-        id=row["id"],
-        title=row["title"],
-        summary_short=row["summary_short"],
-        summary_executive=row["summary_executive"],
-        content=row["content"],
-        og_image_url=row["og_image_url"],
-        url=row["url"],
-        source=SourceRef(id=row["source_id"], name=row["source_name"]),
-        published_at=row["published_at"],
-        relevance_score=row["relevance_score"],
-        scorer=row["scorer"],
-        keywords=list(row["keywords"] or []),
-        is_premium=bool(row["is_premium"]),
-        reaction=row["reaction"],
-        is_saved=bool(row["is_saved"]),
-        read_full_article=bool(row["read_full_article"]),
-    )
 
 
 class FeedService:
@@ -157,7 +49,7 @@ class FeedService:
         start: uuid.UUID | None = None,
     ) -> FeedResponse:
         settings = get_settings()
-        page_size = _clamp_limit(limit)
+        page_size = clamp_limit(limit)
 
         # Cold start (E7-S6): users with little feedback get an unfiltered feed,
         # otherwise they'd see nothing on day one (all weights = 0 → all scores
@@ -213,7 +105,7 @@ class FeedService:
             # the response still totals page_size.
             params["limit"] = page_size  # (+1 was already added; pivot is the +1)
 
-        query = _build_ranked_query(
+        query = build_ranked_query(
             apply_threshold=True,
             apply_random_surface=True,
             keyset=keyset,
@@ -232,7 +124,7 @@ class FeedService:
         articles: list[FeedArticle] = []
         if pivot_article is not None:
             articles.append(pivot_article)
-        articles.extend(_row_to_article(r) for r in rows)
+        articles.extend(row_to_article(r) for r in rows)
 
         next_cursor: str | None = None
         if has_more and rows:
@@ -258,8 +150,8 @@ class FeedService:
         query = text(
             f"""
             SELECT
-                {_RANKED_COLUMNS}
-            {_FROM_JOINS}
+                {RANKED_COLUMNS}
+            {FROM_JOINS}
             WHERE s.user_id = :user_id
                 AND a.status = '{STATUS_ENRICHED}'
                 AND a.id = :article_id
@@ -267,7 +159,7 @@ class FeedService:
             """
         )
         row = (await self.session.execute(query, params)).mappings().first()
-        return _row_to_article(row) if row else None
+        return row_to_article(row) if row else None
 
     async def _compute_feed_rank(
         self, user_id: uuid.UUID, article_id: uuid.UUID, base_params: dict
@@ -277,7 +169,7 @@ class FeedService:
         params = {**base_params, "article_id": article_id}
         query = text(
             f"""
-            SELECT {_FEED_RANK} AS feed_rank
+            SELECT {FEED_RANK} AS feed_rank
             FROM articles a
             JOIN article_relevance_scores ars
                 ON ars.article_id = a.id AND ars.user_id = :user_id
@@ -303,23 +195,3 @@ class FeedService:
             .values(article_id=article_id, user_id=user_id)
             .on_conflict_do_nothing(index_elements=["article_id", "user_id"])
         )
-
-
-def _clamp_limit(limit: int | None) -> int:
-    if limit is None:
-        return _DEFAULT_LIMIT
-    return max(1, min(limit, _MAX_LIMIT))
-
-
-# Re-exported so ExploreService can build its own ranked query (E9-S3).
-__all__ = [
-    "FeedService",
-    "_FEED_RANK",
-    "_RANKED_COLUMNS",
-    "_FROM_JOINS",
-    "_build_ranked_query",
-    "_row_to_article",
-    "_clamp_limit",
-    "_DEFAULT_LIMIT",
-    "_MAX_LIMIT",
-]
