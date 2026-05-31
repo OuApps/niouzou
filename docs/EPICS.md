@@ -1740,14 +1740,256 @@ Comportement :
 
 ---
 
-## EPIC 10 — Scaling : performance du pipeline fetch/enrich
+## EPIC 10 — Qualité du pipeline & observabilité
 
-**Objectif** : Résoudre les problèmes de performance et de fiabilité du pipeline `cron_fetch` / `cron_enrich` à mesure que le volume d'articles augmente — latence, coûts LLM, déduplication de keywords, gestion des erreurs. Les stories de cette epic seront spécifiées après la livraison d'EPIC 9.
+**Objectif** : Améliorer la qualité des résumés et des keywords générés par le LLM, donner de la visibilité sur l'avancement du pipeline d'enrichissement, et permettre de compacter les keywords dupliqués.
 
 > Dépend de EPIC 5, EPIC 9.
 
-> **Note** : Les stories E10-S1 (keyword dedup), E10-S2 (token economy), E10-S3 (keyword quality) de l'ancienne spec sont reportées dans le backlog — elles seront reprises et respecifiées ici en tenant compte du nouveau modèle de feedback introduit en E9-S1.
+**Ordre de livraison recommandé** : `S1 → S2 → S3`. S1 donne la visibilité pour diagnostiquer S2/S3 en production.
+
+---
 
 ### Stories
 
-*À spécifier après EPIC 9.*
+#### [ ] E10-S1 — Pipeline observabilité & refonte à la maille article
+
+**Problèmes adressés** :
+- "Feed may be stalled" faux positif systématique (basé sur `last_fetched_at` = dernière insertion d'article, pas dernière exécution du cron)
+- Aucune visibilité sur la durée d'un run, le nombre d'articles traités, les erreurs
+- `cron_fetch` et `cron_enrich` sont deux passes batch déconnectées — un article fetché attend le prochain cycle pour être enrichi
+
+**Migration Alembic** :
+
+Nouvelle table `pipeline_runs` :
+```sql
+id                  UUID PK
+started_at          TIMESTAMP NOT NULL
+completed_at        TIMESTAMP nullable          -- null = run en cours
+status              VARCHAR NOT NULL            -- 'running' | 'completed' | 'failed'
+articles_fetched    INT NOT NULL DEFAULT 0      -- nouveaux articles trouvés
+articles_enriched   INT NOT NULL DEFAULT 0      -- enrichis avec succès
+articles_failed     INT NOT NULL DEFAULT 0
+total_duration_s    FLOAT nullable              -- secondes
+avg_s_per_article   FLOAT nullable
+error               TEXT nullable               -- si le run entier a planté
+```
+
+Pas de FK user — c'est une métrique globale de l'instance.
+
+**Refonte `_run_pipeline()`** (refresh worker) :
+
+Au lieu de deux passes batch séparées (`cron_fetch.run()` puis `cron_enrich.run()`), nouveau flow article par article :
+
+1. Créer une ligne `pipeline_runs` avec `status='running'`, `started_at=now()`
+2. Appeler Miniflux, insérer les nouveaux articles (`articles.status='pending'`), incrémenter `articles_fetched`
+3. Prendre **tous** les articles `status='pending'` (nouveaux + anciens non encore enrichis) et les traiter un par un :
+   - `articles.status = 'enriching'` avant de commencer
+   - fetch content → LLM enrich → score
+   - `articles.status = 'enriched'` on success, `'error'` on failure
+   - Incrémenter `articles_enriched` ou `articles_failed` sur `pipeline_runs` après chaque article
+4. À la fin : `completed_at=now()`, calculer `total_duration_s` et `avg_s_per_article`, `status='completed'`
+5. Si exception non catchée : `status='failed'`, `error=str(e)`
+
+Le statut `'enriching'` sur `articles` permet de requêter la progression en cours sans polling — la DB reflète l'état réel à l'instant où l'utilisateur charge la page.
+
+**`GET /stats` — nouveaux champs** :
+
+```json
+{
+  "pipeline": {
+    "status": "running" | "completed" | "failed" | "never_run",
+    "started_at": "2026-05-31T14:00:00Z",
+    "completed_at": "2026-05-31T14:03:47Z",
+    "articles_fetched": 8,
+    "articles_enriched": 7,
+    "articles_failed": 1,
+    "total_duration_s": 227,
+    "avg_s_per_article": 32.4,
+    "error": null,
+    "in_progress": {
+      "done": 7,
+      "total": 8
+    }
+  },
+  "cron_fetch_interval_minutes": 15
+}
+```
+
+`in_progress` calculé dynamiquement (`COUNT` sur `articles.status`) uniquement quand `status='running'`, null sinon.
+
+**Fix "Feed may be stalled"** :
+
+Remplacer le calcul actuel par : alerte si `pipeline_runs` n'a aucune ligne avec `started_at > now() - 2 * cron_fetch_interval` ET `status != 'failed'`. Le cron peut tourner à vide sans déclencher l'alerte.
+
+**PWA — System panel** :
+
+Remplacer les lignes "Last fetch / Next fetch / Last enrichment" par :
+
+- **Dernier run** : timestamp relatif + durée (`"il y a 3 min · 3m 47s"`)
+- **Prochain run** : `started_at + interval` (calcul client)
+- **Barre de progression** : visible uniquement quand `status='running'`
+  ```
+  Enrichissement en cours
+  ████████░░░░  7 / 8 articles
+  ```
+  Valeurs issues de `in_progress` dans `/stats` — se met à jour au refresh page, pas en continu
+- **Résultats du dernier run** : `8 fetched · 7 enrichis · 1 erreur · ~32s/article`
+- **Erreur** : si `status='failed'` ou `articles_failed > 0`, afficher `error` avec timestamp — supprimer le gate `hasFallback` actuel
+
+**Acceptance criteria** :
+
+- "Feed may be stalled" ne s'affiche plus quand le cron tourne normalement sans trouver de nouveaux articles
+- Après un run : durée, articles fetched/enrichis/en erreur et moyenne par article affichés dans le System panel
+- Pendant un run : la barre de progression affiche l'avancement réel depuis la DB
+- Un article fetché dans le même cycle est enrichi dans la même exécution — plus d'attente au prochain cycle
+- `pipeline_runs` conserve l'historique des runs
+- Docs mises à jour : `docs/DATA_MODEL.md` (table `pipeline_runs`, statut `'enriching'`), `docs/API_SPEC.md` (nouveaux champs `/stats`)
+
+---
+
+#### [ ] E10-S2 — Qualité des résumés : prompt + debug score
+
+**Problèmes adressés** :
+- `summary_executive` s'affiche sous forme `['texte...']` quand le LLM retourne un tableau JSON
+- Résumé parfois en anglais pour un article français
+- Keywords trop événementiels et non réutilisés entre articles ("défaite", "centre argentin")
+- Impossible de savoir quel modèle a enrichi un article donné
+
+**Fix parsing `summary_executive`** (`enrichment_service.py`) :
+
+Dans `_parse_enrichment`, gérer le cas où le LLM retourne un tableau :
+
+```python
+executive = data.get("summary_executive")
+if isinstance(executive, list):
+    executive = "\n".join(f"- {item}" for item in executive if item)
+elif executive:
+    executive = str(executive).strip()
+```
+
+**Fix langue** :
+
+Heuristique légère sur stop-words (fr / en / es / de / pt) — pas de lib externe. Injecter dans le prompt user :
+
+```python
+lang = _detect_language(content)
+body = f"Language: {lang}\nTitle: {title}\n\n{content[:_MAX_INPUT_CHARS]}"
+```
+
+System prompt : remplacer `"Write in the article's language"` par `"Respond in the language specified in the 'Language:' field."`.
+
+**Amélioration prompt keywords** :
+
+Deux changements dans `_ENRICHMENT_SYSTEM` :
+
+1. Guider vers des concepts stables :
+> *"keywords should be stable reusable concepts — prefer named entities (clubs, countries, people, companies), domains (football, AI, finance) and topics (climate, elections) over ephemeral events or actions ('defeat', 'final', 'Argentine midfielder'). Normalise names consistently."*
+
+2. Injection du vocabulaire existant (top 200 terms par fréquence dans `article_keywords`) dans le prompt user :
+
+```python
+vocab = await _load_top_keywords(db, limit=200)
+if vocab:
+    body = f"Existing vocabulary (reuse when applicable): {', '.join(vocab)}\n" + body
+```
+
+**Stockage du modèle utilisé** :
+
+- Alembic : ajouter `enrichment_model VARCHAR nullable` sur `articles`
+- `cron_enrich` : `article.enrichment_model = settings.openrouter_model` après enrichissement AI réussi, `'tfidf'` sur le path fallback
+- Exposer `enrichment_model` dans `GET /feed`, `GET /explore/*`, `GET /saved`
+
+**PWA — debug panel score badge** :
+
+Tap sur le score badge (feed slide + Explore + Saved) → bottom sheet affichant :
+
+```
+Score 0.74 · AI · gemma-4-28b
+
+football              +1.2
+FC Barcelone          +0.8
+Ligue des Champions    —
+```
+
+Dash quand le keyword n'a pas encore de poids user.
+
+**Backend** : `GET /articles/:id/score-debug` (authentifié) :
+```json
+{
+  "relevance_score": 0.74,
+  "scorer": "ai_keyword",
+  "enrichment_model": "google/gemma-4-28b",
+  "keywords": [
+    { "term": "football", "weight": 1.2 },
+    { "term": "fc barcelone", "weight": 0.8 },
+    { "term": "ligue des champions", "weight": null }
+  ]
+}
+```
+
+`weight: null` = keyword présent sur l'article mais pas encore de poids pour cet user.
+
+**Acceptance criteria** :
+
+- `summary_executive` ne s'affiche plus jamais sous forme `['...']`
+- Article français enrichi → résumé et bullets en français
+- Keywords générés contiennent des entités et domaines stables — plus de "défaite", "finale", "centre argentin"
+- Le LLM reçoit les 200 keywords existants les plus fréquents et réutilise les termes connus quand applicable
+- Score badge tappable ; panel affiche modèle, scorer, keywords + poids (null si pas encore de poids)
+- `enrichment_model` présent sur tous les articles nouvellement enrichis
+- Docs mises à jour : `docs/DATA_MODEL.md` (colonne `enrichment_model`), `docs/API_SPEC.md` (nouveau endpoint `/articles/:id/score-debug`, champ `enrichment_model` dans les réponses feed/explore/saved)
+
+---
+
+#### [ ] E10-S3 — Compaction & refresh des keywords
+
+**Problème adressé** :
+- Des keywords sémantiquement identiques coexistent sous des formes différentes ("FC Barcelone", "Barcelona FC", "Barça") → poids éclatés, signal dilué pour le scoring
+
+**Job `compact_and_refresh`** :
+
+Séquence complète en deux étapes :
+
+1. **Compaction LLM** :
+   - Charger tous les terms distincts de `article_keywords`
+   - Appel LLM : *"Group these terms by semantic equivalence. Return only groups with 2+ members."*
+   - Réponse attendue : `[{"canonical": "FC Barcelone", "aliases": ["Barcelona FC", "Barça", "FC Barcelona"]}]`
+   - Pour chaque groupe :
+     - `UPDATE article_keywords SET term = canonical WHERE term IN (aliases)`
+     - Les `keyword_weights` alias deviennent orphelins (leur term ne correspond plus à aucun article)
+
+2. **Refresh enchaîné** :
+   - Déclencher `cron_refresh_weights` immédiatement après — recompute tous les poids par user depuis `article_feedbacks` × `article_keywords` (maintenant avec les terms canoniques). Le canonical hérite naturellement des contributions de tous ses aliases.
+   - Puis `DELETE FROM keyword_weights WHERE term NOT IN (SELECT DISTINCT term FROM article_keywords)` — purge les lignes alias orphelines
+   - Garantit un état cohérent à la fin du job
+
+**Persistance** : une entrée `pipeline_runs` pour le run complet (`job_name = 'compact_and_refresh'`). Utiliser `articles_fetched` → renommer en un champ `keywords_merged` (ou ajouter une colonne nullable `keywords_merged INT` sur `pipeline_runs`).
+
+**API** :
+
+- `POST /admin/compact-keywords` (require_admin) :
+  - Retourne `202 Accepted` + `{ "status": "started" }`
+  - Utilise le même `_lock` du refresh worker — retourne `{ "status": "already_running" }` si un run est en cours
+  - Exécuté en `BackgroundTask`
+
+- `GET /stats` : ajouter `last_compact_at` (timestamp du dernier `compact_and_refresh` complété, null si jamais lancé) et `distinct_keyword_count` (nombre de terms distincts actuels dans `article_keywords`)
+
+**PWA — Admin screen** :
+
+Nouvelle section "Keywords" dans `Admin.tsx` (sous la section Users) :
+
+- Statistiques : nombre de keywords distincts (`distinct_keyword_count`), date du dernier compactage (`last_compact_at` — format relatif)
+- Bouton **"Compacter les keywords"** avec confirmation : *"Cette opération va fusionner les keywords similaires pour tous les utilisateurs. Elle peut prendre quelques minutes."*
+- Après confirmation : appel `POST /admin/compact-keywords`, bouton désactivé + label "En cours..."
+- Résultat affiché après rechargement de `/stats` : "X keywords fusionnés"
+
+**Acceptance criteria** :
+
+- Après compaction, des terms comme "FC Barcelone" et "Barcelona FC" n'ont plus qu'une seule entrée dans `article_keywords`
+- Les poids user pour les aliases sont recalculés correctement via `cron_refresh_weights` — aucune contribution n'est perdue
+- Les lignes alias orphelines dans `keyword_weights` sont supprimées après le refresh
+- `cron_refresh_weights` schedulé quotidiennement est inchangé — `compact_and_refresh` est un déclenchement on-demand supplémentaire
+- Le bouton admin est protégé par confirmation et par le lock (pas de double run)
+- `last_compact_at` et `distinct_keyword_count` visibles dans la section Keywords de l'admin
+- Docs mises à jour : `docs/API_SPEC.md` (endpoint `POST /admin/compact-keywords`, champs `/stats`), `docs/DATA_MODEL.md` si changements de schéma sur `pipeline_runs`
