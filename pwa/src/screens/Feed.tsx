@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { FeedArticleSlide } from '../components/FeedArticleSlide'
@@ -24,6 +25,24 @@ function formatScore(value: number): string {
 }
 
 export const Feed = () => {
+  // E9-S3 — `?start=:id` pivots the first page on a specific article (taps
+  // from Explore History / New and from Saved). We read the param once on
+  // mount, then strip it from the URL so refreshes/scroll-snap reloads don't
+  // keep re-applying the same pivot.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [startId, setStartId] = useState<string | null>(
+    () => searchParams.get('start'),
+  )
+  useEffect(() => {
+    if (searchParams.get('start') !== null) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('start')
+      setSearchParams(next, { replace: true })
+    }
+    // Run-once: we only want to clear the URL after the initial read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [articles, setArticles] = useState<FeedArticle[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -51,7 +70,11 @@ export const Feed = () => {
     setStatus('loading')
     impressed.current.clear()
     impressionTimers.current.clear()
-    getFeed(undefined, PAGE_SIZE, minScore ?? undefined)
+    getFeed({
+      limit: PAGE_SIZE,
+      minScore: minScore ?? undefined,
+      start: startId ?? undefined,
+    })
       .then((page) => {
         if (!active) return
         setArticles(page.articles)
@@ -59,6 +82,9 @@ export const Feed = () => {
         setHasMore(page.has_more)
         setActiveIndex(0)
         setStatus('ready')
+        // Pivot was already consumed on this fetch; drop it so the next reload
+        // (refresh, threshold change) starts from a clean slate.
+        if (startId !== null) setStartId(null)
         // The container resets to scrollTop=0 on remount, so this is mostly
         // a defensive call for subsequent reloads triggered from the empty
         // state buttons.
@@ -74,6 +100,9 @@ export const Feed = () => {
     return () => {
       active = false
     }
+    // startId only matters on the very first fetch (cleared above). Subsequent
+    // reload triggers (`reloadKey` / `minScore`) don't depend on it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey, minScore])
 
   const refresh = useCallback(() => {
@@ -87,7 +116,11 @@ export const Feed = () => {
     loadingMoreRef.current = true
     setLoadingMore(true)
     try {
-      const page = await getFeed(cursor, PAGE_SIZE, minScore ?? undefined)
+      const page = await getFeed({
+        cursor,
+        limit: PAGE_SIZE,
+        minScore: minScore ?? undefined,
+      })
       setArticles((prev) => [...prev, ...page.articles])
       setCursor(page.next_cursor)
       setHasMore(page.has_more)

@@ -23,9 +23,14 @@ async def get_feed(
     # Per-request override of SCORE_THRESHOLD (E7-S8): the PWA empty-state
     # lowers it on demand so the user can see sub-threshold articles.
     min_score: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    # E9-S3 — pivot the first page on a specific article. Tap-through from
+    # Explore (History or New) and Saved. The pivot bypasses the impression
+    # filter (so already-read articles can be re-surfaced) and is placed at
+    # the top; the rest of the page continues from its feed_rank.
+    start: uuid.UUID | None = None,
 ) -> FeedResponse:
     return await service.get_feed(
-        user.id, cursor=cursor, limit=limit, min_score=min_score
+        user.id, cursor=cursor, limit=limit, min_score=min_score, start=start
     )
 
 

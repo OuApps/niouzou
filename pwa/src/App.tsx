@@ -8,7 +8,7 @@ import { Sources } from './screens/Sources'
 import { Admin } from './screens/Admin'
 import { Login } from './screens/Login'
 import { Register } from './screens/Register'
-import { ExplorePlaceholder } from './screens/ExplorePlaceholder'
+import { Explore } from './screens/Explore'
 import { useAuthStore } from './store/auth'
 
 /** Gate authenticated screens: bounce to /login when there is no token. */
@@ -24,8 +24,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<RequireAuth><Feed /></RequireAuth>} />
-        {/* E9-S3 — placeholder until the Explore tab ships. */}
-        <Route path="/explore" element={<RequireAuth><ExplorePlaceholder /></RequireAuth>} />
+        <Route path="/explore" element={<RequireAuth><Explore /></RequireAuth>} />
         <Route path="/saved" element={<RequireAuth><Saved /></RequireAuth>} />
         <Route path="/keywords" element={<RequireAuth><Keywords /></RequireAuth>} />
         <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />

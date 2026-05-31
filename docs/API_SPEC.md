@@ -115,6 +115,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 | `cursor` | string | No | Opaque cursor from previous response. Omit for first page. |
 | `limit` | integer | No | Number of articles to return. Default: `20`, max: `50`. |
 | `min_score` | float | No | Per-request override of `SCORE_THRESHOLD` (0.0–1.0). |
+| `start` | UUID | No | **E9-S3** — pivot the first page on this article. The article is placed at slot 0 (even if already impressed), and the remaining slots continue ranking from that article's `feed_rank`. Only honoured when `cursor` is omitted. Returns `404` if the article doesn't belong to the user or isn't enriched. |
 
 **Response `200`**
 ```json
@@ -295,6 +296,91 @@ Returns articles the user has saved (Watch Later). Ordered by feedback `updated_
 > Sources now filtered by `is_saved = true` (was `action = 'save'`, **E9-S1**).
 > `reaction`, `is_saved`, `read_full_article` are exposed so the PWA can show
 > the article's full feedback state at a glance.
+
+---
+
+## Explore (E9-S3)
+
+The Explore tab has two modes: **History** (articles the user has already
+impressed, newest seen first) and **New** (enriched articles the user hasn't
+seen yet, gravity-ranked without the score-threshold / random-surface gates
+used by the regular feed). Scrolling Explore **does not** emit impressions —
+the user can scan the queue without consuming articles from their feed.
+
+### GET /explore/history
+
+**Query parameters**
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `cursor` | string | No | Opaque cursor; keyset on `(seen_at, id)`. |
+| `limit` | integer | No | Default: `20`, max: `50`. |
+
+**Response `200`**
+```json
+{
+  "articles": [
+    {
+      "id": "uuid",
+      "title": "Why Rust is eating C++",
+      "summary_short": "...",
+      "summary_executive": "...",
+      "content": null,
+      "og_image_url": "https://example.com/image.jpg",
+      "url": "https://example.com/article",
+      "source": { "id": "uuid", "name": "The Pragmatic Engineer" },
+      "published_at": "2024-01-15T10:30:00Z",
+      "relevance_score": 0.87,
+      "scorer": "ai_keyword",
+      "keywords": ["rust"],
+      "is_premium": false,
+      "reaction": "like",
+      "is_saved": true,
+      "read_full_article": false,
+      "seen_at": "2024-01-16T08:00:00Z"
+    }
+  ],
+  "next_cursor": "eyJzZWVuX2F0IjoiLi4uIn0=",
+  "has_more": false
+}
+```
+
+> `seen_at` is the timestamp of the user's impression row, not the article's
+> `published_at`. Feedback state mirrors the `is_saved` / `reaction` /
+> `read_full_article` the user has set on each article.
+
+### GET /explore/new
+
+Same payload shape as `GET /feed` (without `cold_start`). Articles are
+enriched but not yet impressed. Ranked by `feed_rank DESC` — same gravity
+formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
+**not** applied (the user is explicitly scanning the queue).
+
+**Query parameters**
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `cursor` | string | No | Opaque cursor; keyset on `(feed_rank, id)`. |
+| `limit` | integer | No | Default: `20`, max: `50`. |
+
+**Response `200`**
+```json
+{
+  "articles": [
+    {
+      "id": "uuid",
+      "title": "Why Rust is eating C++",
+      "...": "same fields as GET /feed"
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false
+}
+```
+
+> Tap-through pattern: the PWA navigates to `/?start=:articleId` to drop the
+> user into the Feed with the chosen article as the first slide. See
+> `GET /feed?start=` above for the pivot semantics.
 
 ---
 

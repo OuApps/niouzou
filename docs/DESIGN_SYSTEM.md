@@ -270,6 +270,36 @@ Keywords is no longer a top-level tab — it lives in the Profile menu now
 
 ---
 
+## Explore (E9-S3)
+
+The Explore screen ships with two tabs — **Lus** (History — already-impressed
+articles) and **Nouveaux** (New — enriched, unseen). Both use the same row
+layout, identical to Saved (`pwa/src/screens/Saved.tsx`):
+
+```
+┌──────────────────────────────────────────────────────┐
+│  [thumb 64x64]   source · score%                     │
+│                  Title (line-clamp 2)                │
+│                  🔖 👍 👎 📖   (History only)        │
+│                  il y a 2h                           │
+└──────────────────────────────────────────────────────┘
+```
+
+- The state-icons row (`Bookmark` / `ThumbsUp` / `ThumbsDown` / `BookOpen`)
+  is **only rendered in History** — by definition the New tab has no state
+  to show. Active = fully coloured + `fill: currentColor`; inactive =
+  `var(--text-tertiary)` outline with reduced opacity.
+- Tap row → `navigate('/?start=' + article.id)`. The Feed reads `?start=` on
+  mount, asks the backend for a pivoted first page, and clears the URL param
+  so subsequent refreshes don't re-apply the pivot.
+- Tab switcher is a pill group (`gap: 4`, `border-radius: 24`) anchored
+  below the header. Active state mirrors the BottomNav: accent text on
+  `var(--accent-subtle)` background.
+- Infinite scroll follows the Saved.tsx pattern (`IntersectionObserver`
+  sentinel + per-tab cursor state).
+
+---
+
 ## Icons
 
 Library: **Lucide React** (`lucide-react`) for React components.
@@ -296,7 +326,7 @@ Library: **Lucide React** (`lucide-react`) for React components.
 | Screen | Route | Nav tab |
 |---|---|---|
 | Feed (fullscreen slides) | `/` | Feed |
-| Explore | `/explore` | Explore (stub until E9-S3) |
+| Explore | `/explore` | Explore |
 | Saved | `/saved` | Saved |
 | Profile | `/profile` | Profile |
 | Keywords | `/keywords` | — (from Profile) |

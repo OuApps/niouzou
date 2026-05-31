@@ -56,18 +56,55 @@ export async function register(email: string, password: string): Promise<AuthTok
 
 // ── Feed ───────────────────────────────────────────────────────────────────
 
-export function getFeed(
-  cursor?: string,
-  limit = 20,
-  minScore?: number,
-): Promise<FeedPage> {
+export interface GetFeedOptions {
+  cursor?: string
+  limit?: number
+  minScore?: number
+  /** E9-S3 — pivot the first page on this article (Explore / Saved → Feed). */
+  start?: string
+}
+
+export function getFeed(opts: GetFeedOptions = {}): Promise<FeedPage> {
+  const { cursor, limit = 20, minScore, start } = opts
   return request<FeedPage>('/feed', {
-    query: { cursor, limit, min_score: minScore },
+    query: { cursor, limit, min_score: minScore, start },
   })
 }
 
 export function postImpression(articleId: string): Promise<void> {
   return request<void>(`/feed/${articleId}/impression`, { method: 'POST' })
+}
+
+// ── Explore (E9-S3) ─────────────────────────────────────────────────────────
+
+export interface ExploreHistoryArticle extends FeedArticle {
+  seen_at: string
+}
+
+export interface ExploreHistoryPage extends Page {
+  articles: ExploreHistoryArticle[]
+}
+
+export interface ExploreNewPage extends Page {
+  articles: FeedArticle[]
+}
+
+export function getExploreHistory(
+  cursor?: string,
+  limit = 20,
+): Promise<ExploreHistoryPage> {
+  return request<ExploreHistoryPage>('/explore/history', {
+    query: { cursor, limit },
+  })
+}
+
+export function getExploreNew(
+  cursor?: string,
+  limit = 20,
+): Promise<ExploreNewPage> {
+  return request<ExploreNewPage>('/explore/new', {
+    query: { cursor, limit },
+  })
 }
 
 // ── Feedback (E9-S1 partial update) ─────────────────────────────────────────
