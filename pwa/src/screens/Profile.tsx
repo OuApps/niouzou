@@ -19,10 +19,10 @@ import { useAuthStore } from '../store/auth'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { getMe, getStats, triggerRefresh, type Stats } from '../api'
 
-// Server default cron_fetch interval is 15 min — staleness warning fires past
-// 2× that (E7-S15). PWA doesn't know the real interval; this matches docs.
-const CRON_FETCH_INTERVAL_MS = 15 * 60 * 1000
-const STALE_AFTER_MS = 2 * CRON_FETCH_INTERVAL_MS
+// E10-S1 — the staleness threshold is now driven by the live
+// `cron_fetch_interval_minutes` from /stats; the previous hardcoded constant
+// went wrong whenever the admin changed the interval. Helper at the bottom
+// of the file derives the threshold per render.
 const REFRESH_DEBOUNCE_MS = 60 * 1000
 const REFRESH_REFETCH_MS = 10 * 1000
 
@@ -366,13 +366,42 @@ function aiStatus(enrichment: Stats['enrichment']): AiStatus {
   return new Date(last_error_at) >= new Date(last_enriched_at) ? 'failed' : 'working'
 }
 
-function nextFetchLabel(lastFetchedAt: string | null): string {
-  if (!lastFetchedAt) return '—'
-  const due = new Date(lastFetchedAt).getTime() + CRON_FETCH_INTERVAL_MS
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const mins = Math.floor(seconds / 60)
+  const rest = Math.round(seconds - mins * 60)
+  return rest === 0 ? `${mins}m` : `${mins}m ${rest}s`
+}
+
+function nextRunLabel(
+  pipeline: Stats['pipeline'],
+  intervalMinutes: number,
+): string {
+  // While a run is in flight, no countdown is meaningful — show its live
+  // state. The CronTrigger won't fire again until the lock is released.
+  if (pipeline.status === 'running') return 'en cours'
+  if (intervalMinutes <= 0) return '—'
+  // Anchor on completed_at when available: a slow run that took longer than
+  // the interval would otherwise report "soon" while the wall-clock
+  // CronTrigger hasn't fired yet (E10-S1 review). Fall back to started_at
+  // for transitional rows that lack completed_at (e.g. abruptly killed runs
+  // still tagged 'running' in DB).
+  const anchor = pipeline.completed_at ?? pipeline.started_at
+  if (!anchor) return '—'
+  const due = new Date(anchor).getTime() + intervalMinutes * 60_000
   const diffMs = due - Date.now()
   if (diffMs <= 0) return 'soon'
   const mins = Math.max(1, Math.round(diffMs / 60_000))
   return `in ~${mins} min`
+}
+
+// E10-S1: stalled iff the latest *completed* run is older than 2× the cron
+// interval. A run currently in flight is never stalled, even if long. Never
+// flag a fresh install with no recorded run.
+function isStalled(pipeline: Stats['pipeline'], intervalMinutes: number): boolean {
+  if (pipeline.status !== 'completed' || !pipeline.completed_at) return false
+  const ageMs = Date.now() - new Date(pipeline.completed_at).getTime()
+  return ageMs > 2 * intervalMinutes * 60_000
 }
 
 const SystemPanel = ({
@@ -422,11 +451,13 @@ const SystemPanel = ({
   }
   if (!stats) return null
 
-  const fetchedAt = stats.articles.last_fetched_at
-  const stale =
-    fetchedAt !== null &&
-    Date.now() - new Date(fetchedAt).getTime() > STALE_AFTER_MS
+  const { pipeline } = stats
+  const interval = stats.cron_fetch_interval_minutes
+  const stale = isStalled(pipeline, interval)
   const status = aiStatus(stats.enrichment)
+  const running = pipeline.status === 'running'
+  const showLastRun =
+    pipeline.status === 'completed' || pipeline.status === 'failed'
 
   return (
     <div
@@ -442,33 +473,116 @@ const SystemPanel = ({
         gap: 8,
       }}
     >
-      {/* Cron health */}
-      <Row label="Last fetch">
-        <span title={fetchedAt ?? ''}>
-          {fetchedAt ? formatTimeAgo(fetchedAt) : '—'}
-        </span>
+      {/* Pipeline run summary (E10-S1) */}
+      <Row label="Dernier run">
+        {pipeline.status === 'never_run' ? (
+          // On upgrade from a pre-E10 instance, pipeline_runs is empty until
+          // the first new cron tick. Show the last article ingestion time as
+          // a fallback so the panel isn't a wall of dashes; the next run will
+          // populate the real telemetry within minutes.
+          stats.articles.last_fetched_at ? (
+            <span title={stats.articles.last_fetched_at}>
+              ~{formatTimeAgo(stats.articles.last_fetched_at)}
+              <span style={{ color: 'var(--text-tertiary)', marginLeft: 6 }}>
+                · pré-E10
+              </span>
+            </span>
+          ) : (
+            <span>—</span>
+          )
+        ) : (
+          <span title={pipeline.started_at ?? ''}>
+            {pipeline.started_at ? formatTimeAgo(pipeline.started_at) : '—'}
+            {showLastRun && pipeline.total_duration_s !== null && (
+              <span style={{ color: 'var(--text-tertiary)', marginLeft: 6 }}>
+                · {formatDuration(pipeline.total_duration_s)}
+              </span>
+            )}
+          </span>
+        )}
       </Row>
-      <Row label="Next fetch">
-        <span>{nextFetchLabel(fetchedAt)}</span>
+      <Row label="Prochain run">
+        <span>{nextRunLabel(pipeline, interval)}</span>
       </Row>
-      <Row label="Last enrichment">
-        <span title={stats.enrichment.last_enriched_at ?? ''}>
-          {stats.enrichment.last_enriched_at
-            ? formatTimeAgo(stats.enrichment.last_enriched_at)
-            : '—'}
-        </span>
-      </Row>
-      <Row label="Articles pending">
+      <Row label="Articles en attente">
         <span>{stats.articles.pending_enrichment}</span>
       </Row>
-      <Row label="AI status">
+      <Row label="Statut IA">
         <AiStatusPill status={status} />
       </Row>
 
+      {/* In-progress bar — only while a run is live (E10-S1) */}
+      {running && pipeline.in_progress && (
+        <ProgressBar
+          done={pipeline.in_progress.done}
+          total={pipeline.in_progress.total}
+        />
+      )}
+
+      {/* Last run result line — shown for completed and failed (E10-S1) */}
+      {showLastRun && (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '4px 10px',
+            fontSize: 11,
+            color: 'var(--text-tertiary)',
+          }}
+        >
+          <span>{pipeline.articles_fetched} fetched</span>
+          <span>·</span>
+          <span>{pipeline.articles_enriched} enrichis</span>
+          {pipeline.articles_failed > 0 && (
+            <>
+              <span>·</span>
+              <span style={{ color: 'var(--action-save)' }}>
+                {pipeline.articles_failed} erreur
+                {pipeline.articles_failed > 1 ? 's' : ''}
+              </span>
+            </>
+          )}
+          {pipeline.articles_enriched > 0 &&
+            pipeline.avg_s_per_article !== null && (
+              <>
+                <span>·</span>
+                <span>~{formatDuration(pipeline.avg_s_per_article)}/article</span>
+              </>
+            )}
+        </div>
+      )}
+
       {stale && (
         <Warning>
-          Feed may be stalled — last fetch was{' '}
-          {fetchedAt ? formatTimeAgo(fetchedAt) : 'a while'} ago.
+          Feed may be stalled — last run finished{' '}
+          {pipeline.completed_at ? formatTimeAgo(pipeline.completed_at) : 'a while'}{' '}
+          ago.
+        </Warning>
+      )}
+
+      {/* Pipeline error — surfaced from pipeline_runs.error, no longer gated
+          on the AI fallback heuristic (E10-S1). */}
+      {pipeline.error && (
+        <Warning>
+          <strong style={{ fontWeight: 600 }}>Pipeline error</strong>
+          <span
+            style={{ display: 'block', marginTop: 2 }}
+            title={pipeline.error}
+          >
+            {truncate(pipeline.error, 80)}
+          </span>
+          {pipeline.completed_at && (
+            <span
+              style={{
+                display: 'block',
+                marginTop: 2,
+                color: 'var(--text-tertiary)',
+              }}
+              title={pipeline.completed_at}
+            >
+              {formatTimeAgo(pipeline.completed_at)}
+            </span>
+          )}
         </Warning>
       )}
 
@@ -521,6 +635,48 @@ const SystemPanel = ({
         )}
         {refreshing ? 'Starting…' : refreshDisabled ? 'Triggered' : 'Run now'}
       </button>
+    </div>
+  )
+}
+
+const ProgressBar = ({ done, total }: { done: number; total: number }) => {
+  const ratio = total > 0 ? Math.min(1, done / total) : 0
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 11,
+          color: 'var(--text-tertiary)',
+        }}
+      >
+        <span>Enrichissement en cours</span>
+        <span>
+          {done} / {total} articles
+        </span>
+      </div>
+      <div
+        style={{
+          height: 6,
+          borderRadius: 999,
+          background: 'rgba(255,255,255,0.08)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${ratio * 100}%`,
+            height: '100%',
+            background: 'var(--accent)',
+            transition: 'width 200ms ease-out',
+          }}
+        />
+      </div>
     </div>
   )
 }

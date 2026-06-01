@@ -200,10 +200,30 @@ export function resetKeywords(): Promise<void> {
   return request<void>('/keywords', { method: 'DELETE' })
 }
 
-// ── Stats / Admin (E7-S15, E7-S16, E8-S3) ───────────────────────────────────
+// ── Stats / Admin (E7-S15, E7-S16, E8-S3, E10-S1) ───────────────────────────
+
+export type PipelineStatus = 'running' | 'completed' | 'failed' | 'never_run'
+
+export interface PipelineProgress {
+  done: number
+  total: number
+}
+
+export interface PipelineStats {
+  status: PipelineStatus
+  started_at: string | null
+  completed_at: string | null
+  articles_fetched: number
+  articles_enriched: number
+  articles_failed: number
+  total_duration_s: number | null
+  avg_s_per_article: number | null
+  error: string | null
+  in_progress: PipelineProgress | null
+}
 
 export interface Stats {
-  // E8-S3: surfaced so the PWA can render "Next fetch" against the live
+  // E8-S3: surfaced so the PWA can render "Next run" against the live
   // setting rather than a hardcoded constant.
   cron_fetch_interval_minutes: number
   articles: {
@@ -221,6 +241,8 @@ export interface Stats {
     last_error: string | null
     last_error_at: string | null
   }
+  // Global pipeline telemetry (E10-S1) — drives the System panel.
+  pipeline: PipelineStats
 }
 
 export function getStats(): Promise<Stats> {

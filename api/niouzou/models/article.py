@@ -7,6 +7,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from niouzou.db import Base
 
 STATUS_PENDING = "pending"
+# Transient status set by the refresh worker just before enrichment begins
+# on a given article (E10-S1). Committed in its own short transaction so
+# /stats can show in-progress counts without polling, and so a worker crash
+# leaves a recoverable marker that the startup reaper rolls back to pending.
+STATUS_ENRICHING = "enriching"
 STATUS_ENRICHED = "enriched"
 
 

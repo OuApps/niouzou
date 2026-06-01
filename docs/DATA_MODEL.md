@@ -84,7 +84,14 @@ CREATE TABLE articles (
   og_image_url         TEXT,                     -- scraped from article page
   published_at         TIMESTAMPTZ,
   status               TEXT NOT NULL DEFAULT 'pending',
-                                                 -- pending | enriched
+                                                 -- pending | enriching | enriched
+                                                 -- 'enriching' is a transient marker set by the
+                                                 -- refresh worker just before per-article work begins;
+                                                 -- committed in its own short transaction so /stats can
+                                                 -- show in-progress counts without polling memory (E10-S1).
+                                                 -- The worker's startup reaper resets stuck
+                                                 -- 'enriching' rows back to 'pending' so a crash
+                                                 -- mid-run is recoverable.
   enriched_at          TIMESTAMPTZ,              -- set when status → enriched
   enrichment_method    VARCHAR,                  -- 'ai' or 'tfidf'; set by cron_enrich
   enrichment_error     TEXT,                     -- captured exception when AI failed and fell back to TF-IDF; null on success
@@ -241,21 +248,58 @@ CREATE INDEX idx_keyword_weights_user_id ON keyword_weights(user_id);
 
 ---
 
+### pipeline_runs
+```sql
+CREATE TABLE pipeline_runs (
+  id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at         TIMESTAMPTZ,                   -- null while status='running'
+  status               VARCHAR NOT NULL
+                       CHECK (status IN ('running', 'completed', 'failed')),
+  articles_fetched     INTEGER NOT NULL DEFAULT 0,    -- count returned by cron_fetch
+  articles_enriched    INTEGER NOT NULL DEFAULT 0,    -- AI + TF-IDF combined
+  articles_failed      INTEGER NOT NULL DEFAULT 0,    -- per-article uncaught exceptions
+  articles_in_run      INTEGER NOT NULL DEFAULT 0,    -- pending snapshot frozen at loop start
+  total_duration_s     FLOAT,
+  avg_s_per_article    FLOAT,                         -- total / max(1, enriched)
+  error                TEXT                           -- str(exc) when status='failed'
+);
+
+CREATE INDEX ix_pipeline_runs_started_at ON pipeline_runs(started_at DESC);
+```
+
+> Global (not user-scoped) — the refresh worker is single-replica and the
+> history is shared by the whole instance. One row per fetch+enrich cycle
+> driven by the worker (scheduled or `POST /admin/refresh`). The PWA's
+> System panel reads the most recent row via `GET /stats`. `articles_in_run`
+> is captured once at the start of the enrich loop so the progress-bar
+> denominator doesn't drift when a concurrent fetch ingests new pending rows.
+> Added in E10-S1.
+
+---
+
 ## Article Lifecycle
 
 ```
 created (status = pending)
-  → cron_enrich runs
-    → content extracted
-    → keywords extracted (salience set, never changes)
-    → relevance_score computed per user (frozen)
-    → enriched_at set
-  → status = enriched
-    → article surfaced in feed if:
-        relevance_score > SCORE_THRESHOLD
-        OR random roll < RANDOM_SURFACE_RATE
-    → impression recorded when shown
-    → user swipes → feedback upserted → keyword_weights updated synchronously
+  → cron_fetch + refresh worker schedule the next run
+  → refresh worker enrich loop:
+      → status = enriching  (committed in its own short transaction so
+                             /stats can surface in-progress counts)
+      → content extracted
+      → keywords extracted (salience set, never changes)
+      → relevance_score computed per user (frozen)
+      → enriched_at set
+      → status = enriched
+  → article surfaced in feed if:
+      relevance_score > SCORE_THRESHOLD
+      OR random roll < RANDOM_SURFACE_RATE
+  → impression recorded when shown
+  → user swipes → feedback upserted → keyword_weights updated synchronously
+
+Crash safety: an article left in 'enriching' is reset to 'pending' by the
+worker's startup reaper. A per-article exception during enrichment rolls
+the article back to 'pending' inline and increments `pipeline_runs.articles_failed`.
 ```
 
 ---

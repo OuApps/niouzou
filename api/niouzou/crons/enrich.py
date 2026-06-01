@@ -7,7 +7,7 @@ Per pending article:
   2. Summarise — LLM (summary_short + summary_executive) when AI is on, else a
      newspaper-derived summary_short.
   3. Extract + store keywords via ScoringService (the AI scorer when a key is
-     set; on LLM failure, retry once then fall back to TF-IDF — E5-S2).
+     set; on LLM failure, retry twice then fall back to TF-IDF — E10-S1).
   4. Score the article for its source's owner and freeze the relevance_score.
   5. Mark the article ``enriched``.
 
@@ -18,9 +18,12 @@ status transition.
 Per-user scoring scope (E5-S2 open item): an article belongs to exactly one
 source, which belongs to exactly one user, and the feed only ever surfaces an
 article to that source's owner. So we score for that single owner — who, by
-construction, registered before the source existed. No backfill for "new users
-on pre-existing articles" is needed in this single-owner model; it would only
-matter if articles were shared across users (see E7-S6).
+construction, registered before the source existed.
+
+E10-S1 — the refresh worker drives the pipeline loop directly (so it can
+record per-article telemetry into ``pipeline_runs``); this module now exposes
+``enrichment_resources()`` as a reusable context manager. ``run()`` is kept
+for the CLI / one-shot invocation path and uses the same helper internally.
 
 Each article is enriched in its own transaction so one failure can't roll back
 a whole batch. Blocking network calls (newspaper, LLM) run off the event loop
@@ -31,6 +34,9 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -49,6 +55,15 @@ from niouzou.services.settings_service import SettingsService
 logger = logging.getLogger("niouzou.cron_enrich")
 
 
+@dataclass(slots=True)
+class EnrichmentResources:
+    """Services needed to enrich one article — built once per run."""
+
+    enrichment: EnrichmentService
+    ai_scoring: ScoringService
+    tfidf_scoring: ScoringService
+
+
 async def _pending_article_ids(session: AsyncSession, limit: int) -> list[uuid.UUID]:
     """Oldest pending article ids first (FIFO enrichment)."""
     rows = await session.execute(
@@ -58,6 +73,52 @@ async def _pending_article_ids(session: AsyncSession, limit: int) -> list[uuid.U
         .limit(limit)
     )
     return list(rows.scalars().all())
+
+
+@asynccontextmanager
+async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
+    """Build the per-run enrichment services and close the LLM client on exit.
+
+    Admin overrides are snapshotted once: a long pipeline run sees a consistent
+    view even if the admin updates the DB mid-run. The refresh worker uses this
+    directly to drive its per-article loop (E10-S1); ``cron_enrich.run()``
+    wraps it for the CLI entry point.
+    """
+    async with session_scope() as cfg_session:
+        effective = await SettingsService(cfg_session).get_effective()
+
+    client = OpenRouterClient.from_overrides(
+        effective.openrouter_api_key, effective.openrouter_model
+    )
+    enrichment = EnrichmentService(client)
+    tfidf_scoring = ScoringService(
+        ScoringPipeline(TFIDFScorer()),
+        max_keywords_per_article=effective.max_keywords_per_article,
+    )
+    if client is None:
+        ai_scoring = tfidf_scoring
+    else:
+        from niouzou.scoring.ai_keyword import AIKeywordScorer
+
+        ai_scoring = ScoringService(
+            ScoringPipeline(AIKeywordScorer(client)),
+            max_keywords_per_article=effective.max_keywords_per_article,
+        )
+
+    logger.info(
+        "cron_enrich: resources ready (ai_enabled=%s, model=%s)",
+        enrichment.ai_enabled,
+        effective.openrouter_model if client is not None else "n/a",
+    )
+    try:
+        yield EnrichmentResources(
+            enrichment=enrichment,
+            ai_scoring=ai_scoring,
+            tfidf_scoring=tfidf_scoring,
+        )
+    finally:
+        if client is not None:
+            client.close()
 
 
 async def enrich_article(
@@ -165,46 +226,17 @@ async def enrich_article(
 
 
 async def run() -> int:
-    """Enrich one batch of pending articles. Returns the number enriched."""
+    """CLI entry point: enrich one batch of pending articles.
+
+    The refresh worker no longer calls this — it drives its own loop with
+    ``pipeline_runs`` telemetry (E10-S1). Kept here so the cron script and
+    direct ``python -m niouzou.crons.enrich`` invocations still work.
+    """
     settings = get_settings()
-    # Resolve runtime overrides (E8-S2): the admin may have flipped the model
-    # or pasted a fresh API key since the last run. Snapshot once per batch so
-    # the rest of the pipeline sees a consistent view.
-    async with session_scope() as cfg_session:
-        effective = await SettingsService(cfg_session).get_effective()
-
-    # One OpenRouter client, shared by summaries and keyword extraction (None
-    # when no key — the AI path is then skipped entirely). Closed in finally so
-    # the httpx connection pool isn't leaked.
-    client = OpenRouterClient.from_overrides(
-        effective.openrouter_api_key, effective.openrouter_model
-    )
-    enrichment = EnrichmentService(client)
-    # Dependency-free fallback: used for scoring (DB-only maths) and whenever
-    # the LLM keyword path fails or AI is off.
-    tfidf_scoring = ScoringService(
-        ScoringPipeline(TFIDFScorer()),
-        max_keywords_per_article=effective.max_keywords_per_article,
-    )
-    if client is None:
-        # Same object as the fallback so _store_keywords takes the direct path.
-        ai_scoring = tfidf_scoring
-    else:
-        # Lazy import keeps the AI module off the no-key path.
-        from niouzou.scoring.ai_keyword import AIKeywordScorer
-
-        ai_scoring = ScoringService(
-            ScoringPipeline(AIKeywordScorer(client)),
-            max_keywords_per_article=effective.max_keywords_per_article,
-        )
-
     logger.info(
-        "cron_enrich: start (batch_size=%d, ai_enabled=%s, model=%s)",
-        settings.enrich_batch_size,
-        enrichment.ai_enabled,
-        effective.openrouter_model if client is not None else "n/a",
+        "cron_enrich: start (batch_size=%d)", settings.enrich_batch_size
     )
-    try:
+    async with enrichment_resources() as resources:
         async with session_scope() as session:
             pending_ids = await _pending_article_ids(
                 session, settings.enrich_batch_size
@@ -238,9 +270,9 @@ async def run() -> int:
                     await enrich_article(
                         session,
                         article,
-                        enrichment=enrichment,
-                        ai_scoring=ai_scoring,
-                        tfidf_scoring=tfidf_scoring,
+                        enrichment=resources.enrichment,
+                        ai_scoring=resources.ai_scoring,
+                        tfidf_scoring=resources.tfidf_scoring,
                     )
                     enriched += 1
                 logger.info(
@@ -259,16 +291,12 @@ async def run() -> int:
                 )
 
         logger.info(
-            "cron_enrich: done — enriched %d/%d articles in %.1fs (ai=%s)",
+            "cron_enrich: done — enriched %d/%d articles in %.1fs",
             enriched,
             len(pending_ids),
             time.perf_counter() - batch_start,
-            enrichment.ai_enabled,
         )
         return enriched
-    finally:
-        if client is not None:
-            client.close()
 
 
 def main() -> None:

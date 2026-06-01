@@ -1,4 +1,4 @@
-"""Stats schema (GET /stats, E7-S15)."""
+"""Stats schema (GET /stats, E7-S15, E10-S1)."""
 
 from datetime import datetime
 
@@ -32,12 +32,50 @@ class EnrichmentStats(BaseModel):
     last_error_at: datetime | None
 
 
+class PipelineProgress(BaseModel):
+    """Live progress inside a currently-running pipeline cycle.
+
+    Populated only when the latest ``pipeline_run`` has ``status='running'``.
+    ``done`` includes both successfully-enriched and failed articles so the
+    bar reaches ``total`` even when some articles error out.
+    """
+
+    done: int
+    total: int
+
+
+class PipelineStats(BaseModel):
+    """Most recent fetch+enrich cycle (E10-S1).
+
+    Global — not user-scoped. The whole instance shares one refresh worker
+    and one ``pipeline_runs`` history; per-user telemetry would be
+    misleading since the worker doesn't enrich on behalf of a single user.
+
+    ``status='never_run'`` is synthetic: returned when the table is empty
+    (fresh install), so the PWA can render an "instance just booted" state
+    instead of confusing missing fields.
+    """
+
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    articles_fetched: int
+    articles_enriched: int
+    articles_failed: int
+    total_duration_s: float | None
+    avg_s_per_article: float | None
+    error: str | None
+    in_progress: PipelineProgress | None
+
+
 class Stats(BaseModel):
-    # Surfaced so the PWA can render the "Next fetch" countdown (E7-S27)
-    # against the live setting rather than a hardcoded number — also tracks
-    # changes made via /admin/config (E8-S3).
+    # Surfaced so the PWA can render the "Next run" countdown
+    # against the live setting rather than a hardcoded number. Tracks
+    # changes made via /admin/config (E8-S3, E10-S1).
     cron_fetch_interval_minutes: int
     articles: ArticlesStats
     sources: SourcesStats
     keywords: KeywordsStats
     enrichment: EnrichmentStats
+    # Global pipeline telemetry — drives the PWA System panel (E10-S1).
+    pipeline: PipelineStats

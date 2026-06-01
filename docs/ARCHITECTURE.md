@@ -227,6 +227,12 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
     - `cron_refresh_weights` daily at hour `CRON_REFRESH_WEIGHTS_HOUR` UTC (default 03:00)
   - Mutual exclusion lock (`asyncio.Lock`) between scheduled runs and manual `POST /admin/refresh` prevents concurrent execution.
   - Configuration (fetch interval, weights refresh hour) is overridable via `PATCH /admin/config` (E8-S3) and persisted in `app_settings` table (E8-S2).
+- **Pipeline observability (E10-S1, 2026-06-01)**:
+  - Every fetch+enrich cycle is recorded in `pipeline_runs`: when it ran, how long it took, how many articles it processed, whether it failed. `GET /stats` exposes the most recent row in its global `pipeline` block.
+  - The refresh worker drives the per-article enrich loop directly (rather than calling `cron_enrich.run()`) so it can update the run row after each article and flip `articles.status` to a transient `'enriching'` for live progress visibility in `/stats`.
+  - **Startup reaper**: before the scheduler starts, `UPDATE articles SET status='pending' WHERE status='enriching'` recovers any article left mid-flight by a previous worker crash.
+  - **LLM retry**: the enrichment service retries a failing LLM call twice (backoff 1s, 3s) before falling back to TF-IDF — transient OpenRouter blips no longer poison the AI/TF-IDF ratio.
+  - The old "Feed may be stalled" heuristic (based on the latest article's `created_at`) is gone; staleness is now driven by `pipeline_runs.completed_at` vs `cron_fetch_interval`, so a healthy cron tick producing nothing new no longer triggers a false alert.
 - **Service count**: Reduced from 6 to 4 services (`api`, `pwa`, `refresh-worker`, PostgreSQL).
 
 ### Docker Compose (self-hosted)

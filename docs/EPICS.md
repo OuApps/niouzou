@@ -1398,7 +1398,7 @@ salience * (
 
 ### Stories
 
-#### [ ] E9-S1 — Data model & scoring refactor *(backend)*
+#### [x] E9-S1 — Data model & scoring refactor *(backend)*
 
 **Migration Alembic** :
 
@@ -1476,7 +1476,7 @@ salience * (
 
 ---
 
-#### [ ] E9-S2 — Feed fullscreen TikTok *(frontend)*
+#### [x] E9-S2 — Feed fullscreen TikTok *(frontend)*
 
 **Concept** : Le feed mini-carte est remplacé par un conteneur scroll-snap vertical. Chaque article occupe 100 dvh et affiche tout son contenu inline. Plus aucune navigation vers `/articles/:id` depuis le feed.
 
@@ -1618,7 +1618,7 @@ Comportement :
 
 ---
 
-#### [ ] E9-S3 — Explore tab *(backend + frontend)*
+#### [x] E9-S3 — Explore tab *(backend + frontend)*
 
 **Concept** : Nouvel onglet Explore (BottomNav). Deux modes — **History** (articles déjà vus, triés par `seen_at DESC`) et **New** (articles enrichis non vus, triés par le ranking gravity du feed). Permet de retrouver un article passé ou de scanner ce qui arrive sans s'engager dans le feed fullscreen.
 
@@ -1701,7 +1701,7 @@ Comportement :
 
 ---
 
-#### [ ] E9-S4 — Navigation & Saved update *(frontend)*
+#### [x] E9-S4 — Navigation & Saved update *(frontend)*
 
 **BottomNav** (`pwa/src/components/BottomNav.tsx`) :
 
@@ -1752,48 +1752,66 @@ Comportement :
 
 ### Stories
 
-#### [ ] E10-S1 — Pipeline observabilité & refonte à la maille article
+#### [x] E10-S1 — Pipeline observabilité & refonte à la maille article
 
 **Problèmes adressés** :
 - "Feed may be stalled" faux positif systématique (basé sur `last_fetched_at` = dernière insertion d'article, pas dernière exécution du cron)
 - Aucune visibilité sur la durée d'un run, le nombre d'articles traités, les erreurs
 - `cron_fetch` et `cron_enrich` sont deux passes batch déconnectées — un article fetché attend le prochain cycle pour être enrichi
+- Échec LLM transitoire (rate-limit, timeout) → fallback TF-IDF immédiat alors qu'un simple retry aurait suffi
+- Article laissé en `'enriching'` après un crash du worker → jamais repêché
+
+**Décisions produit** :
+- **Backlog** : on garde le cap `enrich_batch_size` (~10). Un backlog est traité au fil des runs successifs ; durée d'un `pipeline_runs` bornée et observable.
+- **Échec d'enrichissement** : pas de nouveau statut `'error'` sur `articles`. Le LLM est retenté **2 fois** (backoff 1s puis 3s) avant fallback TF-IDF. L'article passe à `enriched` avec `enrichment_method='tfidf'` et `enrichment_error` renseigné. Les rares plantages catastrophiques (extraction crash, DB error) sont comptés dans `pipeline_runs.articles_failed` sans changer le statut de l'article (laissé à `pending` pour relance au prochain run).
+- **Scope `/stats`** : le bloc `pipeline` est **global** (instance-wide). Les compteurs existants (`articles`, `sources`, `keywords`) restent user-scopés. Documenté tel quel dans `API_SPEC.md`.
 
 **Migration Alembic** :
 
 Nouvelle table `pipeline_runs` :
 ```sql
 id                  UUID PK
-started_at          TIMESTAMP NOT NULL
-completed_at        TIMESTAMP nullable          -- null = run en cours
-status              VARCHAR NOT NULL            -- 'running' | 'completed' | 'failed'
-articles_fetched    INT NOT NULL DEFAULT 0      -- nouveaux articles trouvés
-articles_enriched   INT NOT NULL DEFAULT 0      -- enrichis avec succès
-articles_failed     INT NOT NULL DEFAULT 0
-total_duration_s    FLOAT nullable              -- secondes
+started_at          TIMESTAMPTZ NOT NULL
+completed_at        TIMESTAMPTZ nullable          -- null = run en cours
+status              VARCHAR NOT NULL              -- 'running' | 'completed' | 'failed'
+articles_fetched    INT NOT NULL DEFAULT 0        -- nouveaux articles trouvés
+articles_enriched   INT NOT NULL DEFAULT 0        -- AI ou TF-IDF, peu importe
+articles_failed     INT NOT NULL DEFAULT 0        -- plantages catastrophiques
+articles_in_run     INT NOT NULL DEFAULT 0        -- snapshot pending au début (figé pour la progress bar)
+total_duration_s    FLOAT nullable                -- secondes
 avg_s_per_article   FLOAT nullable
-error               TEXT nullable               -- si le run entier a planté
+error               TEXT nullable                 -- si le run entier a planté
 ```
 
-Pas de FK user — c'est une métrique globale de l'instance.
+Index : `pipeline_runs(started_at DESC)` — toute lecture passe par cet ordre.
+
+Pas de FK user. Pas de nouveau statut `'error'` sur `articles` — statuts inchangés : `pending` | `enriching` | `enriched`.
+
+**Reaper au startup du worker** : avant `_scheduler.start()` dans `_lifespan`, exécuter `UPDATE articles SET status='pending' WHERE status='enriching'`. Sécurise les articles laissés en chantier par un crash précédent.
 
 **Refonte `_run_pipeline()`** (refresh worker) :
 
-Au lieu de deux passes batch séparées (`cron_fetch.run()` puis `cron_enrich.run()`), nouveau flow article par article :
+Au lieu de deux passes batch séparées (`cron_fetch.run()` puis `cron_enrich.run()`), nouveau flow tracé via `pipeline_runs` :
 
-1. Créer une ligne `pipeline_runs` avec `status='running'`, `started_at=now()`
-2. Appeler Miniflux, insérer les nouveaux articles (`articles.status='pending'`), incrémenter `articles_fetched`
-3. Prendre **tous** les articles `status='pending'` (nouveaux + anciens non encore enrichis) et les traiter un par un :
-   - `articles.status = 'enriching'` avant de commencer
-   - fetch content → LLM enrich → score
-   - `articles.status = 'enriched'` on success, `'error'` on failure
-   - Incrémenter `articles_enriched` ou `articles_failed` sur `pipeline_runs` après chaque article
-4. À la fin : `completed_at=now()`, calculer `total_duration_s` et `avg_s_per_article`, `status='completed'`
-5. Si exception non catchée : `status='failed'`, `error=str(e)`
+1. Créer une ligne `pipeline_runs` (`status='running'`, `started_at=now()`).
+2. `cron_fetch.run()` → `articles_fetched = retour de la fonction`.
+3. Snapshot des `pending` capé à `enrich_batch_size` (FIFO `created_at`). Persister `articles_in_run` (figé : une fetch intermédiaire qui ajouterait des `pending` ne fait pas dériver la barre de progression).
+4. Pour chaque article du snapshot :
+   - `articles.status='enriching'` (transaction courte, commit immédiat — `/stats` peut voir l'avancement).
+   - Enrichissement (retry LLM × 2 → fallback TF-IDF — voir bloc dédié).
+   - Succès complet (AI ou TF-IDF) : `articles.status='enriched'`, incrément `articles_enriched`.
+   - Exception non rattrapée : statut laissé à `pending` (repêché par le reaper au prochain run), incrément `articles_failed`.
+5. Fin : `status='completed'`, `completed_at`, `total_duration_s`, `avg_s_per_article = total_duration_s / max(1, articles_enriched)`.
+6. Exception globale : `status='failed'`, `error=str(e)`.
 
-Le statut `'enriching'` sur `articles` permet de requêter la progression en cours sans polling — la DB reflète l'état réel à l'instant où l'utilisateur charge la page.
+**Retry LLM** (`EnrichmentService.generate_enrichment`) :
+- Tenter l'appel LLM ; sur exception, retry × 2 avec backoff (1s, 3s).
+- Au 3ème échec : retour `Enrichment(keywords=None)`, le cron prend le fallback TF-IDF (comportement actuel).
+- Logguer chaque tentative pour traçabilité.
 
-**`GET /stats` — nouveaux champs** :
+Le statut `'enriching'` sur `articles` permet de calculer la progression depuis la DB sans polling — la page Profile reflète l'état réel au chargement.
+
+**`GET /stats` — nouveaux champs** (bloc `pipeline` global) :
 
 ```json
 {
@@ -1816,35 +1834,48 @@ Le statut `'enriching'` sur `articles` permet de requêter la progression en cou
 }
 ```
 
-`in_progress` calculé dynamiquement (`COUNT` sur `articles.status`) uniquement quand `status='running'`, null sinon.
+`in_progress` calculé uniquement quand `status='running'` : `done = articles_enriched + articles_failed` (lus depuis la ligne `pipeline_runs`), `total = articles_in_run` (snapshot figé). Null sinon.
 
 **Fix "Feed may be stalled"** :
 
-Remplacer le calcul actuel par : alerte si `pipeline_runs` n'a aucune ligne avec `started_at > now() - 2 * cron_fetch_interval` ET `status != 'failed'`. Le cron peut tourner à vide sans déclencher l'alerte.
+Lecture de la dernière ligne `pipeline_runs` (`ORDER BY started_at DESC LIMIT 1`) :
+- Aucune ligne → `status='never_run'`, pas d'alerte (instance neuve).
+- `status='running'` → pas d'alerte (run en cours est sain, même long).
+- `status='failed'` ET pas de `completed` plus récent → afficher `error`.
+- `status='completed'` ET `completed_at < now() - 2 * cron_fetch_interval` → "stalled".
 
-**PWA — System panel** :
+**PWA — System panel** (`Profile.tsx`) :
 
-Remplacer les lignes "Last fetch / Next fetch / Last enrichment" par :
+Remplacer "Last fetch / Next fetch / Last enrichment" par :
 
-- **Dernier run** : timestamp relatif + durée (`"il y a 3 min · 3m 47s"`)
-- **Prochain run** : `started_at + interval` (calcul client)
-- **Barre de progression** : visible uniquement quand `status='running'`
+- **Dernier run** : timestamp relatif + durée (`"il y a 3 min · 3m 47s"`).
+- **Prochain run** : `started_at + cron_fetch_interval` (calcul client basé sur `stats.cron_fetch_interval_minutes` — **supprimer la constante `CRON_FETCH_INTERVAL_MS` hardcodée** en haut du fichier).
+- **Barre de progression** : visible uniquement quand `status='running'` :
   ```
   Enrichissement en cours
   ████████░░░░  7 / 8 articles
   ```
-  Valeurs issues de `in_progress` dans `/stats` — se met à jour au refresh page, pas en continu
-- **Résultats du dernier run** : `8 fetched · 7 enrichis · 1 erreur · ~32s/article`
-- **Erreur** : si `status='failed'` ou `articles_failed > 0`, afficher `error` avec timestamp — supprimer le gate `hasFallback` actuel
+  Valeurs issues de `in_progress` dans `/stats` — pas de polling continu, refresh à l'ouverture du panel.
+- **Résultats du dernier run** : `8 fetched · 7 enrichis · 1 erreur · ~32s/article`.
+- **Erreur** : si `status='failed'` ou `articles_failed > 0`, afficher `error` avec timestamp — supprimer le gate `hasFallback` actuel.
+
+**Tests** :
+- Cycle de vie `pipeline_runs` : running → completed, running → failed.
+- Reaper : article `'enriching'` au startup → bascule `pending`.
+- 2 retries LLM avant fallback TF-IDF (mock `OpenRouterClient`, 2 levées d'exception puis succès / 3 levées puis fallback).
+- `articles_failed` incrémenté sur exception non rattrapée dans `enrich_article`.
+- "Stalled" off quand `status='running'`, on quand `completed_at` ancien.
 
 **Acceptance criteria** :
 
-- "Feed may be stalled" ne s'affiche plus quand le cron tourne normalement sans trouver de nouveaux articles
-- Après un run : durée, articles fetched/enrichis/en erreur et moyenne par article affichés dans le System panel
-- Pendant un run : la barre de progression affiche l'avancement réel depuis la DB
-- Un article fetché dans le même cycle est enrichi dans la même exécution — plus d'attente au prochain cycle
-- `pipeline_runs` conserve l'historique des runs
-- Docs mises à jour : `docs/DATA_MODEL.md` (table `pipeline_runs`, statut `'enriching'`), `docs/API_SPEC.md` (nouveaux champs `/stats`)
+- "Feed may be stalled" ne s'affiche plus quand le cron tourne normalement sans trouver de nouveaux articles.
+- Après un run : durée, articles fetched/enrichis/en erreur et moyenne par article affichés dans le System panel.
+- Pendant un run : la barre de progression affiche l'avancement réel depuis la DB, ne dérive pas si une fetch intermédiaire ajoute des `pending`.
+- Un article fetché dans le même cycle est enrichi dans la même exécution (dans la limite de `enrich_batch_size`).
+- Crash worker pendant enrichissement → article repêché au prochain run via le reaper.
+- Un échec LLM transitoire est retenté (× 2) avant fallback TF-IDF.
+- `pipeline_runs` conserve l'historique des runs (index `started_at DESC`).
+- Docs mises à jour : `docs/DATA_MODEL.md` (table `pipeline_runs`, statut `'enriching'`), `docs/API_SPEC.md` (champs `/stats`, scope global du bloc `pipeline`), `docs/ARCHITECTURE.md` (refresh-worker porte la lifecycle des `pipeline_runs` et le reaper).
 
 ---
 
@@ -1856,9 +1887,9 @@ Remplacer les lignes "Last fetch / Next fetch / Last enrichment" par :
 - Keywords trop événementiels et non réutilisés entre articles ("défaite", "centre argentin")
 - Impossible de savoir quel modèle a enrichi un article donné
 
-**Fix parsing `summary_executive`** (`enrichment_service.py`) :
+**Fix parsing `summary_executive`** (`enrichment_service.py:_parse_enrichment`) :
 
-Dans `_parse_enrichment`, gérer le cas où le LLM retourne un tableau :
+Gérer le cas où le LLM retourne un tableau :
 
 ```python
 executive = data.get("summary_executive")
@@ -1868,22 +1899,23 @@ elif executive:
     executive = str(executive).strip()
 ```
 
+`ExecutiveSummary` côté PWA splitte déjà sur `\n` (`FeedArticleSlide.tsx:425`), aucun changement frontend nécessaire. Tests unitaires sur `_parse_enrichment` : string, list, list vide, list imbriquée (drop silencieux).
+
 **Fix langue** :
 
-Heuristique légère sur stop-words (fr / en / es / de / pt) — pas de lib externe. Injecter dans le prompt user :
+Heuristique légère sur stop-words (fr / en / es / de / pt) — pas de lib externe. Appliquée à `title + content[:500]` (le titre seul est souvent trop court / ambigu). Si aucune langue ne ressort (compteurs nuls ou égalité), fallback à la consigne actuelle.
 
 ```python
-lang = _detect_language(content)
-body = f"Language: {lang}\nTitle: {title}\n\n{content[:_MAX_INPUT_CHARS]}"
+lang = _detect_language(title, content)  # None si indétecté
+header = f"Language: {lang}\n" if lang else ""
+body = f"{header}Title: {title}\n\n{content[:_MAX_INPUT_CHARS]}"
 ```
 
-System prompt : remplacer `"Write in the article's language"` par `"Respond in the language specified in the 'Language:' field."`.
+System prompt : remplacer `"Write in the article's language"` par `"Respond in the language specified in the 'Language:' field, or in the article's language if unspecified."`.
 
 **Amélioration prompt keywords** :
 
-Deux changements dans `_ENRICHMENT_SYSTEM` :
-
-1. Guider vers des concepts stables :
+1. Guider vers des concepts stables — ajouter au `_ENRICHMENT_SYSTEM` :
 > *"keywords should be stable reusable concepts — prefer named entities (clubs, countries, people, companies), domains (football, AI, finance) and topics (climate, elections) over ephemeral events or actions ('defeat', 'final', 'Argentine midfielder'). Normalise names consistently."*
 
 2. Injection du vocabulaire existant (top 200 terms par fréquence dans `article_keywords`) dans le prompt user :
@@ -1894,15 +1926,18 @@ if vocab:
     body = f"Existing vocabulary (reuse when applicable): {', '.join(vocab)}\n" + body
 ```
 
+**Cache vocab** : chargé **une fois par `cron_enrich.run()`** (cache sur `EnrichmentService`, rechargé en tête de chaque run), pas à chaque article. Évite ~1.5–3k tokens × N articles par run sur la prompt cache miss.
+
 **Stockage du modèle utilisé** :
 
-- Alembic : ajouter `enrichment_model VARCHAR nullable` sur `articles`
-- `cron_enrich` : `article.enrichment_model = settings.openrouter_model` après enrichissement AI réussi, `'tfidf'` sur le path fallback
-- Exposer `enrichment_model` dans `GET /feed`, `GET /explore/*`, `GET /saved`
+- Alembic : ajouter `enrichment_model VARCHAR nullable` sur `articles`.
+- Path AI réussi : `article.enrichment_model = settings.openrouter_model` (modèle effectif au moment du run).
+- Path TF-IDF (fallback ou natif) : laisser `enrichment_model = NULL` — `enrichment_method='tfidf'` indique déjà la méthode, dupliquer dans deux colonnes serait redondant.
+- Exposer `enrichment_model` dans `GET /feed`, `GET /explore/*`, `GET /saved`.
 
 **PWA — debug panel score badge** :
 
-Tap sur le score badge (feed slide + Explore + Saved) → bottom sheet affichant :
+Tap sur le score badge (feed slide + Explore + Saved) → bottom sheet :
 
 ```
 Score 0.74 · AI · gemma-4-28b
@@ -1914,7 +1949,10 @@ Ligue des Champions    —
 
 Dash quand le keyword n'a pas encore de poids user.
 
-**Backend** : `GET /articles/:id/score-debug` (authentifié) :
+**UX critique** : le handler du badge appelle `e.stopPropagation()` pour ne pas déclencher les gestures TikTok du slide ni la navigation détail.
+
+**Backend** : `GET /articles/:id/score-debug` — authentifié **et propriétaire de l'article** (via `source.user_id`). Retourner `403` sinon : ne jamais exposer les `keyword_weights` cross-user.
+
 ```json
 {
   "relevance_score": 0.74,
@@ -1928,68 +1966,103 @@ Dash quand le keyword n'a pas encore de poids user.
 }
 ```
 
-`weight: null` = keyword présent sur l'article mais pas encore de poids pour cet user.
+`weight: null` = keyword présent sur l'article mais aucun row `keyword_weights` pour cet user (sémantiquement neutre = 0, mais distingué dans l'UI par le dash).
+
+**Tests** :
+- `_parse_enrichment` : string, list, list vide, list imbriquée.
+- `/score-debug` : 403 cross-user, 200 owner, `weight: null` quand absent.
+- Détection langue : article fr + 2 stop-words en → détecté `fr` ; égalité parfaite → `None`.
 
 **Acceptance criteria** :
 
-- `summary_executive` ne s'affiche plus jamais sous forme `['...']`
-- Article français enrichi → résumé et bullets en français
-- Keywords générés contiennent des entités et domaines stables — plus de "défaite", "finale", "centre argentin"
-- Le LLM reçoit les 200 keywords existants les plus fréquents et réutilise les termes connus quand applicable
-- Score badge tappable ; panel affiche modèle, scorer, keywords + poids (null si pas encore de poids)
-- `enrichment_model` présent sur tous les articles nouvellement enrichis
-- Docs mises à jour : `docs/DATA_MODEL.md` (colonne `enrichment_model`), `docs/API_SPEC.md` (nouveau endpoint `/articles/:id/score-debug`, champ `enrichment_model` dans les réponses feed/explore/saved)
+- `summary_executive` ne s'affiche plus jamais sous forme `['...']`.
+- Article français enrichi → résumé et bullets en français.
+- Keywords générés contiennent des entités et domaines stables — plus de "défaite", "finale", "centre argentin".
+- Le LLM reçoit les 200 keywords existants les plus fréquents (cache par run) et réutilise les termes connus quand applicable.
+- Score badge tappable ; panel affiche modèle, scorer, keywords + poids (null si pas encore de poids). Le tap n'interfère pas avec les gestures du slide.
+- `enrichment_model` présent sur tous les articles nouvellement enrichis via AI ; `NULL` sur path TF-IDF.
+- `/score-debug` refuse l'accès cross-user (403).
+- Docs mises à jour : `docs/DATA_MODEL.md` (colonne `enrichment_model`), `docs/API_SPEC.md` (endpoint `/articles/:id/score-debug`, champ `enrichment_model` dans feed/explore/saved).
 
 ---
 
 #### [ ] E10-S3 — Compaction & refresh des keywords
 
 **Problème adressé** :
-- Des keywords sémantiquement identiques coexistent sous des formes différentes ("FC Barcelone", "Barcelona FC", "Barça") → poids éclatés, signal dilué pour le scoring
+- Des keywords sémantiquement identiques coexistent sous des formes différentes ("FC Barcelone", "Barcelona FC", "Barça") → poids éclatés, signal dilué pour le scoring.
 
-**Job `compact_and_refresh`** :
+**Décisions produit** :
+- **Chunking** : top N par fréquence en **un seul appel LLM** (N par défaut = 500 via `COMPACTION_TOP_N`). La longue traîne (terms rares) est ignorée volontairement — c'est là où la dilution de signal fait le moins mal et où le ratio bénéfice/coût LLM est le plus faible.
+- **Safety — deux étapes preview/apply** : aucune modification de la DB tant que l'admin n'a pas validé les groupes proposés. Un preview reste applicable ultérieurement tant qu'il n'a pas été rejeté.
+- **Implémentation côté refresh-worker** : la compaction réutilise le pattern de `POST /admin/refresh` (E7-S16/E8-S6) — l'API proxy vers le worker pour ne pas étouffer uvicorn pendant la phase LLM + `cron_refresh_weights` (plusieurs minutes possibles).
+- **Pin users préservés** : les groupes contenant un term `manually_overridden=true` dans `keyword_weights` sont **skipés** à l'apply (pas d'écrasement silencieux d'un choix explicite).
 
-Séquence complète en deux étapes :
+**Migration Alembic** :
 
-1. **Compaction LLM** :
-   - Charger tous les terms distincts de `article_keywords`
-   - Appel LLM : *"Group these terms by semantic equivalence. Return only groups with 2+ members."*
-   - Réponse attendue : `[{"canonical": "FC Barcelone", "aliases": ["Barcelona FC", "Barça", "FC Barcelona"]}]`
-   - Pour chaque groupe :
-     - `UPDATE article_keywords SET term = canonical WHERE term IN (aliases)`
-     - Les `keyword_weights` alias deviennent orphelins (leur term ne correspond plus à aucun article)
+Nouvelle table `compaction_runs` :
+```sql
+id                UUID PK
+created_at        TIMESTAMPTZ NOT NULL
+applied_at        TIMESTAMPTZ nullable     -- null = preview non encore appliqué
+status            VARCHAR NOT NULL         -- 'preview' | 'applied' | 'rejected' | 'failed'
+groups_json       JSONB NOT NULL           -- [{"canonical": "...", "aliases": [...], "skipped_reason": "..."?}]
+keywords_merged   INT NOT NULL DEFAULT 0   -- somme des aliases effectivement fusionnés à l'apply
+error             TEXT nullable
+```
 
-2. **Refresh enchaîné** :
-   - Déclencher `cron_refresh_weights` immédiatement après — recompute tous les poids par user depuis `article_feedbacks` × `article_keywords` (maintenant avec les terms canoniques). Le canonical hérite naturellement des contributions de tous ses aliases.
-   - Puis `DELETE FROM keyword_weights WHERE term NOT IN (SELECT DISTINCT term FROM article_keywords)` — purge les lignes alias orphelines
-   - Garantit un état cohérent à la fin du job
+Index : `compaction_runs(created_at DESC)`.
 
-**Persistance** : une entrée `pipeline_runs` pour le run complet (`job_name = 'compact_and_refresh'`). Utiliser `articles_fetched` → renommer en un champ `keywords_merged` (ou ajouter une colonne nullable `keywords_merged INT` sur `pipeline_runs`).
+Pas de réutilisation de `pipeline_runs` — sémantiquement distinct (lifecycle preview/apply ≠ run pipeline), évite de renommer/surcharger `articles_fetched`.
+
+**Worker — endpoints** :
+
+- `POST /compact/preview` (utilise un `_compact_lock` **séparé** du `_lock` pipeline, pour ne pas geler l'enrichissement pendant l'appel LLM) :
+  1. Charger top N terms : `SELECT term, COUNT(*) AS n FROM article_keywords GROUP BY term ORDER BY n DESC LIMIT :n`.
+  2. Appel LLM : *"Group these terms by semantic equivalence. Return only groups with 2+ members."*
+  3. Persister `compaction_runs(status='preview', groups_json=...)`.
+  4. Retour `{"id", "groups"}`.
+
+- `POST /compact/apply` body `{"id": "..."}` (utilise le `_lock` **partagé** avec le pipeline — apply bloque/est bloqué par un run en cours, sinon les UPDATE+refresh peuvent corrompre un run d'enrichissement simultané) :
+  1. Charger `compaction_runs` par id, vérifier `status='preview'`.
+  2. Annoter `groups_json` : pour chaque groupe contenant un term avec `manually_overridden=true`, ajouter `skipped_reason="pinned"` et exclure du traitement.
+  3. Pour chaque groupe non skipé :
+     - **Résoudre les collisions PK `(article_id, term)`** : si un article a déjà `canonical` ET un alias, garder une seule row avec `salience = MAX(...)` (`DELETE` des doublons) **avant** `UPDATE article_keywords SET term = canonical WHERE term IN (aliases)`.
+  4. Déclencher `cron_refresh_weights.run()` (recompute depuis `article_feedbacks × article_keywords` avec terms canoniques).
+  5. **Purge des orphelins** : `DELETE FROM keyword_weights WHERE term NOT IN (SELECT DISTINCT term FROM article_keywords) AND manually_overridden = false`. Refaire la purge une 2ᵉ fois après ~100 ms — un `POST /feedback` arrivé pendant la fenêtre peut recréer un row sur un alias maintenant orphelin.
+  6. `status='applied'`, `applied_at=now()`, `keywords_merged = somme(len(aliases))` sur les groupes non skipés.
+  7. Sur exception : `status='failed'`, `error=str(e)`.
 
 **API** :
 
-- `POST /admin/compact-keywords` (require_admin) :
-  - Retourne `202 Accepted` + `{ "status": "started" }`
-  - Utilise le même `_lock` du refresh worker — retourne `{ "status": "already_running" }` si un run est en cours
-  - Exécuté en `BackgroundTask`
-
-- `GET /stats` : ajouter `last_compact_at` (timestamp du dernier `compact_and_refresh` complété, null si jamais lancé) et `distinct_keyword_count` (nombre de terms distincts actuels dans `article_keywords`)
+- `POST /admin/compact-keywords/preview` (require_admin) : proxy vers worker. Retour `202` + `{"id", "groups"}` (le PWA affiche les groupes).
+- `POST /admin/compact-keywords/apply` body `{"id"}` (require_admin) : proxy vers worker. Retour `202` + `{"status": "started"|"already_running"}`.
+- `DELETE /admin/compact-keywords/{id}` (require_admin) : marque le preview `status='rejected'` (housekeeping si l'admin annule sans appliquer).
+- `GET /stats` : ajouter `last_compact_at` (`MAX(applied_at)` sur `compaction_runs`), `distinct_keyword_count` (`COUNT(DISTINCT term) FROM article_keywords`), `pending_compaction_id` (id du preview le plus récent en attente, null sinon).
 
 **PWA — Admin screen** :
 
-Nouvelle section "Keywords" dans `Admin.tsx` (sous la section Users) :
+Nouvelle section "Keywords" (sous Users) :
 
-- Statistiques : nombre de keywords distincts (`distinct_keyword_count`), date du dernier compactage (`last_compact_at` — format relatif)
-- Bouton **"Compacter les keywords"** avec confirmation : *"Cette opération va fusionner les keywords similaires pour tous les utilisateurs. Elle peut prendre quelques minutes."*
-- Après confirmation : appel `POST /admin/compact-keywords`, bouton désactivé + label "En cours..."
-- Résultat affiché après rechargement de `/stats` : "X keywords fusionnés"
+- Statistiques : `distinct_keyword_count`, `last_compact_at` (format relatif).
+- Bouton **"Analyser la compaction"** : appel preview, ouvre un modal scrollable avec les groupes proposés (canonical en gras, aliases en italique, groupes skipés grisés avec mention "épinglé").
+- Modal : bouton **"Appliquer"** + bouton **"Annuler"** (DELETE preview).
+- Sur Appliquer : POST apply, bouton "En cours…", refresh `/stats` après 10 s.
+- Si `pending_compaction_id` non null au mount : proposer "Reprendre la dernière analyse" (skip preview, ouvre directement le modal sur le preview existant).
+
+**Tests** :
+- Collision PK : article ayant déjà `canonical` + alias → DELETE + MAX salience, pas de violation à l'UPDATE.
+- Group contenant `manually_overridden=true` → skipé à l'apply, pin préservé, annoté `skipped_reason='pinned'`.
+- Purge orphelins : feedback concurrent recrée un row sur un alias en cours de purge → 2ᵉ passe nettoie.
+- Preview idempotent : 2 previews successifs sans apply ne corrompent rien (le dernier `preview` reste celui pointé par `pending_compaction_id`).
+- API : lock partagé avec pipeline (apply pendant un run → `already_running`).
 
 **Acceptance criteria** :
 
-- Après compaction, des terms comme "FC Barcelone" et "Barcelona FC" n'ont plus qu'une seule entrée dans `article_keywords`
-- Les poids user pour les aliases sont recalculés correctement via `cron_refresh_weights` — aucune contribution n'est perdue
-- Les lignes alias orphelines dans `keyword_weights` sont supprimées après le refresh
-- `cron_refresh_weights` schedulé quotidiennement est inchangé — `compact_and_refresh` est un déclenchement on-demand supplémentaire
-- Le bouton admin est protégé par confirmation et par le lock (pas de double run)
-- `last_compact_at` et `distinct_keyword_count` visibles dans la section Keywords de l'admin
-- Docs mises à jour : `docs/API_SPEC.md` (endpoint `POST /admin/compact-keywords`, champs `/stats`), `docs/DATA_MODEL.md` si changements de schéma sur `pipeline_runs`
+- Après apply, des terms comme "FC Barcelone" et "Barcelona FC" n'ont plus qu'une seule entrée dans `article_keywords` (sauf si l'un d'eux est pinned).
+- Les poids user pour les aliases sont recalculés via `cron_refresh_weights` — aucune contribution n'est perdue sur les groupes appliqués.
+- Les lignes alias orphelines dans `keyword_weights` sont supprimées après le refresh (double passe anti-race).
+- `cron_refresh_weights` schedulé quotidiennement reste inchangé — la compaction est un déclenchement on-demand supplémentaire qui enchaîne sa propre passe de refresh.
+- Le bouton admin est protégé par confirmation (modal montrant les groupes) et par le lock partagé avec le pipeline.
+- `last_compact_at`, `distinct_keyword_count`, `pending_compaction_id` visibles dans la section Keywords de l'admin.
+- Aucun term `manually_overridden=true` n'est silencieusement écrasé ; les groupes affectés sont visibles dans `groups_json.skipped_reason`.
+- Docs mises à jour : `docs/API_SPEC.md` (endpoints preview/apply/delete, champs `/stats`), `docs/DATA_MODEL.md` (table `compaction_runs`).

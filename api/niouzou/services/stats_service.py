@@ -1,7 +1,9 @@
-"""Stats aggregator (GET /stats, E7-S15).
+"""Stats aggregator (GET /stats, E7-S15, E10-S1).
 
-All values come from existing tables — no extra storage. Counts are scoped to
-the requesting user via the user→source→article ownership chain.
+Per-user counts (articles, sources, keywords, enrichment) come from existing
+tables scoped via the user→source→article ownership chain. The ``pipeline``
+block is global: the refresh worker is single-replica and the
+``pipeline_runs`` history is shared by the whole instance.
 """
 
 import uuid
@@ -13,13 +15,17 @@ from niouzou.models import (
     Article,
     ArticleFeedback,  # noqa: F401  (kept for future enrichment stats)
     KeywordWeight,
+    PipelineRun,
     Source,
 )
 from niouzou.models.article import STATUS_ENRICHED
+from niouzou.models.pipeline_run import STATUS_RUNNING
 from niouzou.schemas.stats import (
     ArticlesStats,
     EnrichmentStats,
     KeywordsStats,
+    PipelineProgress,
+    PipelineStats,
     SourcesStats,
     Stats,
 )
@@ -31,7 +37,7 @@ class StatsService:
         self.session = session
 
     async def get(self, user_id: uuid.UUID) -> Stats:
-        # E8-S3: the PWA renders "Next fetch" against this value, so read it
+        # E8-S3: the PWA renders "Next run" against this value, so read it
         # via SettingsService — admin overrides via PATCH /admin/config flow
         # through immediately.
         fetch_interval = await SettingsService(self.session).get(
@@ -110,6 +116,9 @@ class StatsService:
             )
         ).one()
 
+        # ── Pipeline (global, E10-S1) ──────────────────────────────────────
+        pipeline = await self._latest_pipeline()
+
         return Stats(
             cron_fetch_interval_minutes=int(fetch_interval or 15),
             articles=ArticlesStats(
@@ -133,4 +142,56 @@ class StatsService:
                 last_error=last_err_row.enrichment_error if last_err_row else None,
                 last_error_at=last_err_row.enriched_at if last_err_row else None,
             ),
+            pipeline=pipeline,
+        )
+
+    async def _latest_pipeline(self) -> PipelineStats:
+        """Read the most recent ``pipeline_runs`` row, or a synthetic neverrun.
+
+        ``in_progress`` is populated only when the latest run is still
+        ``'running'`` — outside that window the PWA shows the last result
+        instead of a progress bar.
+
+        On upgrade from a pre-E10-S1 instance the table is empty until the
+        first new cron tick (≤ ``cron_fetch_interval`` minutes after worker
+        restart). ``status='never_run'`` is returned in that window — the
+        PWA falls back to ``articles.last_fetched_at`` so the System panel
+        isn't a wall of dashes during that transient gap.
+        """
+        row = await self.session.scalar(
+            select(PipelineRun)
+            .order_by(PipelineRun.started_at.desc())
+            .limit(1)
+        )
+        if row is None:
+            return PipelineStats(
+                status="never_run",
+                started_at=None,
+                completed_at=None,
+                articles_fetched=0,
+                articles_enriched=0,
+                articles_failed=0,
+                total_duration_s=None,
+                avg_s_per_article=None,
+                error=None,
+                in_progress=None,
+            )
+        in_progress = None
+        if row.status == STATUS_RUNNING:
+            done = (row.articles_enriched or 0) + (row.articles_failed or 0)
+            in_progress = PipelineProgress(
+                done=done,
+                total=row.articles_in_run or 0,
+            )
+        return PipelineStats(
+            status=row.status,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
+            articles_fetched=row.articles_fetched or 0,
+            articles_enriched=row.articles_enriched or 0,
+            articles_failed=row.articles_failed or 0,
+            total_duration_s=row.total_duration_s,
+            avg_s_per_article=row.avg_s_per_article,
+            error=row.error,
+            in_progress=in_progress,
         )

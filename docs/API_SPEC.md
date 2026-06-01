@@ -573,7 +573,10 @@ Delete **all** keyword weights for the authenticated user. Hard delete, irrevers
 ## System
 
 ### GET /stats
-System and AI-enrichment health. All counts scoped to the authenticated user's sources / data.
+System and AI-enrichment health. `articles`, `sources`, `keywords`, and
+`enrichment` are user-scoped. The `pipeline` block is **global** — the
+refresh worker is single-replica and the `pipeline_runs` history is shared
+across the instance.
 
 **Response `200`**
 ```json
@@ -599,6 +602,18 @@ System and AI-enrichment health. All counts scoped to the authenticated user's s
     "total_tfidf_fallback": 42,
     "last_error": "JSONDecodeError: Expecting value: line 1 column 1",
     "last_error_at": "2026-05-20T13:45:00Z"
+  },
+  "pipeline": {
+    "status": "running",
+    "started_at": "2026-05-31T14:00:00Z",
+    "completed_at": null,
+    "articles_fetched": 8,
+    "articles_enriched": 7,
+    "articles_failed": 1,
+    "total_duration_s": null,
+    "avg_s_per_article": null,
+    "error": null,
+    "in_progress": { "done": 8, "total": 8 }
   }
 }
 ```
@@ -607,6 +622,17 @@ System and AI-enrichment health. All counts scoped to the authenticated user's s
 > is off, plus fallbacks). `total_tfidf_fallback` is the subset where AI was
 > attempted and failed — useful for monitoring AI reliability.
 > `last_error` / `last_error_at` are null when no fallback has ever happened.
+
+> `pipeline.status` is one of `"running"`, `"completed"`, `"failed"`, or
+> `"never_run"` (synthetic, returned when `pipeline_runs` is empty — fresh
+> install). `in_progress` is populated only while `status === "running"`:
+> `done = articles_enriched + articles_failed`, `total = articles_in_run`
+> (the pending snapshot frozen at the start of the enrich loop, so the
+> denominator does not drift if a concurrent fetch lands new pending rows).
+> `total_duration_s` and `avg_s_per_article` are set when the run finalises;
+> `avg = total / max(1, articles_enriched)` per spec — the PWA suppresses
+> the display when `articles_enriched === 0`. `error` is the captured
+> exception string when `status === "failed"`. Added in E10-S1.
 
 ---
 

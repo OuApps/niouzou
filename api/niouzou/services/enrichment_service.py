@@ -20,6 +20,7 @@ All network calls here are blocking; the cron runs them off the event loop via
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from niouzou.scoring.base import ScoredKeyword
@@ -27,6 +28,13 @@ from niouzou.scoring.stopwords import is_meaningful_term
 from niouzou.services.openrouter_client import OpenRouterClient
 
 logger = logging.getLogger("niouzou.enrichment")
+
+# E10-S1 — LLM retry policy. The OpenRouter free models routinely return
+# transient errors (rate limit, timeout, malformed JSON) that succeed on the
+# next call within a few seconds. Without this, a single hiccup pushed the
+# article to TF-IDF; the AI/TF-IDF ratio in /stats looked alarming even on
+# healthy days. Three attempts total, 1s and 3s backoff between them.
+_LLM_BACKOFFS_S: tuple[float, ...] = (1.0, 3.0)
 
 # Sentence splitter for the no-AI summary fallback. Deliberately simple: a
 # self-hosted instance shouldn't need nltk corpora just to truncate text.
@@ -135,9 +143,15 @@ class EnrichmentService:
     def generate_enrichment(self, title: str, content: str | None) -> Enrichment:
         """One combined LLM call: summaries + keywords. Newspaper fallback otherwise.
 
-        Never raises: a failed LLM call degrades to a fallback ``Enrichment``
+        Never raises: after up to 3 attempts (initial + 2 retries with 1s/3s
+        backoff — E10-S1) a failed LLM call degrades to a fallback ``Enrichment``
         with ``keywords=None`` so the cron triggers its TF-IDF fallback path.
         Blocking — call via ``asyncio.to_thread``.
+
+        ``retries=0`` is passed to ``complete_json`` so the retry budget is
+        owned at this layer, with explicit backoff between attempts. The
+        previous default of one internal retry interacted poorly with the
+        2-retry envelope here (effective 6 attempts per article on bad days).
         """
         fallback = Enrichment(
             summary_short=_first_sentences(content or ""),
@@ -148,15 +162,38 @@ class EnrichmentService:
             return fallback
 
         body = f"Title: {title}\n\n{content}"
-        try:
-            return self._client.complete_json(
-                system=_ENRICHMENT_SYSTEM,
-                user=body[:_MAX_INPUT_CHARS],
-                parse=_parse_enrichment,
-            )
-        except Exception as exc:  # noqa: BLE001 — degrade to fallback, log it
-            logger.warning("enrich: LLM enrichment failed (%s), using fallback", exc)
-            return fallback
+        last_exc: Exception | None = None
+        # Tries: 1 initial + len(_LLM_BACKOFFS_S) retries = 3 total.
+        for attempt in range(len(_LLM_BACKOFFS_S) + 1):
+            if attempt > 0:
+                backoff = _LLM_BACKOFFS_S[attempt - 1]
+                logger.info(
+                    "enrich: retrying LLM call (attempt %d/%d) after %.1fs backoff",
+                    attempt + 1,
+                    len(_LLM_BACKOFFS_S) + 1,
+                    backoff,
+                )
+                time.sleep(backoff)
+            try:
+                return self._client.complete_json(
+                    system=_ENRICHMENT_SYSTEM,
+                    user=body[:_MAX_INPUT_CHARS],
+                    parse=_parse_enrichment,
+                    retries=0,
+                )
+            except Exception as exc:  # noqa: BLE001 — transient LLM failure
+                last_exc = exc
+                logger.warning(
+                    "enrich: LLM enrichment attempt %d/%d failed (%s)",
+                    attempt + 1,
+                    len(_LLM_BACKOFFS_S) + 1,
+                    exc,
+                )
+        logger.warning(
+            "enrich: LLM enrichment exhausted retries (%s), using fallback",
+            last_exc,
+        )
+        return fallback
 
 
 def _parse_enrichment(data: object) -> Enrichment:
