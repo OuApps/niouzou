@@ -134,6 +134,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
       "published_at": "2024-01-15T10:30:00Z",
       "relevance_score": 0.87,
       "scorer": "ai_keyword",
+      "enrichment_model": "google/gemma-4-28b",
       "keywords": ["rust", "memory safety", "c++"],
       "is_premium": false,
       "reaction": "none",
@@ -150,6 +151,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 > `next_cursor` is null when there are no more articles.
 > Cursor encodes the last article's `relevance_score` + `id` to ensure stable pagination.
 > `scorer` is `"tfidf"` or `"ai_keyword"`; null for legacy rows written before the scorer column existed.
+> `enrichment_model` (E10-S2) is the OpenRouter model id used on the AI success path (e.g. `"google/gemma-4-28b"`); null on TF-IDF (native or fallback) and on pre-E10-S2 rows. Same field appears on `GET /saved` and `GET /explore/*`.
 > `keywords` is sorted by salience desc; empty array when the article has none.
 > `cold_start` is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
 > **E9-S1** — `reaction`, `is_saved`, `read_full_article` reflect the user's
@@ -248,6 +250,39 @@ Returns full article details. Called when user taps to expand an article before 
 > **E9-S1** — `reaction`, `is_saved`, `read_full_article` are top-level fields
 > (previously nested under a `feedback` object). Defaults (`"none"`, `false`,
 > `false`) apply when no feedback row exists.
+
+---
+
+### GET /articles/{id}/score-debug
+**E10-S2** — Explains how the article's `relevance_score` was computed for
+the current user. Used by the score-badge bottom sheet in the PWA. Cross-user
+access returns `403` (never leaks another user's `keyword_weights`).
+
+**Response `200`**
+```json
+{
+  "relevance_score": 0.74,
+  "scorer": "ai_keyword",
+  "enrichment_model": "google/gemma-4-28b",
+  "keywords": [
+    { "term": "football", "weight": 1.2 },
+    { "term": "fc barcelone", "weight": 0.8 },
+    { "term": "ligue des champions", "weight": null }
+  ]
+}
+```
+
+> `keywords` is sorted by salience desc (same order as the article keyword tags).
+> `weight: null` means the user has no row in `keyword_weights` for that term yet
+> — semantically zero, but the PWA renders it as a dash to distinguish "unknown
+> to me" from an explicit neutral.
+> `enrichment_model` is null on TF-IDF (native or fallback).
+> `relevance_score` is null when the article was never scored for this user
+> (rare — happens for articles enriched before the user existed).
+
+**Errors**
+- `403 forbidden` — article exists but belongs to another user's source.
+- `404 not_found` — no article with that id.
 
 ---
 
@@ -593,7 +628,10 @@ across the instance.
   },
   "keywords": {
     "total": 94,
-    "manually_overridden": 3
+    "manually_overridden": 3,
+    "distinct_keyword_count": 312,
+    "last_compact_at": "2026-05-30T10:00:00Z",
+    "pending_compaction_id": null
   },
   "enrichment": {
     "last_enriched_at": "2026-05-27T14:10:00Z",
@@ -634,6 +672,13 @@ across the instance.
 > the display when `articles_enriched === 0`. `error` is the captured
 > exception string when `status === "failed"`. Added in E10-S1.
 
+> **E10-S3** — `keywords.distinct_keyword_count` is the global number of
+> distinct rows in `article_keywords.term` (instance-wide, not user-scoped).
+> `keywords.last_compact_at` is the most recent `applied_at` on
+> `compaction_runs`. `keywords.pending_compaction_id` is the most recent
+> preview that hasn't been applied or rejected, or null. These power the
+> Keywords section of the admin panel.
+
 ---
 
 ### POST /admin/refresh
@@ -670,7 +715,8 @@ Sensitive fields (API keys) are masked.
   "openrouter_api_key": "sk-...a3f9",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
-  "cron_refresh_weights_hour": 3
+  "cron_refresh_weights_hour": 3,
+  "score_threshold": 0.0
 }
 ```
 
@@ -690,13 +736,15 @@ the next cron run.
   "openrouter_api_key": "sk-...",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
-  "cron_refresh_weights_hour": 3
+  "cron_refresh_weights_hour": 3,
+  "score_threshold": 0.6
 }
 ```
 
 > `openrouter_api_key` accepts the full secret key (or empty string to disable AI).
 > `cron_fetch_interval` is in minutes (1–1440).
 > `cron_refresh_weights_hour` is 0–23 (UTC hour).
+> `score_threshold` is a float in `[0.0, 1.0]`; takes effect on the very next `GET /feed` request (no worker restart needed).
 
 **Response `200`** — same shape as `GET /admin/config`.
 
@@ -770,3 +818,111 @@ Reset a user's password to a new value.
 **Response `200`** — no content (204)
 
 > Returns `404` if the user does not exist.
+
+---
+
+### POST /admin/compact-keywords/preview
+**E10-S3** — Ask the refresh worker to propose semantic-equivalence groups
+over the top-N most-frequent `article_keywords.term` values. The LLM runs
+on the worker so uvicorn stays responsive; the API merely proxies. The
+preview is persisted in `compaction_runs` (status `preview`) but **no DB
+rewrite has happened yet** — the admin must follow up with apply or reject.
+
+**Requires admin role (E8-S1)**
+
+**Response `202`**
+```json
+{
+  "id": "uuid",
+  "groups": [
+    {
+      "canonical": "fc barcelone",
+      "aliases": ["barça", "barcelona fc"]
+    }
+  ]
+}
+```
+or, if a preview is already in flight:
+```json
+{ "status": "already_running" }
+```
+or, if AI is disabled (no OpenRouter API key):
+```json
+{ "status": "ai_disabled", "message": "Compaction requires an OpenRouter API key." }
+```
+
+> Groups whose canonical or aliases reference terms outside the vocab
+> snapshot are filtered out server-side (defense against hallucinations).
+> When that happens the response can legitimately return an empty `groups`
+> array — the admin UI shows "no groups to merge".
+
+---
+
+### POST /admin/compact-keywords/apply
+Apply a preview generated by the endpoint above. Rewrites
+`article_keywords` (with PK-collision pre-resolution), reruns
+`cron_refresh_weights`, and purges alias orphans from `keyword_weights`.
+Held under the same lock as `POST /admin/refresh` so a pipeline run and an
+apply never race.
+
+**Requires admin role (E8-S1)**
+
+**Request**
+```json
+{ "id": "uuid" }
+```
+
+**Response `202`**
+```json
+{ "status": "started" }
+```
+or
+```json
+{ "status": "already_running" }
+```
+
+**Errors**
+- `404` — the run id is unknown.
+- `409` — the run is not in `preview` state (already applied, rejected, or
+  failed). The body is `{ "error": "invalid_state", "message": "..." }`.
+
+The run id is validated *before* the 202 is returned, so a stale id from
+the PWA surfaces as a real error rather than a silent background failure.
+
+> Groups containing a `manually_overridden=true` keyword are skipped at
+> apply time. They remain in `compaction_runs.groups_json` annotated with
+> `skipped_reason: "pinned"` so the admin sees that a pinned weight took
+> precedence.
+
+---
+
+### GET /admin/compact-keywords/{id}
+Return a previously-generated preview so the admin can resume it. Used by
+the PWA's "Reprendre la dernière analyse" affordance when
+`stats.keywords.pending_compaction_id` is non-null at mount time. Reads
+straight from `compaction_runs` — no LLM call.
+
+**Requires admin role (E8-S1)**
+
+**Response `200`**
+```json
+{
+  "id": "uuid",
+  "groups": [
+    { "canonical": "fc barcelone", "aliases": ["barça", "barcelona fc"] }
+  ]
+}
+```
+
+**Errors**
+- `404` — id unknown, or the run is no longer a preview (already applied,
+  rejected, or failed). Terminal-state runs are not resumable.
+
+---
+
+### DELETE /admin/compact-keywords/{id}
+Reject a preview without applying it. Marks the run `status='rejected'`.
+
+**Requires admin role (E8-S1)**
+
+**Response `204`** — no content.

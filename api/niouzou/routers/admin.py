@@ -26,13 +26,16 @@ from sqlalchemy import select
 
 from niouzou.deps import CurrentAdmin, SessionDep
 from niouzou.errors import APIError, not_found
-from niouzou.models import User
+from niouzou.models import CompactionRun, User
+from niouzou.models.compaction_run import STATUS_PREVIEW
 from niouzou.schemas.admin import (
     AdminConfig,
     AdminConfigPatch,
     AdminModel,
     AdminPasswordReset,
     AdminUser,
+    CompactionApplyRequest,
+    CompactionPreview,
 )
 from niouzou.security import hash_password
 from niouzou.services.admin_models_service import fetch_models
@@ -61,6 +64,7 @@ def _config_response(effective) -> AdminConfig:  # type: ignore[no-untyped-def]
         max_keywords_per_article=effective.max_keywords_per_article,
         cron_fetch_interval=effective.cron_fetch_interval,
         cron_refresh_weights_hour=effective.cron_refresh_weights_hour,
+        score_threshold=effective.score_threshold,
     )
 
 
@@ -139,6 +143,109 @@ async def list_users(
         )
         for row in rows
     ]
+
+
+# ── E10-S3 — Keyword compaction (proxies to refresh-worker) ──────────────
+
+
+@router.post(
+    "/compact-keywords/preview",
+    response_model=CompactionPreview,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def compact_keywords_preview(_: CurrentAdmin) -> JSONResponse:
+    """Ask the worker to propose a keyword-merge plan.
+
+    Same proxy pattern as ``POST /admin/refresh`` — the LLM call and DB write
+    happen on the refresh-worker so uvicorn isn't blocked while the model
+    thinks. Returns the preview id + groups so the PWA can render the
+    confirmation modal.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{_WORKER_URL}/compact/preview")
+        resp.raise_for_status()
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED, content=resp.json()
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("admin/compact-keywords/preview: worker unreachable — %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "worker_unavailable"},
+        )
+
+
+@router.get(
+    "/compact-keywords/{run_id}",
+    response_model=CompactionPreview,
+)
+async def compact_keywords_get(
+    run_id: uuid.UUID, _: CurrentAdmin, session: SessionDep
+) -> CompactionPreview:
+    """Return a previously-generated preview so the admin can resume it.
+
+    Read straight from the DB — no worker proxy or LLM call. Used by the
+    PWA's "Reprendre la dernière analyse" affordance when
+    ``stats.keywords.pending_compaction_id`` is non-null at mount time.
+    Only previews are surfaceable; already-applied or rejected runs return
+    404 so the UI can't offer a no-op confirm.
+    """
+    run = await session.get(CompactionRun, run_id)
+    if run is None or run.status != STATUS_PREVIEW:
+        raise not_found("Compaction preview not found")
+    return CompactionPreview(id=str(run.id), groups=run.groups_json)
+
+
+@router.post(
+    "/compact-keywords/apply", status_code=status.HTTP_202_ACCEPTED
+)
+async def compact_keywords_apply(
+    body: CompactionApplyRequest, _: CurrentAdmin
+) -> JSONResponse:
+    """Apply a previously-generated preview. Fire-and-forget on the worker.
+
+    The worker now pre-validates the run id, so 404 / 409 are passed through
+    untouched — the PWA gets a real error instead of a phantom 202.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_WORKER_URL}/compact/apply", json={"id": body.id}
+            )
+        # Forward 4xx from the worker as-is (e.g. 404 unknown id, 409 already
+        # applied). Only 5xx / transport errors fall through to the 503 below.
+        if resp.status_code >= 500:
+            resp.raise_for_status()
+        return JSONResponse(
+            status_code=resp.status_code, content=resp.json()
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("admin/compact-keywords/apply: worker unreachable — %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "worker_unavailable"},
+        )
+
+
+@router.delete(
+    "/compact-keywords/{run_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def compact_keywords_reject(
+    run_id: uuid.UUID, _: CurrentAdmin
+) -> JSONResponse:
+    """Reject a pending preview so it stops showing as actionable."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.delete(f"{_WORKER_URL}/compact/{run_id}")
+        # 204 No Content has no body — pass the status through unchanged.
+        return JSONResponse(status_code=resp.status_code, content=None)
+    except httpx.HTTPError as exc:
+        logger.warning("admin/compact-keywords/reject: worker unreachable — %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "worker_unavailable"},
+        )
 
 
 @router.patch(

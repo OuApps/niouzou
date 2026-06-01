@@ -4,6 +4,7 @@ from niouzou.models.article_feedback import ArticleFeedback
 from niouzou.models.article_impression import ArticleImpression
 from niouzou.models.article_keyword import ArticleKeyword
 from niouzou.models.article_relevance_score import ArticleRelevanceScore
+from niouzou.models.compaction_run import CompactionRun
 from niouzou.models.keyword_weight import KeywordWeight
 from niouzou.models.pipeline_run import PipelineRun
 from niouzou.models.source import Source
@@ -16,6 +17,7 @@ __all__ = [
     "ArticleImpression",
     "ArticleKeyword",
     "ArticleRelevanceScore",
+    "CompactionRun",
     "KeywordWeight",
     "PipelineRun",
     "Source",

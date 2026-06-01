@@ -83,9 +83,9 @@ export const Profile = () => {
     .toUpperCase()
 
   const statRows = [
-    { label: 'Saved', value: me?.saved_count },
-    { label: 'Keywords', value: me?.keyword_count },
-    { label: 'Sources', value: me?.source_count },
+    { label: 'Saved', value: me?.saved_count, route: '/saved' },
+    { label: 'Keywords', value: me?.keyword_count, route: '/keywords' },
+    { label: 'Sources', value: me?.source_count, route: '/sources' },
   ]
 
   const handleSignOut = () => {
@@ -131,13 +131,23 @@ export const Profile = () => {
           {email}
         </p>
 
-        {/* Stats */}
+        {/* Stats — each cell doubles as a shortcut to its detail screen
+            (Saved/Keywords/Sources). The matching menu rows below remain so
+            users still have a discoverable way in. */}
         <div className="flex gap-3 w-full" style={{ maxWidth: 320, marginBottom: 32 }}>
           {statRows.map((s) => (
-            <div
+            <button
               key={s.label}
+              onClick={() => navigate(s.route)}
               className="glass-sm flex-1 flex flex-col items-center"
-              style={{ borderRadius: 16, padding: '14px 8px' }}
+              style={{
+                borderRadius: 16,
+                padding: '14px 8px',
+                border: '1px solid rgba(255,255,255,0.10)',
+                background: 'var(--glass-bg)',
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+              }}
             >
               <span style={{ fontSize: 18, fontWeight: 600, marginBottom: 2, minHeight: 24 }}>
                 {loading ? <Spinner size={14} /> : (s.value ?? '—')}
@@ -145,7 +155,7 @@ export const Profile = () => {
               <span style={{ fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 {s.label}
               </span>
-            </div>
+            </button>
           ))}
         </div>
 
@@ -248,37 +258,6 @@ export const Profile = () => {
             </button>
           )}
 
-          <button
-            onClick={handleSignOut}
-            className="glass-sm flex items-center gap-3 w-full"
-            style={{
-              borderRadius: 16,
-              padding: '14px 16px',
-              cursor: 'pointer',
-              border: '1px solid rgba(255,255,255,0.10)',
-              background: 'var(--glass-bg)',
-              color: 'var(--text-primary)',
-              fontSize: 14,
-            }}
-          >
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                background: 'rgba(248, 113, 113, 0.10)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--action-dislike)',
-              }}
-            >
-              <LogOut size={16} />
-            </div>
-            <span className="flex-1 text-left">Sign out</span>
-            <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
-          </button>
-
           {/* System (E7-S15) — collapsible health + AI enrichment stats.
               Kept inside the same gap-2 stack as the menu rows for visual
               consistency (E7-S27). */}
@@ -331,6 +310,39 @@ export const Profile = () => {
               />
             )}
           </div>
+
+          {/* Sign out lives at the very bottom of the Profile menu so it
+              never sits between non-destructive options (E10-S2 UX pass). */}
+          <button
+            onClick={handleSignOut}
+            className="glass-sm flex items-center gap-3 w-full"
+            style={{
+              borderRadius: 16,
+              padding: '14px 16px',
+              cursor: 'pointer',
+              border: '1px solid rgba(255,255,255,0.10)',
+              background: 'var(--glass-bg)',
+              color: 'var(--text-primary)',
+              fontSize: 14,
+            }}
+          >
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                background: 'rgba(248, 113, 113, 0.10)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--action-dislike)',
+              }}
+            >
+              <LogOut size={16} />
+            </div>
+            <span className="flex-1 text-left">Sign out</span>
+            <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
+          </button>
         </div>
       </div>
 

@@ -34,6 +34,7 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
         "max_keywords_per_article",
         "cron_fetch_interval",
         "cron_refresh_weights_hour",
+        "score_threshold",
     }
 )
 
@@ -44,6 +45,9 @@ SENSITIVE_KEYS: Final[frozenset[str]] = frozenset({"openrouter_api_key"})
 INT_KEYS: Final[frozenset[str]] = frozenset(
     {"max_keywords_per_article", "cron_fetch_interval", "cron_refresh_weights_hour"}
 )
+
+# Keys parsed as floats — same TEXT column, different cast on read/write.
+FLOAT_KEYS: Final[frozenset[str]] = frozenset({"score_threshold"})
 
 # Env-default lookups: SettingsService.get(key) falls back to these when no DB
 # override exists. Kept as a small registry so ``GET /admin/config`` can show
@@ -58,6 +62,7 @@ _DEFAULT_FROM_SETTINGS = {
     "cron_refresh_weights_hour": lambda s: getattr(
         s, "cron_refresh_weights_hour", 3
     ),
+    "score_threshold": lambda s: s.score_threshold,
 }
 
 
@@ -74,6 +79,7 @@ class EffectiveConfig:
     max_keywords_per_article: int
     cron_fetch_interval: int
     cron_refresh_weights_hour: int
+    score_threshold: float
 
 
 def mask_api_key(value: str | None) -> str | None:
@@ -99,12 +105,13 @@ class SettingsService:
             raise UnknownSettingError(key)
         return _DEFAULT_FROM_SETTINGS[key](get_settings())
 
-    async def get(self, key: str) -> str | int | None:
+    async def get(self, key: str) -> str | int | float | None:
         """Effective value for ``key``: DB override or env fallback.
 
-        Returns the value typed per ``INT_KEYS`` — strings stay strings,
-        integers come back as ``int``. Raises ``UnknownSettingError`` for
-        unknown keys so the admin endpoints can return 400 cleanly.
+        Returns the value typed per ``INT_KEYS`` / ``FLOAT_KEYS`` — strings
+        stay strings, integers come back as ``int``, floats as ``float``.
+        Raises ``UnknownSettingError`` for unknown keys so the admin endpoints
+        can return 400 cleanly.
         """
         if key not in OVERRIDABLE_KEYS:
             raise UnknownSettingError(key)
@@ -113,9 +120,13 @@ class SettingsService:
         )
         if override is None:
             return self._env_default(key)
-        return int(override) if key in INT_KEYS else override
+        if key in INT_KEYS:
+            return int(override)
+        if key in FLOAT_KEYS:
+            return float(override)
+        return override
 
-    async def set(self, key: str, value: str | int | None) -> None:
+    async def set(self, key: str, value: str | int | float | None) -> None:
         """Upsert an override. ``None`` or empty string deletes the override
         (the next read falls back to the env var)."""
         if key not in OVERRIDABLE_KEYS:
@@ -127,6 +138,8 @@ class SettingsService:
         if key in INT_KEYS:
             # Validate now so an admin typo isn't silently persisted.
             int(stored)
+        elif key in FLOAT_KEYS:
+            float(stored)
         await self.session.execute(
             pg_insert(AppSetting)
             .values(key=key, value=stored)
@@ -151,11 +164,15 @@ class SettingsService:
         ).all()
         db = {k: v for k, v in rows}
 
-        def resolve(key: str) -> str | int | None:
+        def resolve(key: str) -> str | int | float | None:
             raw = db.get(key)
             if raw is None:
                 return self._env_default(key)
-            return int(raw) if key in INT_KEYS else raw
+            if key in INT_KEYS:
+                return int(raw)
+            if key in FLOAT_KEYS:
+                return float(raw)
+            return raw
 
         return EffectiveConfig(
             openrouter_api_key=resolve("openrouter_api_key"),  # type: ignore[arg-type]
@@ -163,4 +180,5 @@ class SettingsService:
             max_keywords_per_article=resolve("max_keywords_per_article"),  # type: ignore[arg-type]
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
             cron_refresh_weights_hour=resolve("cron_refresh_weights_hour"),  # type: ignore[arg-type]
+            score_threshold=resolve("score_threshold"),  # type: ignore[arg-type]
         )

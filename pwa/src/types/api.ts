@@ -36,6 +36,10 @@ export interface FeedArticle extends FeedbackState {
   published_at: string
   relevance_score: number
   scorer?: Scorer | null
+  // OpenRouter model id when the article was AI-enriched (E10-S2). Null on
+  // TF-IDF (native or fallback) and on pre-E10-S2 rows. Shown in the score
+  // debug bottom sheet.
+  enrichment_model?: string | null
   keywords?: string[]
   read_time_minutes?: number
   // Set by the server when the stored content looks like a paywall teaser

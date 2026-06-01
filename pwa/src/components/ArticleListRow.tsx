@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { ScoreBadge } from './ScoreBadge'
+import { ScoreDebugSheet } from './ScoreDebugSheet'
 import { FeedbackStateIcons } from './FeedbackStateIcons'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { useFeedbackStore } from '../store/feedback'
@@ -35,6 +37,7 @@ export const ArticleListRow = ({
   forceSaved = false,
 }: Props) => {
   const override = useFeedbackStore((s) => s.overrides[article.id])
+  const [debugOpen, setDebugOpen] = useState(false)
   const state =
     override ?? {
       reaction: article.reaction,
@@ -43,6 +46,7 @@ export const ArticleListRow = ({
     }
 
   return (
+    <>
     <button
       onClick={onClick}
       className="glass-sm flex items-start gap-3 w-full text-left"
@@ -85,7 +89,11 @@ export const ArticleListRow = ({
             {article.source.name}
           </span>
           <span style={{ flexShrink: 0 }}>
-            <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
+            <ScoreBadge
+              score={article.relevance_score}
+              scorer={article.scorer}
+              onClick={() => setDebugOpen(true)}
+            />
           </span>
         </div>
         <h3
@@ -113,5 +121,12 @@ export const ArticleListRow = ({
         </p>
       </div>
     </button>
+    {/* Sheet sits as a portal-like sibling so its overlay covers the whole
+        screen and its inputs aren't nested inside the row's <button>. */}
+    <ScoreDebugSheet
+      articleId={debugOpen ? article.id : null}
+      onClose={() => setDebugOpen(false)}
+    />
+    </>
   )
 }

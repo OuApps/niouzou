@@ -70,6 +70,7 @@ class ExploreService:
                 s.name AS source_name,
                 COALESCE(ars.relevance_score, 0.0) AS relevance_score,
                 ars.scorer AS scorer,
+                a.enrichment_model AS enrichment_model,
                 (a.content IS NOT NULL
                  AND char_length(a.content) < :premium_max_chars
                 ) AS is_premium,
@@ -114,6 +115,7 @@ class ExploreService:
                 published_at=r["published_at"],
                 relevance_score=r["relevance_score"],
                 scorer=r["scorer"],
+                enrichment_model=r["enrichment_model"],
                 keywords=list(r["keywords"] or []),
                 is_premium=bool(r["is_premium"]),
                 reaction=r["reaction"],

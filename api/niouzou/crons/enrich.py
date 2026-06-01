@@ -39,12 +39,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from niouzou.config import get_settings
 from niouzou.db import session_scope
-from niouzou.models import Article, Source
+from niouzou.models import Article, ArticleKeyword, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
 from niouzou.services.enrichment_service import EnrichmentService
@@ -62,6 +62,10 @@ class EnrichmentResources:
     enrichment: EnrichmentService
     ai_scoring: ScoringService
     tfidf_scoring: ScoringService
+    # OpenRouter model id snapshotted at the start of the run (E10-S2). Used
+    # to stamp ``articles.enrichment_model`` on the AI path; ``None`` when AI
+    # is disabled for this run (TF-IDF native path).
+    openrouter_model: str | None = None
 
 
 async def _pending_article_ids(session: AsyncSession, limit: int) -> list[uuid.UUID]:
@@ -70,6 +74,28 @@ async def _pending_article_ids(session: AsyncSession, limit: int) -> list[uuid.U
         select(Article.id)
         .where(Article.status == STATUS_PENDING)
         .order_by(Article.created_at)
+        .limit(limit)
+    )
+    return list(rows.scalars().all())
+
+
+# Top N existing keywords injected into every enrichment prompt for this run
+# (E10-S2). 200 is a balance: enough to cover the main entities/domains the
+# instance has seen, low enough to fit in the prompt budget (~1.5kB) and to
+# stay under the prompt-cache hash boundary as the vocab grows.
+_VOCAB_INJECTION_TOP_N = 200
+
+
+async def _load_top_keywords(session: AsyncSession, limit: int) -> list[str]:
+    """Most-frequent ``article_keywords.term`` strings, ordered by count desc.
+
+    Called once per cron run; cached on ``EnrichmentService._vocab``. Empty
+    list on a fresh instance is fine — the prompt just skips the line.
+    """
+    rows = await session.execute(
+        select(ArticleKeyword.term)
+        .group_by(ArticleKeyword.term)
+        .order_by(func.count().desc(), ArticleKeyword.term.asc())
         .limit(limit)
     )
     return list(rows.scalars().all())
@@ -86,11 +112,13 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
     """
     async with session_scope() as cfg_session:
         effective = await SettingsService(cfg_session).get_effective()
+        vocab = await _load_top_keywords(cfg_session, _VOCAB_INJECTION_TOP_N)
 
     client = OpenRouterClient.from_overrides(
         effective.openrouter_api_key, effective.openrouter_model
     )
     enrichment = EnrichmentService(client)
+    enrichment.set_vocab(vocab)
     tfidf_scoring = ScoringService(
         ScoringPipeline(TFIDFScorer()),
         max_keywords_per_article=effective.max_keywords_per_article,
@@ -106,15 +134,19 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
         )
 
     logger.info(
-        "cron_enrich: resources ready (ai_enabled=%s, model=%s)",
+        "cron_enrich: resources ready (ai_enabled=%s, model=%s, vocab_terms=%d)",
         enrichment.ai_enabled,
         effective.openrouter_model if client is not None else "n/a",
+        len(vocab),
     )
     try:
         yield EnrichmentResources(
             enrichment=enrichment,
             ai_scoring=ai_scoring,
             tfidf_scoring=tfidf_scoring,
+            openrouter_model=(
+                effective.openrouter_model if client is not None else None
+            ),
         )
     finally:
         if client is not None:
@@ -128,6 +160,7 @@ async def enrich_article(
     enrichment: EnrichmentService,
     ai_scoring: ScoringService,
     tfidf_scoring: ScoringService,
+    openrouter_model: str | None = None,
 ) -> None:
     """Enrich a single article in the given (open) transaction.
 
@@ -219,10 +252,14 @@ async def enrich_article(
     )
 
     # 5. Transition to enriched + record the active method/error (E7-S15).
+    # ``enrichment_model`` is populated only on the AI success path (E10-S2);
+    # TF-IDF fallback intentionally leaves it NULL so the debug panel doesn't
+    # mislabel the row as AI-enriched.
     article.status = STATUS_ENRICHED
     article.enriched_at = datetime.now(timezone.utc)
     article.enrichment_method = method
     article.enrichment_error = ai_error
+    article.enrichment_model = openrouter_model if method == "ai" else None
 
 
 async def run() -> int:
@@ -273,6 +310,7 @@ async def run() -> int:
                         enrichment=resources.enrichment,
                         ai_scoring=resources.ai_scoring,
                         tfidf_scoring=resources.tfidf_scoring,
+                        openrouter_model=resources.openrouter_model,
                     )
                     enriched += 1
                 logger.info(

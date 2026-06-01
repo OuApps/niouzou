@@ -29,6 +29,10 @@ class FeedArticle(BaseModel):
     relevance_score: float
     # "tfidf" or "ai_keyword" when known, null for pre-E7-S7 rows.
     scorer: str | None = None
+    # OpenRouter model id when the article went through the AI path (E10-S2),
+    # e.g. ``"google/gemma-4-28b"``. ``null`` on TF-IDF (native or fallback)
+    # and on pre-E10-S2 rows. Used by the score-debug bottom sheet.
+    enrichment_model: str | None = None
     # Top keywords sorted by salience DESC (E7-S10). Empty list when the article
     # has no extracted keywords yet (e.g. pending enrichment).
     keywords: list[str] = []

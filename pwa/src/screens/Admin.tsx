@@ -5,16 +5,24 @@ import { BlobBackground } from '../components/BlobBackground'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
+import { formatTimeAgo } from '../hooks/useTimeAgo'
 import {
   getAdminConfig,
   patchAdminConfig,
   getAdminModels,
   getAdminUsers,
+  getStats,
   resetUserPassword,
+  compactKeywordsPreview,
+  compactKeywordsGet,
+  compactKeywordsApply,
+  compactKeywordsReject,
   ApiError,
   type AdminConfig,
   type AdminModel,
   type AdminUser,
+  type CompactionGroup,
+  type CompactionPreview,
 } from '../api'
 
 export const Admin = () => {
@@ -30,6 +38,12 @@ export const Admin = () => {
   )
 
   const [usersOpen, setUsersOpen] = useState(false)
+
+  // E10-S3 — Keyword compaction stats; refreshed after apply/reject.
+  const {
+    data: stats,
+    reload: reloadStats,
+  } = useApiData(getStats, [])
 
   return (
     <div className="flex flex-col min-h-dvh relative">
@@ -105,8 +119,32 @@ export const Admin = () => {
                 max={23}
                 onSave={reloadConfig}
               />
+              <ConfigRow
+                label="Score Threshold (0–1)"
+                config={config}
+                field="score_threshold"
+                type="float"
+                min={0}
+                max={1}
+                onSave={reloadConfig}
+              />
             </div>
           ) : null}
+        </div>
+
+        {/* Keywords section (E10-S3) */}
+        <div style={{ marginBottom: 24 }}>
+          <h2
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: 'var(--text-secondary)',
+              marginBottom: 12,
+            }}
+          >
+            Keywords
+          </h2>
+          <KeywordsSection stats={stats} onChange={reloadStats} />
         </div>
 
         {/* Users section */}
@@ -164,7 +202,7 @@ interface ConfigRowProps {
   label: string
   config: AdminConfig
   field: keyof AdminConfig
-  type: 'text' | 'password' | 'number' | 'model'
+  type: 'text' | 'password' | 'number' | 'float' | 'model'
   models?: AdminModel[]
   min?: number
   max?: number
@@ -182,8 +220,8 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
     setSaving(true)
     try {
       const patch: Record<string, string | number> = {}
-      if (type === 'number') {
-        const num = parseInt(value, 10)
+      if (type === 'number' || type === 'float') {
+        const num = type === 'float' ? parseFloat(value) : parseInt(value, 10)
         if (isNaN(num)) {
           setError('Invalid number')
           setSaving(false)
@@ -266,12 +304,19 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
             </select>
           ) : (
             <input
-              type={type === 'password' ? 'password' : type === 'number' ? 'number' : 'text'}
+              type={
+                type === 'password'
+                  ? 'password'
+                  : type === 'number' || type === 'float'
+                    ? 'number'
+                    : 'text'
+              }
+              step={type === 'float' ? 0.05 : undefined}
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder={label}
-              min={type === 'number' ? min : undefined}
-              max={type === 'number' ? max : undefined}
+              min={type === 'number' || type === 'float' ? min : undefined}
+              max={type === 'number' || type === 'float' ? max : undefined}
               style={{
                 padding: '8px 10px',
                 borderRadius: 8,
@@ -484,6 +529,313 @@ const UserRow = ({ user, onPasswordReset }: UserRowProps) => {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+
+// ── E10-S3 — Keyword compaction admin panel ─────────────────────────────────
+
+interface KeywordsSectionProps {
+  stats:
+    | {
+        keywords: {
+          distinct_keyword_count: number
+          last_compact_at: string | null
+          pending_compaction_id: string | null
+        }
+      }
+    | null
+  onChange: () => void
+}
+
+const KeywordsSection = ({ stats, onChange }: KeywordsSectionProps) => {
+  const [preview, setPreview] = useState<CompactionPreview | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
+
+  const runPreview = async () => {
+    setError(null)
+    setLoading(true)
+    try {
+      const p = await compactKeywordsPreview()
+      setPreview(p)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Preview failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const resumePending = async () => {
+    const pendingId = stats?.keywords.pending_compaction_id
+    if (!pendingId) return
+    setError(null)
+    setLoading(true)
+    try {
+      const p = await compactKeywordsGet(pendingId)
+      setPreview(p)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        // Race window: the preview was rejected/applied from another tab
+        // between our stats read and this fetch. Refresh stats so the
+        // "Reprendre" button disappears.
+        onChange()
+        setError("Cette analyse n'est plus disponible.")
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Resume failed')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const apply = async () => {
+    if (!preview) return
+    setApplying(true)
+    try {
+      await compactKeywordsApply(preview.id)
+      setPreview(null)
+      // Stats reflect the new vocab size + last_compact_at after a moment.
+      setTimeout(onChange, 10_000)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Apply failed')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const reject = async () => {
+    if (!preview) return
+    try {
+      await compactKeywordsReject(preview.id)
+    } catch {
+      // Best effort — closing the modal is enough.
+    }
+    setPreview(null)
+    onChange()
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        className="glass-sm flex items-center justify-between"
+        style={{ borderRadius: 16, padding: '12px 14px' }}
+      >
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Termes distincts
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>
+            {stats?.keywords.distinct_keyword_count ?? '—'}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            Dernière compaction
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            {stats?.keywords.last_compact_at
+              ? formatTimeAgo(stats.keywords.last_compact_at)
+              : 'jamais'}
+          </div>
+        </div>
+      </div>
+
+      <button
+        onClick={runPreview}
+        disabled={loading || applying}
+        style={{
+          padding: '10px 14px',
+          borderRadius: 12,
+          border: '1px solid rgba(255,255,255,0.10)',
+          background: 'var(--accent)',
+          color: '#0c1018',
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: loading || applying ? 'not-allowed' : 'pointer',
+          opacity: loading || applying ? 0.6 : 1,
+        }}
+      >
+        {loading ? 'Analyse en cours…' : 'Analyser la compaction'}
+      </button>
+
+      {stats?.keywords.pending_compaction_id && !preview && (
+        <button
+          onClick={resumePending}
+          style={{
+            padding: '8px 12px',
+            borderRadius: 10,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          Reprendre la dernière analyse
+        </button>
+      )}
+
+      {error && (
+        <div
+          style={{
+            padding: '8px 12px',
+            borderRadius: 10,
+            background: 'rgba(248,113,113,0.10)',
+            color: 'var(--action-dislike)',
+            fontSize: 12,
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {preview && (
+        <CompactionPreviewModal
+          preview={preview}
+          onApply={apply}
+          onReject={reject}
+          applying={applying}
+        />
+      )}
+    </div>
+  )
+}
+
+
+interface PreviewModalProps {
+  preview: CompactionPreview
+  onApply: () => void
+  onReject: () => void
+  applying: boolean
+}
+
+const CompactionPreviewModal = ({
+  preview,
+  onApply,
+  onReject,
+  applying,
+}: PreviewModalProps) => (
+  <div
+    style={{
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,0.55)',
+      zIndex: 60,
+      display: 'flex',
+      alignItems: 'flex-end',
+      justifyContent: 'center',
+    }}
+    onClick={onReject}
+  >
+    <div
+      onClick={(e) => e.stopPropagation()}
+      className="glass-sm"
+      style={{
+        width: '100%',
+        maxWidth: 560,
+        borderTopLeftRadius: 20,
+        borderTopRightRadius: 20,
+        padding: '18px 18px calc(env(safe-area-inset-bottom, 0px) + 24px)',
+        maxHeight: '85vh',
+        overflowY: 'auto',
+      }}
+    >
+      <div
+        style={{ fontSize: 14, fontWeight: 600, marginBottom: 14, color: 'var(--text-primary)' }}
+      >
+        {preview.groups.length === 0
+          ? 'Aucun groupe à fusionner'
+          : `${preview.groups.length} groupe(s) à fusionner`}
+      </div>
+
+      {preview.groups.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+          {preview.groups.map((g, idx) => (
+            <CompactionGroupRow key={`${g.canonical}-${idx}`} group={g} />
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button
+          onClick={onApply}
+          disabled={applying || preview.groups.length === 0}
+          style={{
+            flex: 1,
+            padding: '10px 14px',
+            borderRadius: 12,
+            border: 'none',
+            background: 'var(--accent)',
+            color: '#0c1018',
+            fontSize: 13,
+            fontWeight: 600,
+            cursor:
+              applying || preview.groups.length === 0 ? 'not-allowed' : 'pointer',
+            opacity: applying || preview.groups.length === 0 ? 0.6 : 1,
+          }}
+        >
+          {applying ? 'En cours…' : 'Appliquer'}
+        </button>
+        <button
+          onClick={onReject}
+          style={{
+            flex: 1,
+            padding: '10px 14px',
+            borderRadius: 12,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            fontSize: 13,
+            cursor: 'pointer',
+          }}
+        >
+          Annuler
+        </button>
+      </div>
+    </div>
+  </div>
+)
+
+
+const CompactionGroupRow = ({ group }: { group: CompactionGroup }) => {
+  const pinned = group.skipped_reason === 'pinned'
+  return (
+    <div
+      style={{
+        padding: '10px 12px',
+        borderRadius: 12,
+        background: 'rgba(255,255,255,0.04)',
+        opacity: pinned ? 0.5 : 1,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: 'var(--text-primary)',
+          marginBottom: 4,
+        }}
+      >
+        {group.canonical}
+        {pinned && (
+          <span
+            style={{
+              marginLeft: 8,
+              fontSize: 10,
+              fontWeight: 400,
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            (épinglé — ignoré)
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+        {group.aliases.join(', ')}
+      </div>
     </div>
   )
 }

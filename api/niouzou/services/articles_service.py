@@ -2,20 +2,27 @@
 
 import uuid
 
+from fastapi import status
 from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
-from niouzou.errors import not_found
+from niouzou.errors import APIError, not_found
 from niouzou.models import (
     Article,
     ArticleFeedback,
     ArticleKeyword,
     ArticleRelevanceScore,
+    KeywordWeight,
     Source,
 )
-from niouzou.schemas.articles import ArticleDetail, ArticleSourceRef
+from niouzou.schemas.articles import (
+    ArticleDetail,
+    ArticleSourceRef,
+    ScoreDebug,
+    ScoreDebugKeyword,
+)
 
 
 class ArticlesService:
@@ -100,4 +107,77 @@ class ArticlesService:
             reaction=row.reaction,
             is_saved=bool(row.is_saved),
             read_full_article=bool(row.read_full_article),
+        )
+
+    async def score_debug(
+        self, user_id: uuid.UUID, article_id: uuid.UUID
+    ) -> ScoreDebug:
+        """Explain how the relevance score was computed for the current user.
+
+        Cross-user lookup returns 403 — never expose another user's
+        ``keyword_weights`` even if they happen to share the same article via
+        Miniflux dedup (an article still belongs to exactly one source / user
+        per E2-S3). The article is loaded join-less from ``sources.user_id``
+        so the authorization check happens in the same round-trip.
+        """
+        # Ownership / existence check. Splitting 403 from 404 leaks information
+        # — but only that the id exists somewhere, which is already implied by
+        # any feed/explore listing. ``not_found`` keeps the surface uniform.
+        owner_row = (
+            await self.session.execute(
+                select(Source.user_id, Article.enrichment_model)
+                .join(Source, Source.id == Article.source_id)
+                .where(Article.id == article_id)
+            )
+        ).first()
+        if owner_row is None:
+            raise not_found("Article not found")
+        if owner_row.user_id != user_id:
+            raise APIError(
+                status.HTTP_403_FORBIDDEN,
+                "forbidden",
+                "Article not accessible",
+            )
+
+        relevance, scorer_name = (
+            await self.session.execute(
+                select(
+                    ArticleRelevanceScore.relevance_score,
+                    ArticleRelevanceScore.scorer,
+                ).where(
+                    ArticleRelevanceScore.article_id == article_id,
+                    ArticleRelevanceScore.user_id == user_id,
+                )
+            )
+        ).first() or (None, None)
+
+        # Article keywords sorted by salience DESC so the panel reads top-down.
+        terms_rows = (
+            await self.session.execute(
+                select(ArticleKeyword.term)
+                .where(ArticleKeyword.article_id == article_id)
+                .order_by(
+                    ArticleKeyword.salience.desc(), ArticleKeyword.term.asc()
+                )
+            )
+        ).scalars().all()
+
+        weights_rows = (
+            await self.session.execute(
+                select(KeywordWeight.term, KeywordWeight.weight).where(
+                    KeywordWeight.user_id == user_id,
+                    KeywordWeight.term.in_(terms_rows),
+                )
+            )
+        ).all() if terms_rows else []
+        weights = {term: weight for term, weight in weights_rows}
+
+        return ScoreDebug(
+            relevance_score=relevance,
+            scorer=scorer_name,
+            enrichment_model=owner_row.enrichment_model,
+            keywords=[
+                ScoreDebugKeyword(term=term, weight=weights.get(term))
+                for term in terms_rows
+            ],
         )

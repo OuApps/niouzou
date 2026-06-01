@@ -52,3 +52,8 @@ class Article(Base):
     )
     enrichment_method: Mapped[str | None] = mapped_column(String, nullable=True)
     enrichment_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # E10-S2 — OpenRouter model id used for the successful AI enrichment, e.g.
+    # ``"google/gemma-4-28b"``. NULL on the TF-IDF path (native or fallback) —
+    # ``enrichment_method='tfidf'`` already signals that case so the column is
+    # left blank rather than duplicating the indicator.
+    enrichment_model: Mapped[str | None] = mapped_column(String, nullable=True)

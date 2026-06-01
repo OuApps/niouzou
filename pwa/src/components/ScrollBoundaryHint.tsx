@@ -29,13 +29,6 @@ export const ScrollBoundaryHint = ({ bouncing }: Props) => (
         marginBottom: 10,
       }}
     />
-    <img
-      src="/favicon.svg"
-      alt=""
-      width={32}
-      height={32}
-      style={{ opacity: 0.6, borderRadius: 6 }}
-    />
     <div
       className="boundary-chevron"
       style={{ color: 'var(--text-tertiary)', display: 'inline-flex' }}

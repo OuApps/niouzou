@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ThumbsDown,
   ThumbsUp,
   Bookmark,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   Lock,
 } from 'lucide-react'
 import { ScoreBadge } from './ScoreBadge'
+import { ScoreDebugSheet } from './ScoreDebugSheet'
 import { KeywordTag } from './KeywordTag'
 import { ScrollBoundaryHint } from './ScrollBoundaryHint'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
@@ -26,6 +29,10 @@ interface Props {
   onToggleSave: () => void
   onMarkRead: () => void
 }
+
+// Threshold below which we skip the "Lire plus" toggle entirely — short
+// articles don't need the affordance and look weird with a button under them.
+const CONTENT_PREVIEW_CHARS = 600
 
 /**
  * One fullscreen TikTok-like article slide (E9-S2). 100dvh — never `100vh`,
@@ -60,6 +67,13 @@ export const FeedArticleSlide = ({
   const nextEl = useRef<HTMLDivElement | null>(null)
   const [nextVisible, setNextVisible] = useState(false)
   const scrollEl = useRef<HTMLDivElement | null>(null)
+  // Long-article collapse (UX pass): users who don't engage with a card need a
+  // short scroll to the action bar, not a marathon. Anything past
+  // CONTENT_PREVIEW_CHARS is hidden behind "Lire plus" until they ask.
+  const [contentExpanded, setContentExpanded] = useState(false)
+  // E10-S2 — open/closed state of the score-debug bottom sheet. The sheet
+  // itself owns its fetch; we only pass the article id when open.
+  const [debugOpen, setDebugOpen] = useState(false)
 
   // Detect when the next slide enters view so we can stop the chevron bounce.
   useEffect(() => {
@@ -78,7 +92,17 @@ export const FeedArticleSlide = ({
   // title on re-entry.
   useEffect(() => {
     scrollEl.current?.scrollTo({ top: 0, behavior: 'auto' })
+    setContentExpanded(false)
   }, [article.id])
+
+  const contentPreview = useMemo(() => {
+    const text = article.content ?? ''
+    if (text.length <= CONTENT_PREVIEW_CHARS) return { body: text, truncated: false }
+    // Cut at the last whitespace before the budget so we don't slice mid-word.
+    const slice = text.slice(0, CONTENT_PREVIEW_CHARS)
+    const cut = slice.lastIndexOf(' ')
+    return { body: (cut > 0 ? slice.slice(0, cut) : slice) + '…', truncated: true }
+  }, [article.content])
 
   const handleOpenArticle = () => {
     onMarkRead()
@@ -160,7 +184,11 @@ export const FeedArticleSlide = ({
             )}
             {article.source.name}
           </span>
-          <ScoreBadge score={article.relevance_score} scorer={article.scorer} />
+          <ScoreBadge
+            score={article.relevance_score}
+            scorer={article.scorer}
+            onClick={() => setDebugOpen(true)}
+          />
         </header>
 
         {/* ── Hero image — kept inline below the header so the user always
@@ -255,19 +283,55 @@ export const FeedArticleSlide = ({
           )}
 
           {/* Full crawled content — paragraphs, not raw HTML. The
-              backend stores plain text from newspaper4k. */}
+              backend stores plain text from newspaper4k. Long bodies render
+              collapsed so a disinterested user reaches the next-card affordance
+              fast; a single tap expands them in place. */}
           {article.content && (
-            <div
-              style={{
-                fontSize: 14,
-                lineHeight: 1.65,
-                color: 'var(--text-secondary)',
-                marginBottom: 20,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {article.content}
+            <div style={{ marginBottom: 20 }}>
+              <div
+                style={{
+                  fontSize: 14,
+                  lineHeight: 1.65,
+                  color: 'var(--text-secondary)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {contentExpanded || !contentPreview.truncated
+                  ? article.content
+                  : contentPreview.body}
+              </div>
+              {contentPreview.truncated && (
+                <button
+                  type="button"
+                  onClick={() => setContentExpanded((v) => !v)}
+                  className="flex items-center gap-1"
+                  style={{
+                    marginTop: 8,
+                    padding: '6px 10px',
+                    borderRadius: 999,
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    background: 'rgba(255,255,255,0.04)',
+                    color: 'var(--text-secondary)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                  aria-expanded={contentExpanded}
+                >
+                  {contentExpanded ? (
+                    <>
+                      <ChevronUp size={14} />
+                      Réduire
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown size={14} />
+                      Lire plus
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           )}
 
@@ -326,17 +390,24 @@ export const FeedArticleSlide = ({
         />
       </div>
 
-      {/* ── Action bar (sticky) ─────────────────────────────────────────── */}
+      {/* ── Action bar (sticky) ─────────────────────────────────────────────
+          The container itself is pointer-events: none so a vertical swipe
+          anywhere across the slide — including over the action bar — still
+          drives the scroll container behind it (the buttons reclaim
+          pointer-events on themselves). Bottom value matches the BottomNav
+          height so the gradient stops right where the nav starts and no
+          article text bleeds through above the nav. */}
       <div
         className="flex items-center justify-center"
         style={{
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: 'calc(env(safe-area-inset-bottom, 0px) + 76px)',
+          bottom: 'calc(env(safe-area-inset-bottom, 0px) + 62px)',
           zIndex: 6,
           gap: 48,
           padding: '14px 0',
+          pointerEvents: 'none',
           background:
             'linear-gradient(to top, rgba(12,16,24,0.92), rgba(12,16,24,0))',
         }}
@@ -363,6 +434,13 @@ export const FeedArticleSlide = ({
           onClick={() => onReact(liked ? 'none' : 'like')}
         />
       </div>
+
+      {/* Score-debug bottom sheet — only mounted while open so the fetch
+          fires lazily on the user's first tap (E10-S2). */}
+      <ScoreDebugSheet
+        articleId={debugOpen ? article.id : null}
+        onClose={() => setDebugOpen(false)}
+      />
     </article>
   )
 }
@@ -402,6 +480,9 @@ const ActionButton = ({
       alignItems: 'center',
       justifyContent: 'center',
       cursor: 'pointer',
+      // Parent action-bar disables pointer events so swipes scroll the slide;
+      // each button opts back in for its own hit area.
+      pointerEvents: 'auto',
       // SVG fill follows currentColor when the inner icon uses fill="currentColor".
       transition: 'color 0.15s ease, border-color 0.15s ease, background 0.15s ease',
     }}

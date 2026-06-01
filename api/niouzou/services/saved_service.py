@@ -116,6 +116,7 @@ class SavedService:
                 published_at=r.Article.published_at,
                 relevance_score=r.relevance_score,
                 scorer=r.scorer,
+                enrichment_model=r.Article.enrichment_model,
                 saved_at=r.saved_at,
                 keywords=list(r.keywords or []),
                 is_premium=(

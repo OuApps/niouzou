@@ -14,7 +14,12 @@ from niouzou.models import ArticleKeyword, ArticleRelevanceScore
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
 from niouzou.scoring.ai_keyword import AIKeywordScorer
-from niouzou.services.enrichment_service import EnrichmentService, _first_sentences
+from niouzou.services.enrichment_service import (
+    EnrichmentService,
+    _detect_language,
+    _first_sentences,
+    _parse_enrichment,
+)
 from niouzou.services.scoring_service import ScoringService
 from tests.factories import make_article, make_source, make_user
 from tests.test_ai_keyword import FakeClient
@@ -150,6 +155,131 @@ def test_ai_enabled_flag():
     assert EnrichmentService(openrouter_client=FakeClient(["x"])).ai_enabled is True
 
 
+# ── _parse_enrichment.summary_executive (E10-S2) ─────────────────────────────
+
+
+def test_parse_executive_string_passthrough():
+    result = _parse_enrichment(
+        {"summary_short": "S.", "summary_executive": "- a\n- b"}
+    )
+    assert result.summary_executive == "- a\n- b"
+
+
+def test_parse_executive_list_joined_as_bullets():
+    """LLM sometimes returns an array — flattened into newline bullets."""
+    result = _parse_enrichment(
+        {
+            "summary_short": "S.",
+            "summary_executive": ["First point", "Second point"],
+        }
+    )
+    assert result.summary_executive == "- First point\n- Second point"
+
+
+def test_parse_executive_list_strips_existing_bullets():
+    result = _parse_enrichment(
+        {
+            "summary_short": "S.",
+            "summary_executive": ["- already bulleted", "* also bulleted"],
+        }
+    )
+    assert result.summary_executive == "- already bulleted\n- also bulleted"
+
+
+def test_parse_executive_empty_list_yields_none():
+    result = _parse_enrichment(
+        {"summary_short": "S.", "summary_executive": []}
+    )
+    assert result.summary_executive is None
+
+
+# ── Language detection (E10-S2) ──────────────────────────────────────────────
+
+
+def test_detect_language_french():
+    assert _detect_language(
+        "Le match du championnat",
+        "Le club a remporté la victoire et le titre dans une finale qui s'est jouée hier soir.",
+    ) == "fr"
+
+
+def test_detect_language_english():
+    assert _detect_language(
+        "The new product release",
+        "The company announced that a new product would ship by the end of the quarter.",
+    ) == "en"
+
+
+def test_detect_language_empty_returns_none():
+    assert _detect_language("", "") is None
+    assert _detect_language("1234 5678", "9 10 11") is None
+
+
+def test_detect_language_ambiguous_returns_none():
+    # Carefully balanced: same number of fr and en stop words. The detector
+    # should refuse to guess rather than flip a coin.
+    assert _detect_language("the le", "the le and et") is None
+
+
+def test_generate_enrichment_includes_language_header():
+    """When detected, ``Language: fr`` is prepended to the user prompt."""
+
+    class _RecordingClient(FakeClient):
+        def __init__(self, replies):
+            super().__init__(replies)
+            self.last_user: str | None = None
+
+        def complete(self, *, system, user, temperature=0.2):
+            self.last_user = user
+            return super().complete(system=system, user=user, temperature=temperature)
+
+    client = _RecordingClient(
+        ['{"summary_short": "Court.", "summary_executive": null, "keywords": []}']
+    )
+    svc = EnrichmentService(openrouter_client=client)
+    svc.generate_enrichment(
+        "Le club et le championnat",
+        "Le club a remporté la victoire et le titre dans une finale qui s'est jouée hier soir.",
+    )
+    assert client.last_user is not None
+    assert client.last_user.startswith("Language: fr\nTitle:")
+
+
+def test_generate_enrichment_injects_vocab():
+    """When set_vocab supplies terms, they appear in the user prompt."""
+
+    class _RecordingClient(FakeClient):
+        def __init__(self, replies):
+            super().__init__(replies)
+            self.last_user: str | None = None
+
+        def complete(self, *, system, user, temperature=0.2):
+            self.last_user = user
+            return super().complete(system=system, user=user, temperature=temperature)
+
+    client = _RecordingClient(
+        ['{"summary_short": "X.", "summary_executive": null, "keywords": []}']
+    )
+    svc = EnrichmentService(openrouter_client=client)
+    svc.set_vocab(["football", "fc barcelone", "ligue des champions"])
+    svc.generate_enrichment("Title", "Some content body here.")
+    assert client.last_user is not None
+    assert (
+        "Existing vocabulary (reuse when applicable): football, fc barcelone, ligue des champions"
+        in client.last_user
+    )
+
+
+def test_parse_executive_nested_list_drops_inner_lists():
+    result = _parse_enrichment(
+        {
+            "summary_short": "S.",
+            "summary_executive": ["valid", ["nested", "stuff"], "also valid"],
+        }
+    )
+    assert result.summary_executive == "- valid\n- also valid"
+
+
 # ── cron enrich_article (DB-backed) ──────────────────────────────────────────
 
 
@@ -282,6 +412,7 @@ async def test_run_closes_openrouter_client(monkeypatch):
             max_keywords_per_article=6,
             cron_fetch_interval=15,
             cron_refresh_weights_hour=3,
+            score_threshold=0.0,
         )
 
     monkeypatch.setattr(
@@ -289,6 +420,11 @@ async def test_run_closes_openrouter_client(monkeypatch):
     )
     monkeypatch.setattr(enrich_mod, "session_scope", _fake_scope)
     monkeypatch.setattr(enrich_mod, "_pending_article_ids", _no_pending)
+
+    async def _no_vocab(session, limit):
+        return []
+
+    monkeypatch.setattr(enrich_mod, "_load_top_keywords", _no_vocab)
 
     assert await enrich_mod.run() == 0
     assert client.closed is True

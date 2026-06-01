@@ -17,6 +17,7 @@ class AdminConfig(BaseModel):
     max_keywords_per_article: int
     cron_fetch_interval: int
     cron_refresh_weights_hour: int
+    score_threshold: float
 
 
 class AdminConfigPatch(BaseModel):
@@ -32,6 +33,7 @@ class AdminConfigPatch(BaseModel):
     max_keywords_per_article: int | None = Field(default=None, ge=1, le=50)
     cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
     cron_refresh_weights_hour: int | None = Field(default=None, ge=0, le=23)
+    score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AdminModel(BaseModel):
@@ -55,3 +57,30 @@ class AdminUser(BaseModel):
 
 class AdminPasswordReset(BaseModel):
     new_password: str = Field(min_length=8)
+
+
+# ── E10-S3 — Keyword compaction ───────────────────────────────────────────
+
+
+class CompactionGroup(BaseModel):
+    """One proposed merge: ``aliases`` will be rewritten as ``canonical``.
+
+    ``skipped_reason`` is annotated server-side at apply time on groups
+    touching a ``manually_overridden=true`` term — those are returned as
+    informational rows but not applied (the user's explicit pin wins).
+    """
+
+    canonical: str
+    aliases: list[str]
+    skipped_reason: str | None = None
+
+
+class CompactionPreview(BaseModel):
+    """Response body of ``POST /admin/compact-keywords/preview``."""
+
+    id: str
+    groups: list[CompactionGroup]
+
+
+class CompactionApplyRequest(BaseModel):
+    id: str

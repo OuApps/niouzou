@@ -38,3 +38,20 @@ class ArticleDetail(BaseModel):
     reaction: Reaction = "none"
     is_saved: bool = False
     read_full_article: bool = False
+
+
+# E10-S2 — Debug shape for ``GET /articles/{id}/score-debug``. Explains how a
+# relevance score was computed: the active scorer, the LLM model (if any),
+# and the user's weight on each of the article's keywords. ``weight: null``
+# distinguishes "keyword known to the article but no row in the user's
+# ``keyword_weights``" (rendered as a dash) from a numeric zero.
+class ScoreDebugKeyword(BaseModel):
+    term: str
+    weight: float | None
+
+
+class ScoreDebug(BaseModel):
+    relevance_score: float | None
+    scorer: str | None
+    enrichment_model: str | None
+    keywords: list[ScoreDebugKeyword]

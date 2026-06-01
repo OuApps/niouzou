@@ -36,6 +36,7 @@ RANKED_COLUMNS = f"""
     s.name AS source_name,
     ars.relevance_score AS relevance_score,
     ars.scorer AS scorer,
+    a.enrichment_model AS enrichment_model,
     (a.content IS NOT NULL
      AND char_length(a.content) < :premium_max_chars
     ) AS is_premium,
@@ -121,6 +122,7 @@ def row_to_article(row) -> FeedArticle:
         published_at=row["published_at"],
         relevance_score=row["relevance_score"],
         scorer=row["scorer"],
+        enrichment_model=row["enrichment_model"],
         keywords=list(row["keywords"] or []),
         is_premium=bool(row["is_premium"]),
         reaction=row["reaction"],

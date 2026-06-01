@@ -54,6 +54,53 @@ async def test_article_detail_includes_feedback_after_action(db_session):
     assert detail.is_saved is False
 
 
+async def test_score_debug_returns_keywords_with_weights(db_session):
+    """E10-S2 — debug panel surfaces per-keyword user weights, ``None`` when unset."""
+    from niouzou.models import KeywordWeight
+
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await make_article(db_session, source)
+    article.enrichment_model = "google/gemma-4-28b"
+    await set_relevance(db_session, article, user, 0.74)
+    await add_keyword(db_session, article, "football", 0.9)
+    await add_keyword(db_session, article, "fc barcelone", 0.7)
+    await add_keyword(db_session, article, "ligue des champions", 0.5)
+    db_session.add(
+        KeywordWeight(user_id=user.id, term="football", weight=1.2)
+    )
+    db_session.add(
+        KeywordWeight(user_id=user.id, term="fc barcelone", weight=0.8)
+    )
+    await db_session.commit()
+
+    debug = await ArticlesService(db_session).score_debug(user.id, article.id)
+    assert debug.relevance_score == 0.74
+    assert debug.enrichment_model == "google/gemma-4-28b"
+    weights = {kw.term: kw.weight for kw in debug.keywords}
+    assert weights == {
+        "football": 1.2,
+        "fc barcelone": 0.8,
+        # No row for this user → null in the response.
+        "ligue des champions": None,
+    }
+
+
+async def test_score_debug_forbids_cross_user(db_session):
+    owner = await make_user(db_session, email="owner@test.dev")
+    intruder = await make_user(db_session, email="intruder@test.dev")
+    source = await make_source(db_session, owner)
+    article = await make_article(db_session, source)
+    await add_keyword(db_session, article, "rust", 0.9)
+    await db_session.commit()
+
+    with pytest.raises(APIError) as exc:
+        await ArticlesService(db_session).score_debug(intruder.id, article.id)
+    # Never leak owner's keyword_weights — 403 distinct from 404 so the PWA
+    # can tell the difference between "not yours" and "doesn't exist".
+    assert exc.value.status_code == 403
+
+
 async def test_article_of_another_user_is_not_found(db_session):
     owner = await make_user(db_session, email="owner@test.dev")
     intruder = await make_user(db_session, email="intruder@test.dev")

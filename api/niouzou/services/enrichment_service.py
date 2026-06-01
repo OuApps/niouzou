@@ -53,8 +53,67 @@ _ENRICHMENT_SYSTEM = (
     '"summary_executive": "<3-5 markdown bullet points, one per line starting with \'- \'>", '
     '"keywords": [{"term": "<lowercase 1-3 word topic>", "salience": <0.0-1.0>}]}. '
     "At most 10 keywords. salience = how central the topic is (1.0 = main subject). "
-    "Write in the article's language. No preamble, no commentary."
+    "Keywords should be stable reusable concepts — prefer named entities (clubs, "
+    "countries, people, companies), domains (football, AI, finance) and topics "
+    "(climate, elections) over ephemeral events or actions ('defeat', 'final', "
+    "'Argentine midfielder'). Normalise names consistently. "
+    "Respond in the language specified in the 'Language:' field, or in the "
+    "article's language if unspecified. No preamble, no commentary."
 )
+
+
+# Tiny stop-word vocab per language for ``_detect_language``. Twenty highly
+# frequent function words is enough to disambiguate the five languages we care
+# about over title + lede. Kept inline (rather than import from scoring.stopwords)
+# because we need language-disjoint sets — the keyword-filter vocab is one big
+# multilingual blob.
+_LANG_STOPWORDS: dict[str, frozenset[str]] = {
+    "fr": frozenset(
+        "le la les un une des du de et ou mais que qui pour avec dans sur est sont".split()
+    ),
+    "en": frozenset(
+        "the a an of and or but that which for with in on is are was were be by to".split()
+    ),
+    "es": frozenset(
+        "el la los las un una de y o pero que para con en es son por su sus al".split()
+    ),
+    "de": frozenset(
+        "der die das ein eine und oder aber dass für mit in auf ist sind den dem zu von".split()
+    ),
+    "pt": frozenset(
+        "o a os as um uma de e ou mas que para com em é são por seu sua no na".split()
+    ),
+}
+
+_TOKEN_RE = re.compile(r"[a-zA-ZÀ-ÿ]+")
+# Number of chars from ``content`` fed to the detector — title alone is too
+# short / ambiguous. 500 is generous enough to capture stop words even when
+# the lede starts with a quote.
+_LANG_DETECT_CHARS = 500
+
+
+def _detect_language(title: str, content: str | None) -> str | None:
+    """Best-effort language hint from stop-word counts.
+
+    Returns ``None`` when no language clearly wins (all-zero counts, or the
+    top two tie). The caller falls back to the system prompt's "article's
+    language" instruction in that case.
+    """
+    sample = f"{title or ''} {(content or '')[:_LANG_DETECT_CHARS]}".lower()
+    tokens = _TOKEN_RE.findall(sample)
+    if not tokens:
+        return None
+    token_set = set(tokens)
+    counts = {
+        lang: sum(1 for w in token_set if w in vocab)
+        for lang, vocab in _LANG_STOPWORDS.items()
+    }
+    ordered = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    top_lang, top_count = ordered[0]
+    second_count = ordered[1][1] if len(ordered) > 1 else 0
+    if top_count == 0 or top_count == second_count:
+        return None
+    return top_lang
 
 
 @dataclass(slots=True)
@@ -93,6 +152,22 @@ class EnrichmentService:
     def __init__(self, openrouter_client: OpenRouterClient | None = None) -> None:
         # None → AI disabled; summaries come from the newspaper fallback.
         self._client = openrouter_client
+        # Cached snapshot of the most-frequent ``article_keywords.term``s for
+        # the prompt's ``Existing vocabulary`` hint (E10-S2). Loaded once at
+        # the start of a cron run by ``set_vocab`` so the LLM is nudged
+        # toward terms the system already knows. Empty list = no injection,
+        # which is the default and also the path tests follow.
+        self._vocab: list[str] = []
+
+    def set_vocab(self, vocab: list[str]) -> None:
+        """Snapshot the top-N existing keywords for prompt injection.
+
+        Called once per cron run from ``enrichment_resources`` — avoids the
+        per-article DB roundtrip and the per-article prompt-cache miss the
+        vocab change would otherwise cause. Kept as a setter (rather than
+        loaded internally) because EnrichmentService is sync.
+        """
+        self._vocab = list(vocab)
 
     @classmethod
     def from_settings(cls) -> "EnrichmentService":
@@ -161,7 +236,19 @@ class EnrichmentService:
         if self._client is None or not (content and content.strip()):
             return fallback
 
-        body = f"Title: {title}\n\n{content}"
+        lang = _detect_language(title, content)
+        header = f"Language: {lang}\n" if lang else ""
+        # E10-S2: nudge the LLM to reuse existing keyword terms (canonical
+        # names, stable concepts) so per-user weights don't fragment across
+        # near-duplicates. Placed *before* the title so the model reads it
+        # first; truncation by ``_MAX_INPUT_CHARS`` then preferentially drops
+        # article body, never the vocab.
+        vocab_line = (
+            f"Existing vocabulary (reuse when applicable): {', '.join(self._vocab)}\n"
+            if self._vocab
+            else ""
+        )
+        body = f"{header}{vocab_line}Title: {title}\n\n{content}"
         last_exc: Exception | None = None
         # Tries: 1 initial + len(_LLM_BACKOFFS_S) retries = 3 total.
         for attempt in range(len(_LLM_BACKOFFS_S) + 1):
@@ -200,15 +287,41 @@ def _parse_enrichment(data: object) -> Enrichment:
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object for enrichment")
     short = data.get("summary_short")
-    executive = data.get("summary_executive")
     short = str(short).strip() if short else None
-    executive = str(executive).strip() if executive else None
     if not short:
         raise ValueError("LLM enrichment missing summary_short")
+    executive = _parse_executive(data.get("summary_executive"))
     keywords = _parse_keywords(data.get("keywords"))
     return Enrichment(
         summary_short=short, summary_executive=executive, keywords=keywords
     )
+
+
+def _parse_executive(raw: object) -> str | None:
+    """Normalise summary_executive to newline-separated markdown bullets.
+
+    LLMs intermittently return ``summary_executive`` as a JSON array even
+    when the prompt asks for a single string — the PWA used to render that
+    as the literal ``['…']`` representation (E10-S2). Flatten lists into
+    ``- item\\n- item`` form so ``ExecutiveSummary`` can split on newlines
+    unchanged. Nested lists are dropped silently rather than stringified.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        bullets: list[str] = []
+        for item in raw:
+            if isinstance(item, (list, dict)):
+                continue
+            # Strip whichever bullet-ish prefix the LLM happened to emit so
+            # we don't end up rendering "- - foo". Covers ASCII dashes/stars
+            # and the unicode bullet variants we've seen in the wild.
+            text = str(item).strip().lstrip("-*•–—").strip()
+            if text:
+                bullets.append(f"- {text}")
+        return "\n".join(bullets) or None
+    text = str(raw).strip()
+    return text or None
 
 
 def _parse_keywords(raw: object) -> list[ScoredKeyword]:

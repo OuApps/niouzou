@@ -264,7 +264,7 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | ⚙️ compose | App database credentials (defaults: `niouzou`/`niouzou`/`niouzou`) |
 | `OPENROUTER_API_KEY` | ❌ | Enables AI enrichment and scoring |
 | `OPENROUTER_MODEL` | ❌ | Model to use (default: `nvidia/nemotron-3-super-120b-a12b:free`) |
-| `SCORE_THRESHOLD` | ❌ | Minimum relevance_score to surface article (default: `0.0`) |
+| `SCORE_THRESHOLD` | ❌ | Minimum relevance_score to surface article (0.0–1.0, default: `0.0`) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
 | `RANDOM_SURFACE_RATE` | ❌ | % of random articles in feed (default: `0.05`) |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
 | `COLD_START_THRESHOLD` | ❌ | Number of feedbacks below which `SCORE_THRESHOLD` is bypassed — prevents an empty feed on day one (default: `10`) |

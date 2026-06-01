@@ -37,7 +37,7 @@ CREATE TABLE users (
 ### app_settings
 ```sql
 CREATE TABLE app_settings (
-  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article)
+  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article, score_threshold)
   value         TEXT NOT NULL,                     -- setting value (overrides env var at runtime)
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -95,6 +95,8 @@ CREATE TABLE articles (
   enriched_at          TIMESTAMPTZ,              -- set when status → enriched
   enrichment_method    VARCHAR,                  -- 'ai' or 'tfidf'; set by cron_enrich
   enrichment_error     TEXT,                     -- captured exception when AI failed and fell back to TF-IDF; null on success
+  enrichment_model     VARCHAR,                  -- E10-S2: OpenRouter model id on AI success (e.g. 'google/gemma-4-28b');
+                                                 -- NULL on TF-IDF (native or fallback). Powers the score-debug bottom sheet.
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   UNIQUE (source_id, miniflux_entry_id)          -- same entry may exist for different sources (multi-user)
@@ -275,6 +277,31 @@ CREATE INDEX ix_pipeline_runs_started_at ON pipeline_runs(started_at DESC);
 > is captured once at the start of the enrich loop so the progress-bar
 > denominator doesn't drift when a concurrent fetch ingests new pending rows.
 > Added in E10-S1.
+
+---
+
+### compaction_runs
+```sql
+CREATE TABLE compaction_runs (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  applied_at        TIMESTAMPTZ,                   -- null while status='preview' or 'rejected'
+  status            VARCHAR NOT NULL
+                    CHECK (status IN ('preview', 'applied', 'rejected', 'failed')),
+  groups_json       JSONB NOT NULL,                -- [{"canonical": ..., "aliases": [...], "skipped_reason": ...?}]
+  keywords_merged   INTEGER NOT NULL DEFAULT 0,    -- sum of len(aliases) on non-skipped groups
+  error             TEXT                           -- str(exc) when status='failed'
+);
+
+CREATE INDEX ix_compaction_runs_created_at ON compaction_runs(created_at DESC);
+```
+
+> Global (not user-scoped). One row per LLM-proposed keyword merge: the
+> preview is persisted before any DB rewrite so the admin can review groups
+> and apply or reject them. `skipped_reason="pinned"` is annotated at apply
+> time on groups that touch a `manually_overridden=true` term — those
+> groups are kept in the JSON for traceability but not applied (the user's
+> explicit pin wins). Added in E10-S3.
 
 ---
 

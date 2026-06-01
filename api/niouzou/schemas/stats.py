@@ -19,6 +19,15 @@ class SourcesStats(BaseModel):
 class KeywordsStats(BaseModel):
     total: int
     manually_overridden: int
+    # E10-S3 — global vocab size + compaction lifecycle for the admin panel.
+    # ``distinct_keyword_count`` is the number of distinct rows in
+    # ``article_keywords.term`` (instance-wide); ``last_compact_at`` is the
+    # most recent ``applied_at`` on ``compaction_runs``; ``pending_compaction_id``
+    # is the most recent preview that hasn't been applied or rejected — used
+    # by the admin to resume an abandoned analysis.
+    distinct_keyword_count: int = 0
+    last_compact_at: datetime | None = None
+    pending_compaction_id: str | None = None
 
 
 class EnrichmentStats(BaseModel):

@@ -54,7 +54,7 @@ const FETCHERS: Record<Mode, (cursor?: string, limit?: number) => Promise<{
 
 export const Explore = () => {
   const navigate = useNavigate()
-  const [mode, setMode] = useState<Mode>('history')
+  const [mode, setMode] = useState<Mode>('new')
   const [tabs, setTabs] = useState<Record<Mode, TabState>>({
     history: EMPTY,
     new: EMPTY,
@@ -218,7 +218,7 @@ const Tabs = ({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) =
       border: '1px solid rgba(255,255,255,0.08)',
     }}
   >
-    {(['history', 'new'] as Mode[]).map((m) => {
+    {(['new', 'history'] as Mode[]).map((m) => {
       const isActive = m === mode
       return (
         <button

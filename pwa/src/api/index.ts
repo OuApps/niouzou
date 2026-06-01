@@ -133,6 +133,27 @@ export function postFeedback(
   })
 }
 
+// ── Articles ─────────────────────────────────────────────────────────────────
+
+// E10-S2 — Score debug panel. One entry per article keyword; ``weight`` is
+// ``null`` when the user has no row in ``keyword_weights`` for that term yet
+// (renders as a dash in the bottom sheet).
+export interface ScoreDebugKeyword {
+  term: string
+  weight: number | null
+}
+
+export interface ScoreDebug {
+  relevance_score: number | null
+  scorer: string | null
+  enrichment_model: string | null
+  keywords: ScoreDebugKeyword[]
+}
+
+export function getScoreDebug(articleId: string): Promise<ScoreDebug> {
+  return request<ScoreDebug>(`/articles/${articleId}/score-debug`)
+}
+
 // ── Saved ──────────────────────────────────────────────────────────────────
 
 export function getSaved(cursor?: string, limit = 20): Promise<SavedPage> {
@@ -232,7 +253,14 @@ export interface Stats {
     last_fetched_at: string | null
   }
   sources: { total: number; active: number }
-  keywords: { total: number; manually_overridden: number }
+  keywords: {
+    total: number
+    manually_overridden: number
+    // E10-S3 — global vocab size + last applied compaction + pending preview.
+    distinct_keyword_count: number
+    last_compact_at: string | null
+    pending_compaction_id: string | null
+  }
   enrichment: {
     last_enriched_at: string | null
     total_ai: number
@@ -253,6 +281,46 @@ export function triggerRefresh(): Promise<{ status: string }> {
   return request<{ status: string }>('/admin/refresh', { method: 'POST' })
 }
 
+// ── Admin compaction (E10-S3) ───────────────────────────────────────────────
+
+export interface CompactionGroup {
+  canonical: string
+  aliases: string[]
+  // Annotated by the worker at apply time; the PWA shows pinned groups
+  // greyed out in the preview modal so the admin knows they'll be left
+  // untouched.
+  skipped_reason?: string | null
+}
+
+export interface CompactionPreview {
+  id: string
+  groups: CompactionGroup[]
+}
+
+export function compactKeywordsPreview(): Promise<CompactionPreview> {
+  return request<CompactionPreview>('/admin/compact-keywords/preview', {
+    method: 'POST',
+  })
+}
+
+// Resume a previously-generated preview (no LLM hop). Used when
+// ``stats.keywords.pending_compaction_id`` points at a run the admin
+// abandoned in a prior session.
+export function compactKeywordsGet(id: string): Promise<CompactionPreview> {
+  return request<CompactionPreview>(`/admin/compact-keywords/${id}`)
+}
+
+export function compactKeywordsApply(id: string): Promise<{ status: string }> {
+  return request<{ status: string }>('/admin/compact-keywords/apply', {
+    method: 'POST',
+    body: { id },
+  })
+}
+
+export function compactKeywordsReject(id: string): Promise<void> {
+  return request<void>(`/admin/compact-keywords/${id}`, { method: 'DELETE' })
+}
+
 // ── Admin config (E8-S3 / E8-S4) ─────────────────────────────────────────────
 
 export interface AdminConfig {
@@ -261,6 +329,7 @@ export interface AdminConfig {
   max_keywords_per_article: number
   cron_fetch_interval: number
   cron_refresh_weights_hour: number
+  score_threshold: number
 }
 
 export interface AdminConfigPatch {
@@ -269,6 +338,7 @@ export interface AdminConfigPatch {
   max_keywords_per_article?: number
   cron_fetch_interval?: number
   cron_refresh_weights_hour?: number
+  score_threshold?: number
 }
 
 export interface AdminModel {

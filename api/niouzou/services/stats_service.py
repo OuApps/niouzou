@@ -14,10 +14,13 @@ from niouzou.deps import SessionDep
 from niouzou.models import (
     Article,
     ArticleFeedback,  # noqa: F401  (kept for future enrichment stats)
+    ArticleKeyword,
+    CompactionRun,
     KeywordWeight,
     PipelineRun,
     Source,
 )
+from niouzou.models.compaction_run import STATUS_APPLIED, STATUS_PREVIEW
 from niouzou.models.article import STATUS_ENRICHED
 from niouzou.models.pipeline_run import STATUS_RUNNING
 from niouzou.schemas.stats import (
@@ -116,6 +119,24 @@ class StatsService:
             )
         ).one()
 
+        # ── Compaction telemetry (global, E10-S3) ─────────────────────────
+        distinct_keyword_count = (
+            await self.session.scalar(
+                select(func.count(func.distinct(ArticleKeyword.term)))
+            )
+        ) or 0
+        last_compact_at = await self.session.scalar(
+            select(func.max(CompactionRun.applied_at)).where(
+                CompactionRun.status == STATUS_APPLIED
+            )
+        )
+        pending_preview_id = await self.session.scalar(
+            select(CompactionRun.id)
+            .where(CompactionRun.status == STATUS_PREVIEW)
+            .order_by(CompactionRun.created_at.desc())
+            .limit(1)
+        )
+
         # ── Pipeline (global, E10-S1) ──────────────────────────────────────
         pipeline = await self._latest_pipeline()
 
@@ -133,6 +154,11 @@ class StatsService:
             keywords=KeywordsStats(
                 total=keywords_row.total or 0,
                 manually_overridden=keywords_row.overridden or 0,
+                distinct_keyword_count=distinct_keyword_count,
+                last_compact_at=last_compact_at,
+                pending_compaction_id=(
+                    str(pending_preview_id) if pending_preview_id else None
+                ),
             ),
             enrichment=EnrichmentStats(
                 last_enriched_at=articles_row.last_enriched_at,

@@ -57,6 +57,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import update
 
 from niouzou.config import get_settings
@@ -71,6 +72,10 @@ from niouzou.models.pipeline_run import (
     STATUS_FAILED,
     STATUS_RUNNING,
 )
+from niouzou.models import CompactionRun
+from niouzou.models.compaction_run import STATUS_PREVIEW as _COMPACT_PREVIEW
+from niouzou.services.compaction_service import CompactionService
+from niouzou.services.openrouter_client import OpenRouterClient
 from niouzou.services.settings_service import SettingsService
 
 # uvicorn only configures its own loggers; without this our app loggers
@@ -84,6 +89,12 @@ logging.basicConfig(
 logger = logging.getLogger("niouzou.refresh_worker")
 
 _lock = asyncio.Lock()
+# E10-S3 — separate lock for the compaction *preview* phase (LLM call only,
+# no DB write). Kept distinct from ``_lock`` so a long LLM grouping call
+# doesn't freeze the fetch+enrich pipeline. The ``apply`` phase uses
+# ``_lock`` because it rewrites ``article_keywords`` and must not race the
+# pipeline's writes.
+_compact_lock = asyncio.Lock()
 _scheduler: AsyncIOScheduler | None = None
 
 
@@ -277,6 +288,7 @@ async def _run_pipeline() -> None:
                                 enrichment=resources.enrichment,
                                 ai_scoring=resources.ai_scoring,
                                 tfidf_scoring=resources.tfidf_scoring,
+                                openrouter_model=resources.openrouter_model,
                             )
                             enriched_ok = True
 
@@ -437,6 +449,124 @@ app = FastAPI(title="Niouzou Refresh Worker", version="0.1.0", lifespan=_lifespa
 @app.get("/health", tags=["health"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# ── Compaction endpoints (E10-S3) ────────────────────────────────────────
+
+
+class _CompactApplyBody(BaseModel):
+    id: uuid.UUID
+
+
+@app.post("/compact/preview", status_code=status.HTTP_202_ACCEPTED)
+async def compact_preview() -> JSONResponse:
+    """Generate a keyword-merge preview (LLM only — no DB write yet).
+
+    ``_compact_lock`` is held for the duration of the LLM call so a second
+    preview can't race the first; the pipeline ``_lock`` is left free so
+    fetch+enrich keeps running while the LLM is thinking.
+    """
+    if _compact_lock.locked():
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"status": "already_running"},
+        )
+    async with _compact_lock:
+        async with session_scope() as session:
+            cfg = await SettingsService(session).get_effective()
+        client = OpenRouterClient.from_overrides(
+            cfg.openrouter_api_key, cfg.openrouter_model
+        )
+        if client is None:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "status": "ai_disabled",
+                    "message": "Compaction requires an OpenRouter API key.",
+                },
+            )
+        try:
+            async with session_scope() as session:
+                run = await CompactionService(session, client).preview()
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content={
+                        "id": str(run.id),
+                        "groups": run.groups_json,
+                    },
+                )
+        finally:
+            client.close()
+
+
+@app.post("/compact/apply", status_code=status.HTTP_202_ACCEPTED)
+async def compact_apply(body: _CompactApplyBody) -> JSONResponse:
+    """Apply a previously-generated preview.
+
+    Uses the *pipeline* ``_lock`` (not ``_compact_lock``): the apply rewrites
+    ``article_keywords`` and reruns the weight recompute. Doing that while a
+    fetch+enrich pipeline is also writing rows would corrupt both.
+
+    The run id is validated *before* the 202 is returned so a stale id from
+    the admin UI (already applied / rejected / unknown) surfaces as a 404
+    instead of silently logging a background failure ten seconds later.
+    """
+    async with session_scope() as session:
+        run = await session.get(CompactionRun, body.id)
+        if run is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "not_found", "message": "Compaction run not found"},
+            )
+        if run.status != _COMPACT_PREVIEW:
+            # 409 because the resource exists but is in a terminal state — the
+            # caller's request is well-formed but no longer applicable.
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "error": "invalid_state",
+                    "message": f"Compaction run is not a preview (status={run.status!r})",
+                },
+            )
+
+    if _lock.locked():
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"status": "already_running"},
+        )
+    asyncio.create_task(_apply_in_background(body.id))
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED, content={"status": "started"}
+    )
+
+
+async def _apply_in_background(run_id: uuid.UUID) -> None:
+    """Acquire the pipeline lock and run ``CompactionService.apply``."""
+    async with _lock:
+        try:
+            async with session_scope() as session:
+                await CompactionService(session).apply(run_id)
+                logger.info("refresh_worker: compaction %s applied", run_id)
+        except Exception:
+            logger.exception(
+                "refresh_worker: compaction apply failed for %s", run_id
+            )
+
+
+@app.delete(
+    "/compact/{run_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def compact_reject(run_id: uuid.UUID) -> JSONResponse:
+    """Mark a preview as rejected (no DB rewrites)."""
+    try:
+        async with session_scope() as session:
+            await CompactionService(session).reject(run_id)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error": "not_found", "message": str(exc)},
+        )
+    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
 
 @app.post("/run", status_code=status.HTTP_202_ACCEPTED)

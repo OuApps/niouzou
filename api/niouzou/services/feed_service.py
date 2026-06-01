@@ -26,6 +26,7 @@ from niouzou.models import Article, ArticleFeedback, ArticleImpression, Source
 from niouzou.models.article import STATUS_ENRICHED
 from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.feed import FeedArticle, FeedResponse
+from niouzou.services.settings_service import SettingsService
 from niouzou.services.ranked_query import (
     FEED_RANK,
     FROM_JOINS,
@@ -64,9 +65,15 @@ class FeedService:
 
         if cold_start:
             threshold = 0.0
+        elif min_score is not None:
+            threshold = min_score
         else:
-            threshold = (
-                min_score if min_score is not None else settings.score_threshold
+            # Admin can tune the threshold live via PATCH /admin/config; read
+            # through SettingsService so the change takes effect on the very
+            # next request (env var stays the fallback default).
+            override = await SettingsService(self.session).get("score_threshold")
+            threshold = float(
+                override if override is not None else settings.score_threshold
             )
 
         params: dict = {

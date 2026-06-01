@@ -1879,7 +1879,7 @@ Remplacer "Last fetch / Next fetch / Last enrichment" par :
 
 ---
 
-#### [ ] E10-S2 — Qualité des résumés : prompt + debug score
+#### [x] E10-S2 — Qualité des résumés : prompt + debug score
 
 **Problèmes adressés** :
 - `summary_executive` s'affiche sous forme `['texte...']` quand le LLM retourne un tableau JSON
@@ -1986,7 +1986,7 @@ Dash quand le keyword n'a pas encore de poids user.
 
 ---
 
-#### [ ] E10-S3 — Compaction & refresh des keywords
+#### [x] E10-S3 — Compaction & refresh des keywords
 
 **Problème adressé** :
 - Des keywords sémantiquement identiques coexistent sous des formes différentes ("FC Barcelone", "Barcelona FC", "Barça") → poids éclatés, signal dilué pour le scoring.
