@@ -2069,88 +2069,177 @@ Nouvelle section "Keywords" (sous Users) :
 
 ---
 
-#### [ ] E10-S4 — Articles cold-start "new" badge & threshold bypass
-
-> **Status** : à discuter — l'approche actuelle est insatisfaisante. Voir « Pistes
-> à arbitrer » plus bas et trancher avant l'implémentation.
+#### [ ] E10-S4 — Articles cold-start : badge « New » + bypass threshold
 
 **Problème adressé** :
 
-Quand un article tombe sur des keywords que l'utilisateur n'a jamais vus (toutes
-les contributions de poids sont à 0), le `TFIDFScorer` retourne ~0.5 — la valeur
-« neutre » qui sort de l'AI scorer quand il n'a rien à dire. Conséquences :
+Quand un article a des keywords que l'utilisateur n'a jamais rencontrés, le
+scorer (TF-IDF ou AI) retourne ~0.5 — la valeur « neutre » qui sort quand
+aucun signal user n'est disponible. Conséquences :
 
-- L'utilisateur monte `score_threshold` à 0.7 pour ne voir que les contenus
-  pertinents → les nouveaux articles passent sous le seuil et **disparaissent
-  du feed** alors qu'ils n'ont jamais eu la chance d'être évalués.
-- Le score 0.5 affiché sur le badge est trompeur : ce n'est pas « 50% de chance
-  d'aimer », c'est « je ne sais pas ». Un user ne peut pas distinguer un
-  article incertain d'un article réellement médiocre.
-- Le travail démarré pour les nouveaux users (E5 ? E7 ?) couvre le démarrage
-  global de l'instance, pas le démarrage par-article au fil de l'eau.
+- L'utilisateur règle `score_threshold` à 70 % → tous les nouveaux articles
+  passent sous le seuil et **disparaissent du feed** sans avoir eu la chance
+  d'être évalués (chicken-and-egg : pas de feedback possible si l'article
+  n'apparaît jamais).
+- Le `50 %` affiché sur le badge est trompeur. Ce n'est pas « 50 % de chance
+  d'aimer », c'est « je ne sais pas ». Un user ne distingue pas un article
+  réellement moyen d'un article inédit.
 
-**Pistes à arbitrer (à discuter)** :
+**Décisions actées** :
 
-1. **Marqueur explicite `is_cold` sur l'article par-user**.
-   Au moment du scoring (`enrich_article` → `ScoringPipeline`), si aucun des
-   keywords de l'article n'a de row dans `keyword_weights` pour cet user (ou si
-   tous les poids sont à 0/manquants), marquer l'article comme cold pour cet
-   user. Stocker où ? Soit un boolean sur `article_relevance_scores`
-   (`is_cold_start BOOLEAN`), soit dériver à la lecture (`COALESCE(weight, 0) = 0
-   pour tous les keywords`). Le boolean évite un join sur `keyword_weights`
-   dans chaque requête feed.
+| Question | Décision |
+|---|---|
+| Critère cold | **Aucun** des keywords de l'article n'a de row dans `keyword_weights` pour ce user. |
+| Stockage | Colonne `is_cold_start BOOLEAN` sur `article_relevance_scores`, stampée à l'enrichissement. |
+| Décommission | Dans `cron_refresh_weights` (quotidien) — après recompute des poids, batch UPDATE des rows dont au moins un keyword a maintenant un poids. |
+| Bypass threshold | **Complet** — les cold articles passent quel que soit `score_threshold` (pas de quota). |
+| Position feed | Triés comme si leur score effectif était ~0.5 — entre les bons et les mauvais. |
+| Badge | Texte `New` (anglais, court) à la place du `X %`. Tap → score-debug comme d'habitude. |
+| Score-debug | Pas de header spécial : la liste affiche déjà les keywords avec `—` (poids null) ; le signal visuel est suffisant. |
+| `RANDOM_SURFACE_RATE` | Inchangé — la sémantique est différente (exploration aléatoire vs collecte de feedback sur l'inédit). |
 
-2. **Bypass du seuil pour les cold articles**.
-   `FeedService.list` doit inclure les articles cold même en-dessous du
-   threshold — sinon le user ne les verra jamais et ne pourra jamais leur
-   donner de feedback (chicken-and-egg). Plafonner à un nombre raisonnable
-   pour ne pas noyer le feed (ex. `min(cold_count, 30%)` ou quota fixe).
+**Migration Alembic** :
 
-3. **Badge "new" vs % sur la card**.
-   `ScoreBadge` affiche `new` (ou `?`, ou une icône) au lieu de `50%` quand
-   `is_cold_start`. À voir : garder le badge fonctionnel pour tap → score
-   debug ? Le panel devrait expliquer « article inédit, on n'a pas encore de
-   signal sur ces keywords ».
+Ajouter sur `article_relevance_scores` :
 
-4. **Côté ranking dans `ranked_query`**.
-   Comment positionner les cold articles dans la liste ? Mixer aléatoirement
-   (comme `RANDOM_SURFACE_RATE`) ? Mettre en tête pour collecte rapide de
-   feedback ? Mettre en queue pour ne pas casser l'expérience d'un user déjà
-   engagé ? Décision produit, pas tech.
+```sql
+is_cold_start BOOLEAN NOT NULL DEFAULT FALSE
+```
 
-5. **Recoupement avec E5 / `RANDOM_SURFACE_RATE`**.
-   Le bypass aléatoire actuel sert le même but global (exploration) mais ne
-   distingue pas un article inédit d'un article déjà jugé. Si on ajoute le
-   tag `is_cold_start`, on peut potentiellement retirer ou réduire
-   `RANDOM_SURFACE_RATE` — à instrumenter avant pour ne pas régresser.
+Pas d'index dédié — la colonne est lue à chaque ligne déjà projetée dans
+`ranked_query`, et écrite uniquement par le batch de décommission (qui scan
+les rows `is_cold_start = TRUE`).
 
-6. **Recalcul à la volée vs à l'enrichissement**.
-   `is_cold_start` n'est valide qu'à l'instant T. Si l'user donne un feedback
-   sur un keyword commun, des centaines d'articles « cold » deviennent
-   « warm » d'un coup. Faut-il recalculer ? Probablement non — la prochaine
-   passe `cron_refresh_weights` rafraîchira les `keyword_weights`, et un
-   batch nightly peut décommissionner les flags `is_cold_start` correspondants.
-   Mais à confirmer.
+Backfill au upgrade : `UPDATE … SET is_cold_start = TRUE WHERE NOT EXISTS
+(SELECT 1 FROM article_keywords ak JOIN keyword_weights kw ON kw.term = ak.term
+AND kw.user_id = article_relevance_scores.user_id WHERE ak.article_id =
+article_relevance_scores.article_id)`. Précautionneux : un upgrade sur instance
+chargée tournera longtemps — `RUN_BACKFILL=1` env var optionnelle, ou skip
+backfill et laisser le cron stamper progressivement les nouveaux articles
+(les anciens passent en tant que non-cold, ce qui est dégradé mais pas
+catastrophique).
 
-**Décisions à acter avant code** :
+**Scoring (`api/niouzou/scoring/`)** :
 
-- Stockage : colonne dédiée vs dérivation à la lecture ?
-- Critère : « 0 keywords connus » vs « somme des poids = 0 » vs « tous les
-  poids absents OU à 0 » ?
-- Affichage badge : `new`, `?`, icône, ou simplement absence de % ?
-- Bypass threshold : quota fixe, quota relatif, ou intégration au mécanisme
-  existant `RANDOM_SURFACE_RATE` ?
-- UI score-debug : afficher explicitement le statut cold (« aucun signal sur
-  ces termes ») ?
+Au moment où `ScoringPipeline` calcule le score pour un (user, article), on
+calcule aussi `is_cold_start` :
 
-**Acceptance criteria (provisoires — à finaliser)** :
+```python
+# Dans le service qui upsert article_relevance_scores
+known_terms = set(
+    await session.execute(
+        select(KeywordWeight.term)
+        .where(KeywordWeight.user_id == user_id)
+        .where(KeywordWeight.term.in_(article_terms))
+    ).scalars().all()
+)
+is_cold = not known_terms  # vrai ssi 0 keyword de l'article connu
+```
 
-- Article dont les keywords sont tous inconnus pour le user → badge `new`
-  (ou équivalent) au lieu de `50%`.
-- Article cold-start visible dans le feed même quand son score est sous
-  `score_threshold` (bypass plafonné).
-- Une fois feedback donné → l'article n'apparaît plus comme cold (passe en %
-  normal au prochain refresh).
-- Le score-debug panel explique le statut cold sans confondre avec un
-  scoring incertain.
+Le `is_cold_start` est stampé à chaque upsert (initial à l'enrichissement,
+et à chaque recalcul `cron_refresh_weights`).
+
+**`cron_refresh_weights` — passe de décommission** :
+
+Après le recompute global des `keyword_weights` (qui crée potentiellement
+de nouvelles rows pour des termes qui étaient inconnus), démoter les flags
+devenus stale :
+
+```sql
+UPDATE article_relevance_scores ars
+SET is_cold_start = FALSE
+WHERE ars.is_cold_start = TRUE
+  AND EXISTS (
+    SELECT 1
+    FROM article_keywords ak
+    JOIN keyword_weights kw
+      ON kw.term = ak.term AND kw.user_id = ars.user_id
+    WHERE ak.article_id = ars.article_id
+  );
+```
+
+Cas symétrique (warm → cold) ignoré : la suppression d'un row
+`keyword_weights` est rarissime (compaction E10-S3 ne touche que les aliases,
+et les pinned ne sont jamais supprimés). Si un edge case force un re-cold,
+il sera rattrapé au prochain enrichissement de cet article.
+
+**`ranked_query` (feed + explore)** :
+
+Deux changements dans `services/ranked_query.py` :
+
+1. **Projection** : ajouter `ars.is_cold_start AS is_cold_start` aux
+   `RANKED_COLUMNS` et au `row_to_article` (vers le schema `FeedArticle`).
+2. **Bypass threshold** :
+
+```sql
+WHERE (ars.relevance_score >= :threshold OR ars.is_cold_start = TRUE)
+```
+
+3. **Tri** : `ORDER BY (CASE WHEN ars.is_cold_start THEN 0.5
+   ELSE ars.relevance_score END) DESC` pour positionner les cold autour de la
+   mi-classement.
+
+Note : le bypass complet signifie que pour `threshold = 1.0` (impossible en
+pratique), seul un cold passerait. Acceptable — c'est la sémantique demandée.
+
+**Schemas** :
+
+`schemas/feed.py` :
+
+```python
+class FeedArticle(BaseModel):
+    ...
+    is_cold_start: bool = False  # E10-S4 — true ssi aucun keyword n'a de poids user
+```
+
+Idem côté `pwa/src/types/api.ts`.
+
+**PWA** :
+
+- `ScoreBadge` : si `is_cold_start === true`, afficher `New` (style identique
+  au % — même fond accent-subtle, même tap target). L'icône Sparkles reste
+  affichée si scorer == AI (donc un article cold AI-enriched affiche
+  `New ✨`).
+- `ScoreDebugSheet` : aucune modif spécifique — les keywords s'affichent
+  déjà avec `—` (poids null) pour un user sans signal, et le header
+  `Score — · AI · …` rend correctement le `relevance_score: null`.
+- `FeedArticleSlide`, `ArticleListRow`, `SavedRow`, etc. : aucune logique
+  conditionnelle — le badge gère tout.
+
+**Tests** :
+
+Backend :
+- Article avec 3 keywords inconnus → `is_cold_start = TRUE`.
+- Article avec 1 keyword connu (même à poids 0.0001) + 2 inconnus →
+  `is_cold_start = FALSE` (« aucun keyword connu » est strict).
+- `cron_refresh_weights` démote `is_cold_start` quand un nouveau
+  `keyword_weight` apparaît sur un term partagé.
+- `/feed?min_score=0.9` retourne quand même les cold articles ; vérifier
+  qu'ils sont positionnés autour du milieu de la page (pas en tête, pas en
+  queue).
+- `/articles/:id/score-debug` renvoie `relevance_score: null`/score brut +
+  keywords avec `weight: null` quand cold ; pas de champ dédié.
+
+Frontend :
+- `ScoreBadge is_cold_start={true}` rend « New » au lieu du %.
+- Tap sur badge cold ouvre quand même le ScoreDebugSheet.
+
+**Acceptance criteria** :
+
+- Article dont aucun keyword n'a de row dans `keyword_weights` pour le user
+  → badge `New` (et plus jamais `50 %`).
+- Threshold à 70 % : les cold articles apparaissent quand même dans le feed.
+- Les cold articles ne squattent pas le top de la page — ils s'intercalent
+  autour du score 0.5 (entre bons et mauvais).
+- Un feedback sur un keyword d'un cold article → au prochain
+  `cron_refresh_weights` (nuit), l'article (et ses pairs partageant ce
+  keyword) basculent en warm et affichent un % réel.
+- Backfill : sur une instance existante, après migration, tous les articles
+  sans signal user ont `is_cold_start = TRUE` ; les autres restent à
+  `FALSE`. (Ou skip backfill assumé — à décider à l'exécution.)
+- Pas de changement sur `RANDOM_SURFACE_RATE` — le mécanisme d'exploration
+  aléatoire continue de fonctionner indépendamment.
+- Docs mises à jour : `docs/DATA_MODEL.md` (colonne `is_cold_start`),
+  `docs/API_SPEC.md` (champ `is_cold_start` dans `/feed`, `/explore/*`,
+  `/saved`).
 
