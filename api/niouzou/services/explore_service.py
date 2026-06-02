@@ -70,6 +70,7 @@ class ExploreService:
                 s.name AS source_name,
                 COALESCE(ars.relevance_score, 0.0) AS relevance_score,
                 ars.scorer AS scorer,
+                COALESCE(ars.is_cold_start, FALSE) AS is_cold_start,
                 a.enrichment_model AS enrichment_model,
                 (a.content IS NOT NULL
                  AND char_length(a.content) < :premium_max_chars
@@ -115,6 +116,7 @@ class ExploreService:
                 published_at=r["published_at"],
                 relevance_score=r["relevance_score"],
                 scorer=r["scorer"],
+                is_cold_start=bool(r["is_cold_start"]),
                 enrichment_model=r["enrichment_model"],
                 keywords=list(r["keywords"] or []),
                 is_premium=bool(r["is_premium"]),

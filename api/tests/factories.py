@@ -71,11 +71,19 @@ async def add_keyword(
 
 
 async def set_relevance(
-    session: AsyncSession, article: Article, user: User, score: float
+    session: AsyncSession,
+    article: Article,
+    user: User,
+    score: float,
+    *,
+    is_cold_start: bool = False,
 ) -> None:
     session.add(
         ArticleRelevanceScore(
-            article_id=article.id, user_id=user.id, relevance_score=score
+            article_id=article.id,
+            user_id=user.id,
+            relevance_score=score,
+            is_cold_start=is_cold_start,
         )
     )
     await session.flush()

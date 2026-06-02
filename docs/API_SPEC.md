@@ -135,6 +135,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
       "relevance_score": 0.87,
       "scorer": "ai_keyword",
       "enrichment_model": "google/gemma-4-28b",
+      "is_cold_start": false,
       "keywords": ["rust", "memory safety", "c++"],
       "is_premium": false,
       "reaction": "none",
@@ -152,8 +153,9 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 > Cursor encodes the last article's `relevance_score` + `id` to ensure stable pagination.
 > `scorer` is `"tfidf"` or `"ai_keyword"`; null for legacy rows written before the scorer column existed.
 > `enrichment_model` (E10-S2) is the OpenRouter model id used on the AI success path (e.g. `"google/gemma-4-28b"`); null on TF-IDF (native or fallback) and on pre-E10-S2 rows. Same field appears on `GET /saved` and `GET /explore/*`.
+> `is_cold_start` (E10-S4) is per-article and per-user: `true` when none of the article's keywords has a row in the user's `keyword_weights`. Cold articles pass through `score_threshold` unconditionally and are ranked as if their score was `0.5` (between bona-fide good and bad articles). The PWA renders `New` instead of the percentage on the score badge. Demoted nightly by `cron_refresh_weights` once a feedback adds a weight on any of the keywords. Distinct from the per-user `cold_start` flag below.
 > `keywords` is sorted by salience desc; empty array when the article has none.
-> `cold_start` is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
+> `cold_start` (response root, distinct from `is_cold_start` per article) is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
 > **E9-S1** — `reaction`, `is_saved`, `read_full_article` reflect the user's
 > feedback state on the article. Defaults (`"none"`, `false`, `false`) apply
 > when no feedback row exists.

@@ -2069,7 +2069,7 @@ Nouvelle section "Keywords" (sous Users) :
 
 ---
 
-#### [ ] E10-S4 — Articles cold-start : badge « New » + bypass threshold
+#### [x] E10-S4 — Articles cold-start : badge « New » + bypass threshold
 
 **Problème adressé** :
 

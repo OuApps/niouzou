@@ -33,6 +33,11 @@ class FeedArticle(BaseModel):
     # e.g. ``"google/gemma-4-28b"``. ``null`` on TF-IDF (native or fallback)
     # and on pre-E10-S2 rows. Used by the score-debug bottom sheet.
     enrichment_model: str | None = None
+    # E10-S4 — True when none of the article's keywords has a user weight
+    # yet. The PWA renders ``New`` on the score badge instead of the
+    # misleading neutral percentage, and the feed query passes the article
+    # through regardless of ``score_threshold``.
+    is_cold_start: bool = False
     # Top keywords sorted by salience DESC (E7-S10). Empty list when the article
     # has no extracted keywords yet (e.g. pending enrichment).
     keywords: list[str] = []

@@ -118,6 +118,14 @@ class ScoringService:
 
         score = self.pipeline.relevance(keywords, user_weights)
 
+        # E10-S4 — cold ssi aucun keyword de l'article n'apparaît dans le
+        # vocabulaire user. Sémantiquement plus strict que « somme des poids
+        # nulle » : un keyword pinned à 0 par l'utilisateur compte comme un
+        # signal et désactive le statut cold (le user a explicitement statué).
+        # On réutilise le dict ``user_weights`` déjà chargé pour éviter une
+        # requête supplémentaire dans le hot path d'enrichissement.
+        is_cold_start = not any(kw.term in user_weights for kw in keywords)
+
         scorer_name = self.pipeline.scorer_name
         await session.execute(
             pg_insert(ArticleRelevanceScore)
@@ -126,10 +134,15 @@ class ScoringService:
                 user_id=user_id,
                 relevance_score=score,
                 scorer=scorer_name,
+                is_cold_start=is_cold_start,
             )
             .on_conflict_do_update(
                 index_elements=["article_id", "user_id"],
-                set_={"relevance_score": score, "scorer": scorer_name},
+                set_={
+                    "relevance_score": score,
+                    "scorer": scorer_name,
+                    "is_cold_start": is_cold_start,
+                },
             )
         )
         return score

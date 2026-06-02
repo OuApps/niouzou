@@ -40,6 +40,11 @@ export interface FeedArticle extends FeedbackState {
   // TF-IDF (native or fallback) and on pre-E10-S2 rows. Shown in the score
   // debug bottom sheet.
   enrichment_model?: string | null
+  // E10-S4 — true when none of the article's keywords has a user weight
+  // yet. The ScoreBadge renders ``New`` instead of the neutral percentage,
+  // and the server passes the article through regardless of the configured
+  // score_threshold.
+  is_cold_start?: boolean
   keywords?: string[]
   read_time_minutes?: number
   // Set by the server when the stored content looks like a paywall teaser

@@ -111,7 +111,10 @@ async def recompute_all(session: AsyncSession) -> None:
     """Full recompute of every user's weights — the daily cron's safety net.
 
     Idempotent: running twice yields identical rows. Overridden rows are
-    preserved. ``article_relevance_scores`` is never touched.
+    preserved. ``article_relevance_scores.relevance_score`` is never
+    recomputed here — scores are frozen at enrichment. The cron does flip
+    ``is_cold_start`` back to FALSE for rows whose keywords have since
+    gained a user weight (see ``demote_cold_flags``).
     """
     statement = text(
         f"""
@@ -123,3 +126,40 @@ async def recompute_all(session: AsyncSession) -> None:
         """
     )
     await session.execute(statement)
+
+
+async def demote_cold_flags(session: AsyncSession) -> int:
+    """Flip ``is_cold_start`` to FALSE on rows whose keywords are no longer
+    unknown to the user (E10-S4).
+
+    Called after ``recompute_all`` in the daily cron. A row was stamped cold
+    at enrichment if NONE of its article's keywords matched a user's
+    ``keyword_weights``. Once the user feedbacks something that creates a
+    weight on a shared term, every cold row for that term is stale.
+
+    The query only touches rows currently flagged cold, so the scan is cheap
+    even as the table grows. Returns the number of rows updated for
+    telemetry.
+
+    Symmetric warm→cold transitions are intentionally not handled here:
+    losing every keyword weight is rare (compaction never deletes pinned
+    rows; manual resets are explicit user actions) and the article will be
+    re-stamped if it ever passes back through the scorer.
+    """
+    result = await session.execute(
+        text(
+            """
+            UPDATE article_relevance_scores AS ars
+            SET is_cold_start = FALSE
+            WHERE ars.is_cold_start = TRUE
+              AND EXISTS (
+                SELECT 1
+                FROM article_keywords ak
+                JOIN keyword_weights kw
+                  ON kw.term = ak.term AND kw.user_id = ars.user_id
+                WHERE ak.article_id = ars.article_id
+              )
+            """
+        )
+    )
+    return result.rowcount or 0

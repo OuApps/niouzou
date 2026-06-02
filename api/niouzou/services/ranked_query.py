@@ -15,8 +15,14 @@ DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
 
 # feed_rank, computed once and reused in SELECT, ORDER BY and the keyset filter.
+# Cold-start articles (E10-S4) use a synthetic 0.5 baseline so they sort
+# between bona-fide good and bad articles instead of clumping at whatever
+# neutral value the scorer happened to emit (TF-IDF and AI scorers both
+# return ~0.5 when nothing in the user's vocab matches, but the boundary
+# isn't stable enough to rank on).
 FEED_RANK = (
-    "ars.relevance_score / power("
+    "(CASE WHEN ars.is_cold_start THEN 0.5 ELSE ars.relevance_score END)"
+    " / power("
     "GREATEST(EXTRACT(EPOCH FROM (now() - COALESCE(a.published_at, a.created_at)))"
     "/ 3600.0, 0) + 2, :gravity)"
 )
@@ -36,6 +42,7 @@ RANKED_COLUMNS = f"""
     s.name AS source_name,
     ars.relevance_score AS relevance_score,
     ars.scorer AS scorer,
+    ars.is_cold_start AS is_cold_start,
     a.enrichment_model AS enrichment_model,
     (a.content IS NOT NULL
      AND char_length(a.content) < :premium_max_chars
@@ -80,11 +87,21 @@ def build_ranked_query(
         impression_exclusion: overridable so /feed?start=:id can let one
             already-impressed article through.
     """
+    # Cold-start articles (E10-S4) bypass the score threshold unconditionally
+    # — they're the only chance for the user to ever feedback unfamiliar
+    # keywords. The random-surface escape hatch keeps its independent role
+    # (broad exploration over already-warm articles).
     score_filter = ""
     if apply_threshold and apply_random_surface:
-        score_filter = "AND (ars.relevance_score >= :threshold OR random() < :random_rate)"
+        score_filter = (
+            "AND (ars.relevance_score >= :threshold "
+            "OR ars.is_cold_start = TRUE "
+            "OR random() < :random_rate)"
+        )
     elif apply_threshold:
-        score_filter = "AND ars.relevance_score >= :threshold"
+        score_filter = (
+            "AND (ars.relevance_score >= :threshold OR ars.is_cold_start = TRUE)"
+        )
     elif apply_random_surface:
         score_filter = "AND random() < :random_rate"
     # else: no score gate at all (Explore New).
@@ -122,6 +139,7 @@ def row_to_article(row) -> FeedArticle:
         published_at=row["published_at"],
         relevance_score=row["relevance_score"],
         scorer=row["scorer"],
+        is_cold_start=bool(row["is_cold_start"]),
         enrichment_model=row["enrichment_model"],
         keywords=list(row["keywords"] or []),
         is_premium=bool(row["is_premium"]),

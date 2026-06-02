@@ -62,6 +62,9 @@ class SavedService:
                     "relevance_score"
                 ),
                 ArticleRelevanceScore.scorer.label("scorer"),
+                func.coalesce(ArticleRelevanceScore.is_cold_start, False).label(
+                    "is_cold_start"
+                ),
                 ArticleFeedback.updated_at.label("saved_at"),
                 ArticleFeedback.reaction.label("reaction"),
                 ArticleFeedback.is_saved.label("is_saved"),
@@ -116,6 +119,7 @@ class SavedService:
                 published_at=r.Article.published_at,
                 relevance_score=r.relevance_score,
                 scorer=r.scorer,
+                is_cold_start=bool(r.is_cold_start),
                 enrichment_model=r.Article.enrichment_model,
                 saved_at=r.saved_at,
                 keywords=list(r.keywords or []),

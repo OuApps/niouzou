@@ -6,6 +6,12 @@ interface ScoreBadgeProps {
   score: number
   scorer?: Scorer | null
   className?: string
+  // E10-S4 — when true, the badge renders ``New`` instead of a percentage.
+  // Cold-start articles have no user signal on any of their keywords yet,
+  // so the neutral 50 % output is misleading: showing it would hide the
+  // article behind a high ``score_threshold`` and confuse the user about
+  // why a brand-new topic landed at half-mast.
+  isColdStart?: boolean
   // E10-S2 — when provided, the badge renders as a button and triggers the
   // score debug panel. The caller is responsible for calling
   // ``stopPropagation`` on the synthetic event — but we do it here too so
@@ -18,6 +24,7 @@ export const ScoreBadge = ({
   score,
   scorer,
   className = '',
+  isColdStart = false,
   onClick,
 }: ScoreBadgeProps) => {
   // Only flag AI-scored articles. TF-IDF (and pre-E7-S7 null) shows the score
@@ -51,7 +58,7 @@ export const ScoreBadge = ({
         cursor: onClick ? 'pointer' : 'default',
       }}
     >
-      {Math.round(score * 100)}%
+      {isColdStart ? 'New' : `${Math.round(score * 100)}%`}
       {isAi && (
         <Sparkles
           size={11}

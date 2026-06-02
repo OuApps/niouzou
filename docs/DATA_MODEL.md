@@ -135,6 +135,13 @@ CREATE TABLE article_relevance_scores (
                     -- probability the user will enjoy this article
                     -- computed once at enrichment time, never recomputed
   scorer            VARCHAR,                     -- 'tfidf' or 'ai_keyword'; null for legacy rows
+  is_cold_start     BOOLEAN NOT NULL DEFAULT FALSE,
+                    -- E10-S4: true when none of the article's keywords has a row
+                    -- in keyword_weights for this user. Stamped by ScoringService
+                    -- at enrichment time, demoted to false nightly by
+                    -- cron_refresh_weights once a feedback brings a keyword
+                    -- into the user's vocab. Drives the "New" badge on the PWA
+                    -- and the threshold bypass in ranked_query.
 
   PRIMARY KEY (article_id, user_id)
 );

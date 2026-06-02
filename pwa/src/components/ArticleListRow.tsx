@@ -92,6 +92,7 @@ export const ArticleListRow = ({
             <ScoreBadge
               score={article.relevance_score}
               scorer={article.scorer}
+              isColdStart={article.is_cold_start ?? false}
               onClick={() => setDebugOpen(true)}
             />
           </span>
