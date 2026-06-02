@@ -298,6 +298,43 @@ layout, identical to Saved (`pwa/src/screens/Saved.tsx`):
 - Infinite scroll follows the Saved.tsx pattern (`IntersectionObserver`
   sentinel + per-tab cursor state).
 
+### Filter bar (E11-S2)
+
+Two horizontally scrollable chip rows sit between the tab switcher and the
+article list:
+
+```
+Score :    [Tous✓] [≥ 25 %] [≥ 50 %] [≥ seuil (60 %)] [≥ 75 %]
+Sources :  [Toutes✓] [Le Monde] [HN] [Pragmatic Engineer] …
+```
+
+- Each row is `display: flex; gap: 6; overflow-x: auto; scrollbar-width: none`
+  prefixed by a tiny uppercase label (`fontSize: 10`, `text-tertiary`).
+- Score row: single-select; **"Tous"** sends no `min_score`, the percentage
+  chips send `0.25 / 0.5 / 0.75`, and **"≥ seuil"** sends
+  `stats.score_threshold`. The threshold chip is hidden when
+  `score_threshold` is `0.0` or has not yet loaded.
+- Sources row: multi-select. **"Toutes"** clears the selection; tapping any
+  other chip toggles that source in/out and implicitly deselects "Toutes".
+  Names longer than 18 chars are truncated with an ellipsis. The whole row
+  is hidden when the user has 0 or 1 source.
+- Filters are **per-tab** — switching Nouveaux ↔ Lus keeps each side's
+  selection.
+- Pull-to-refresh (`BlobBackground.onRefresh`) resets both tabs to the
+  default (`Tous` / `Toutes`) before refetching.
+- Empty state with at least one non-default filter shows
+  *"Aucun résultat avec ces filtres."* + a `Réinitialiser les filtres`
+  button instead of the standard Compass empty state.
+
+### `FilterChip`
+
+`pwa/src/components/FilterChip.tsx` — the chip primitive used by the filter
+bar above. Active state: `border: 1px solid var(--accent)`, background
+`var(--accent-subtle)`, text `var(--accent)`. Inactive: borderless
+(`1px solid rgba(255,255,255,0.08)`), text `var(--text-secondary)`,
+background `rgba(255,255,255,0.05)`. Sized at `padding: 5px 12px`,
+`fontSize: 11`, `borderRadius: 16`.
+
 ---
 
 ## Icons

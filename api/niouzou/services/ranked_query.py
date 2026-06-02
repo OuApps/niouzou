@@ -76,6 +76,7 @@ def build_ranked_query(
     apply_random_surface: bool,
     keyset: str = "",
     impression_exclusion: str = "AND ai.article_id IS NULL",
+    extra_filters: str = "",
 ) -> text:
     """Assemble the ranked SELECT used by /feed and /explore/new.
 
@@ -86,6 +87,9 @@ def build_ranked_query(
             predicate, or empty string for the first page.
         impression_exclusion: overridable so /feed?start=:id can let one
             already-impressed article through.
+        extra_filters: caller-supplied ``AND ...`` predicates injected into
+            the inner WHERE (E11-S1: per-request ``min_score`` and
+            ``source_ids`` on /explore/new).
     """
     # Cold-start articles (E10-S4) bypass the score threshold unconditionally
     # — they're the only chance for the user to ever feedback unfamiliar
@@ -116,6 +120,7 @@ def build_ranked_query(
                 AND a.status = '{STATUS_ENRICHED}'
                 {impression_exclusion}
                 {score_filter}
+                {extra_filters}
         )
         SELECT * FROM ranked
         WHERE true {keyset}

@@ -22,11 +22,12 @@ from niouzou.models import (
 )
 from niouzou.models.compaction_run import STATUS_APPLIED, STATUS_PREVIEW
 from niouzou.models.article import STATUS_ENRICHED
-from niouzou.models.pipeline_run import STATUS_RUNNING
+from niouzou.models.pipeline_run import STATUS_COMPLETED, STATUS_RUNNING
 from niouzou.schemas.stats import (
     ArticlesStats,
     EnrichmentStats,
     KeywordsStats,
+    PipelineAggregates,
     PipelineProgress,
     PipelineStats,
     SourcesStats,
@@ -34,18 +35,32 @@ from niouzou.schemas.stats import (
 )
 from niouzou.services.settings_service import SettingsService
 
+# E10-S5 — closed mapping from the validated ``pipeline_window`` query value
+# to its Postgres interval literal. The router already restricts the input
+# via a Literal type, but we keep the mapping here so the service can be
+# called from tests with the same contract.
+_PIPELINE_WINDOWS: dict[str, str] = {
+    "1h": "1 hour",
+    "6h": "6 hours",
+    "24h": "24 hours",
+}
+
 
 class StatsService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
 
-    async def get(self, user_id: uuid.UUID) -> Stats:
+    async def get(
+        self, user_id: uuid.UUID, *, pipeline_window: str = "6h"
+    ) -> Stats:
         # E8-S3: the PWA renders "Next run" against this value, so read it
         # via SettingsService — admin overrides via PATCH /admin/config flow
         # through immediately.
-        fetch_interval = await SettingsService(self.session).get(
-            "cron_fetch_interval"
-        )
+        settings_svc = SettingsService(self.session)
+        fetch_interval = await settings_svc.get("cron_fetch_interval")
+        # E11-S1 — surface the effective SCORE_THRESHOLD so the Explore
+        # filter bar can render the "≥ seuil" chip without hardcoding it.
+        score_threshold = await settings_svc.get("score_threshold")
         # ── Articles (scoped to user's sources, ignoring soft-deleted) ────
         article_join = (
             select(Article)
@@ -148,11 +163,12 @@ class StatsService:
             .limit(1)
         )
 
-        # ── Pipeline (global, E10-S1) ──────────────────────────────────────
-        pipeline = await self._latest_pipeline()
+        # ── Pipeline (global, E10-S1 + E10-S5 windowed aggregates) ────────
+        pipeline = await self._latest_pipeline(pipeline_window)
 
         return Stats(
             cron_fetch_interval_minutes=int(fetch_interval or 15),
+            score_threshold=float(score_threshold or 0.0),
             articles=ArticlesStats(
                 total=articles_row.total or 0,
                 pending_enrichment=articles_row.pending or 0,
@@ -182,7 +198,7 @@ class StatsService:
             pipeline=pipeline,
         )
 
-    async def _latest_pipeline(self) -> PipelineStats:
+    async def _latest_pipeline(self, window: str) -> PipelineStats:
         """Read the most recent ``pipeline_runs`` row, or a synthetic neverrun.
 
         ``in_progress`` is populated only when the latest run is still
@@ -194,7 +210,13 @@ class StatsService:
         restart). ``status='never_run'`` is returned in that window — the
         PWA falls back to ``articles.last_fetched_at`` so the System panel
         isn't a wall of dashes during that transient gap.
+
+        ``window`` selects the lookback for the E10-S5 windowed aggregates
+        (``"1h"``/``"6h"``/``"24h"``); the value is mapped to a Postgres
+        interval via the closed ``_PIPELINE_WINDOWS`` table so no raw user
+        string ever lands inside the SQL.
         """
+        aggregates = await self._pipeline_aggregates(window)
         row = await self.session.scalar(
             select(PipelineRun)
             .order_by(PipelineRun.started_at.desc())
@@ -212,6 +234,7 @@ class StatsService:
                 avg_s_per_article=None,
                 error=None,
                 in_progress=None,
+                aggregates=aggregates,
             )
         in_progress = None
         if row.status == STATUS_RUNNING:
@@ -231,4 +254,59 @@ class StatsService:
             avg_s_per_article=row.avg_s_per_article,
             error=row.error,
             in_progress=in_progress,
+            aggregates=aggregates,
+        )
+
+    async def _pipeline_aggregates(self, window: str) -> PipelineAggregates:
+        """Sum pipeline_runs over the requested window (E10-S5).
+
+        Only ``status='completed'`` runs feed the aggregates: a
+        ``'running'`` row has incomplete counters and a ``'failed'`` row
+        usually has zero duration, so including either would skew the
+        weighted ``avg_s_per_article``. The PWA still shows a live progress
+        bar above the aggregates block for the in-flight run.
+        """
+        interval = _PIPELINE_WINDOWS[window]
+        # ``text(f"interval '{interval}'")`` is safe because ``interval``
+        # comes from the closed _PIPELINE_WINDOWS table — never from user
+        # input directly.
+        row = (
+            await self.session.execute(
+                select(
+                    func.count().label("runs_count"),
+                    func.coalesce(
+                        func.sum(PipelineRun.articles_fetched), 0
+                    ).label("articles_fetched"),
+                    func.coalesce(
+                        func.sum(PipelineRun.articles_enriched), 0
+                    ).label("articles_enriched"),
+                    func.coalesce(
+                        func.sum(PipelineRun.articles_failed), 0
+                    ).label("articles_failed"),
+                    # Weighted average: sum(duration) / sum(articles). A run
+                    # with 10 articles at 30 s contributes 10× more than a
+                    # run with 1 article at 60 s, which is what we want.
+                    (
+                        func.nullif(func.sum(PipelineRun.total_duration_s), 0)
+                        / func.nullif(func.sum(PipelineRun.articles_enriched), 0)
+                    ).label("avg_s_per_article"),
+                )
+                .where(PipelineRun.status == STATUS_COMPLETED)
+                .where(
+                    PipelineRun.started_at
+                    > func.now() - text(f"interval '{interval}'")
+                )
+            )
+        ).one()
+        return PipelineAggregates(
+            window_hours=int(window.rstrip("h")),
+            runs_count=row.runs_count or 0,
+            articles_fetched=row.articles_fetched or 0,
+            articles_enriched=row.articles_enriched or 0,
+            articles_failed=row.articles_failed or 0,
+            avg_s_per_article=(
+                float(row.avg_s_per_article)
+                if row.avg_s_per_article is not None
+                else None
+            ),
         )

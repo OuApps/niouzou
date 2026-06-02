@@ -9,10 +9,12 @@ scan the queue without consuming articles from their feed.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
+from niouzou.errors import APIError
+from niouzou.models import Source
 from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.explore import (
     ExploreHistoryArticle,
@@ -31,14 +33,54 @@ class ExploreService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
 
+    async def _validated_source_ids(
+        self,
+        user_id: uuid.UUID,
+        source_ids: list[uuid.UUID] | None,
+    ) -> list[uuid.UUID] | None:
+        """Return ``source_ids`` after confirming each belongs to ``user_id``.
+
+        Returns ``None`` when the caller didn't pass any filter (preserves the
+        "no filter" semantic on the SQL side). An unknown or foreign UUID
+        raises a 422 — the spec is explicit that we never silently filter the
+        list down, to avoid leaking ownership information through diff sizes.
+        """
+        if not source_ids:
+            return None
+        rows = (
+            await self.session.scalars(
+                select(Source.id).where(
+                    Source.id.in_(source_ids),
+                    Source.user_id == user_id,
+                    Source.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        owned = set(rows)
+        for sid in source_ids:
+            if sid not in owned:
+                raise APIError(
+                    422,
+                    "validation_error",
+                    f"Unknown source id: {sid}",
+                )
+        return source_ids
+
     async def list_history(
         self,
         user_id: uuid.UUID,
         cursor: str | None,
         limit: int | None,
+        *,
+        min_score: float = 0.0,
+        source_ids: list[uuid.UUID] | None = None,
     ) -> ExploreHistoryResponse:
         """Already-impressed articles, newest seen first. Keyset on (seen_at, id)
         so pages never overlap even when many impressions share a timestamp."""
+        validated_source_ids = await self._validated_source_ids(
+            user_id, source_ids
+        )
+
         page_size = clamp_limit(limit)
         params: dict = {
             "user_id": user_id,
@@ -54,6 +96,26 @@ class ExploreService:
             params["cursor_seen_at"] = datetime.fromisoformat(str(decoded["seen_at"]))
             params["cursor_id"] = uuid.UUID(str(decoded["id"]))
             keyset = "AND (ai.seen_at, a.id) < (:cursor_seen_at, :cursor_id)"
+
+        # E11-S1 — score filter on history. ``ars`` is LEFT JOINed so an
+        # article without a score row would slip through with the default
+        # ``COALESCE(..., 0.0)``; when ``min_score > 0`` we exclude those
+        # explicitly (the user clearly wants ranked rows).
+        score_filter = ""
+        if min_score > 0.0:
+            params["min_score"] = min_score
+            score_filter = (
+                "AND (ars.relevance_score IS NOT NULL "
+                "AND (ars.relevance_score >= :min_score "
+                "OR ars.is_cold_start = TRUE))"
+            )
+
+        source_filter = ""
+        if validated_source_ids:
+            # asyncpg accepts ``list[uuid.UUID]`` as a uuid[] array — passing
+            # the typed objects keeps the CAST honest.
+            params["source_ids"] = [str(sid) for sid in validated_source_ids]
+            source_filter = "AND a.source_id = ANY(CAST(:source_ids AS uuid[]))"
 
         query = text(
             f"""
@@ -94,6 +156,8 @@ class ExploreService:
             WHERE ai.user_id = :user_id
                 AND s.user_id = :user_id
                 {keyset}
+                {score_filter}
+                {source_filter}
             ORDER BY ai.seen_at DESC, a.id DESC
             LIMIT :limit
             """
@@ -144,10 +208,17 @@ class ExploreService:
         user_id: uuid.UUID,
         cursor: str | None,
         limit: int | None,
+        *,
+        min_score: float = 0.0,
+        source_ids: list[uuid.UUID] | None = None,
     ) -> ExploreNewResponse:
         """Enriched articles the user hasn't seen yet, ranked by gravity. No
         score threshold / random-surface gates — the user is explicitly
         scanning the queue."""
+        validated_source_ids = await self._validated_source_ids(
+            user_id, source_ids
+        )
+
         settings = get_settings()
         page_size = clamp_limit(limit)
 
@@ -165,10 +236,28 @@ class ExploreService:
             params["cursor_id"] = uuid.UUID(str(decoded["id"]))
             keyset = "AND (feed_rank, id) < (:cursor_rank, :cursor_id)"
 
+        # E11-S1 — explicit min_score on Explore New (separate knob from the
+        # global SCORE_THRESHOLD, which still isn't applied here). Cold-start
+        # articles bypass the cap, mirroring the Feed's policy in E10-S4.
+        explore_filter_parts: list[str] = []
+        if min_score > 0.0:
+            params["min_score"] = min_score
+            explore_filter_parts.append(
+                "AND (ars.relevance_score >= :min_score "
+                "OR ars.is_cold_start = TRUE)"
+            )
+        if validated_source_ids:
+            params["source_ids"] = [str(sid) for sid in validated_source_ids]
+            explore_filter_parts.append(
+                "AND a.source_id = ANY(CAST(:source_ids AS uuid[]))"
+            )
+        extra_filters = "\n            ".join(explore_filter_parts)
+
         query = build_ranked_query(
             apply_threshold=False,
             apply_random_surface=False,
             keyset=keyset,
+            extra_filters=extra_filters,
         )
         rows = (await self.session.execute(query, params)).mappings().all()
         has_more = len(rows) > page_size

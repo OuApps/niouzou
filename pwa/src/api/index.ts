@@ -89,21 +89,40 @@ export interface ExploreNewPage extends Page {
   articles: FeedArticle[]
 }
 
+export interface ExploreOptions {
+  cursor?: string
+  limit?: number
+  /** E11-S1 — filter to relevance_score ≥ minScore (cold-start bypasses). */
+  minScore?: number
+  /** E11-S1 — restrict to these source UUIDs (must belong to the user). */
+  sourceIds?: string[]
+}
+
 export function getExploreHistory(
-  cursor?: string,
-  limit = 20,
+  opts: ExploreOptions = {},
 ): Promise<ExploreHistoryPage> {
+  const { cursor, limit = 20, minScore, sourceIds } = opts
   return request<ExploreHistoryPage>('/explore/history', {
-    query: { cursor, limit },
+    query: {
+      cursor,
+      limit,
+      min_score: minScore,
+      source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : undefined,
+    },
   })
 }
 
 export function getExploreNew(
-  cursor?: string,
-  limit = 20,
+  opts: ExploreOptions = {},
 ): Promise<ExploreNewPage> {
+  const { cursor, limit = 20, minScore, sourceIds } = opts
   return request<ExploreNewPage>('/explore/new', {
-    query: { cursor, limit },
+    query: {
+      cursor,
+      limit,
+      min_score: minScore,
+      source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : undefined,
+    },
   })
 }
 
@@ -230,6 +249,19 @@ export interface PipelineProgress {
   total: number
 }
 
+export interface PipelineAggregates {
+  // Echoes ?pipeline_window (in hours) so the PWA never has to translate
+  // its own picker state into a header label.
+  window_hours: number
+  runs_count: number
+  articles_fetched: number
+  articles_enriched: number
+  articles_failed: number
+  // Null when no ``completed`` run exists in the window — render "—" rather
+  // than "0s/article".
+  avg_s_per_article: number | null
+}
+
 export interface PipelineStats {
   status: PipelineStatus
   started_at: string | null
@@ -241,12 +273,22 @@ export interface PipelineStats {
   avg_s_per_article: number | null
   error: string | null
   in_progress: PipelineProgress | null
+  // E10-S5 — windowed health summary for the admin System panel.
+  aggregates: PipelineAggregates
 }
+
+// E10-S5 — closed set so the picker can drive the query directly. The
+// backend rejects anything else with 422.
+export type PipelineWindow = '1h' | '6h' | '24h'
 
 export interface Stats {
   // E8-S3: surfaced so the PWA can render "Next run" against the live
   // setting rather than a hardcoded constant.
   cron_fetch_interval_minutes: number
+  // E11-S1 — effective SCORE_THRESHOLD; powers the "≥ seuil" chip in the
+  // Explore filter bar. `0.0` means "no threshold configured" and hides
+  // that chip.
+  score_threshold: number
   articles: {
     total: number
     pending_enrichment: number
@@ -273,8 +315,8 @@ export interface Stats {
   pipeline: PipelineStats
 }
 
-export function getStats(): Promise<Stats> {
-  return request<Stats>('/stats')
+export function getStats(pipelineWindow: PipelineWindow = '6h'): Promise<Stats> {
+  return request<Stats>(`/stats?pipeline_window=${pipelineWindow}`)
 }
 
 export function triggerRefresh(): Promise<{ status: string }> {

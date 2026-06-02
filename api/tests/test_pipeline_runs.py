@@ -208,6 +208,209 @@ async def test_stats_returns_most_recent_run(db_session):
     assert stats.pipeline.error == "OpenRouterError: 503"
 
 
+# ── /stats — windowed pipeline aggregates (E10-S5) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stats_pipeline_aggregates_default_window_is_6h(db_session):
+    """Default window is 6 h and only counts runs inside it."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    now = datetime.now(timezone.utc)
+    # Inside the 6 h default window:
+    db_session.add(
+        PipelineRun(
+            status=STATUS_COMPLETED,
+            started_at=now - timedelta(hours=1),
+            completed_at=now - timedelta(hours=1) + timedelta(minutes=2),
+            articles_fetched=5,
+            articles_enriched=5,
+            articles_failed=0,
+            total_duration_s=100.0,
+        )
+    )
+    # Outside the window — must not contribute:
+    db_session.add(
+        PipelineRun(
+            status=STATUS_COMPLETED,
+            started_at=now - timedelta(hours=10),
+            completed_at=now - timedelta(hours=10) + timedelta(minutes=5),
+            articles_fetched=99,
+            articles_enriched=99,
+            articles_failed=9,
+            total_duration_s=9999.0,
+        )
+    )
+    await db_session.commit()
+    stats = await StatsService(db_session).get(user.id)
+    agg = stats.pipeline.aggregates
+    assert agg.window_hours == 6
+    assert agg.runs_count == 1
+    assert agg.articles_fetched == 5
+    assert agg.articles_enriched == 5
+    assert agg.articles_failed == 0
+    assert agg.avg_s_per_article == pytest.approx(100.0 / 5)
+
+
+@pytest.mark.asyncio
+async def test_stats_pipeline_aggregates_1h_window_excludes_older(db_session):
+    """``pipeline_window=1h`` drops the 2-h-old run."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        PipelineRun(
+            status=STATUS_COMPLETED,
+            started_at=now - timedelta(minutes=20),
+            completed_at=now - timedelta(minutes=18),
+            articles_fetched=3,
+            articles_enriched=3,
+            total_duration_s=60.0,
+        )
+    )
+    db_session.add(
+        PipelineRun(
+            status=STATUS_COMPLETED,
+            started_at=now - timedelta(hours=2),
+            completed_at=now - timedelta(hours=2) + timedelta(minutes=2),
+            articles_fetched=10,
+            articles_enriched=10,
+            total_duration_s=200.0,
+        )
+    )
+    await db_session.commit()
+    stats = await StatsService(db_session).get(
+        user.id, pipeline_window="1h"
+    )
+    agg = stats.pipeline.aggregates
+    assert agg.window_hours == 1
+    assert agg.runs_count == 1
+    assert agg.articles_enriched == 3
+
+
+@pytest.mark.asyncio
+async def test_stats_pipeline_aggregates_avg_is_weighted_by_articles(db_session):
+    """``avg_s_per_article`` weights by articles, not by run."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    now = datetime.now(timezone.utc)
+    # Run A: 10 articles at 30 s/article → 300 s total
+    db_session.add(
+        PipelineRun(
+            status=STATUS_COMPLETED,
+            started_at=now - timedelta(minutes=30),
+            completed_at=now - timedelta(minutes=25),
+            articles_fetched=10,
+            articles_enriched=10,
+            total_duration_s=300.0,
+        )
+    )
+    # Run B: 1 article at 60 s/article → 60 s total
+    db_session.add(
+        PipelineRun(
+            status=STATUS_COMPLETED,
+            started_at=now - timedelta(minutes=10),
+            completed_at=now - timedelta(minutes=9),
+            articles_fetched=1,
+            articles_enriched=1,
+            total_duration_s=60.0,
+        )
+    )
+    await db_session.commit()
+    stats = await StatsService(db_session).get(user.id)
+    agg = stats.pipeline.aggregates
+    # Weighted: (300+60) / (10+1) ≈ 32.7. Arithmetic mean of run-level
+    # averages would be (30+60)/2 = 45, which we explicitly avoid.
+    assert agg.avg_s_per_article == pytest.approx(360 / 11)
+
+
+@pytest.mark.asyncio
+async def test_stats_pipeline_aggregates_null_avg_when_no_completed_runs(db_session):
+    """No ``completed`` runs in the window → avg_s_per_article is null."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    now = datetime.now(timezone.utc)
+    # Only running and failed runs in window — must be excluded from the
+    # weighted average so a half-finished or zero-duration row can't drag
+    # it down.
+    db_session.add(
+        PipelineRun(
+            status=STATUS_RUNNING,
+            started_at=now - timedelta(minutes=5),
+            articles_in_run=10,
+            articles_enriched=2,
+        )
+    )
+    db_session.add(
+        PipelineRun(
+            status=STATUS_FAILED,
+            started_at=now - timedelta(minutes=15),
+            completed_at=now - timedelta(minutes=14),
+            error="boom",
+        )
+    )
+    await db_session.commit()
+    stats = await StatsService(db_session).get(user.id)
+    agg = stats.pipeline.aggregates
+    assert agg.runs_count == 0
+    assert agg.articles_enriched == 0
+    assert agg.avg_s_per_article is None
+
+
+@pytest.mark.asyncio
+async def test_stats_pipeline_aggregates_zero_when_no_runs(db_session):
+    """Empty table → counters at 0, null avg, runs_count 0."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    await db_session.commit()
+    stats = await StatsService(db_session).get(user.id)
+    agg = stats.pipeline.aggregates
+    assert agg.runs_count == 0
+    assert agg.articles_fetched == 0
+    assert agg.articles_enriched == 0
+    assert agg.articles_failed == 0
+    assert agg.avg_s_per_article is None
+
+
+@pytest.mark.asyncio
+async def test_stats_pipeline_window_validation_rejects_unknown_value():
+    """``?pipeline_window=2h`` → 422 (Literal type rejects it at the edge).
+
+    Uses ``httpx.AsyncClient`` + ASGITransport (same pattern as
+    ``test_compaction.py``) — ``TestClient`` spawns its own event loop and
+    corrupts the asyncpg pool that other tests share. The route never
+    reaches its body since validation fires first, so no DB / auth setup
+    is needed here.
+    """
+    import uuid as _uuid
+
+    import httpx
+
+    from niouzou.deps import get_current_user
+    from niouzou.main import app
+
+    class _FakeUser:
+        id = _uuid.uuid4()
+
+    app.dependency_overrides[get_current_user] = lambda: _FakeUser()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            resp = await client.get(
+                "/api/v1/stats", params={"pipeline_window": "2h"}
+            )
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 # ── Refresh worker — pipeline_runs lifecycle end-to-end ─────────────────────
 
 

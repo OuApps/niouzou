@@ -7,14 +7,18 @@ import { ArticleListRow } from '../components/ArticleListRow'
 import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
+import { FilterChip } from '../components/FilterChip'
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll'
 import {
   ApiError,
   getExploreHistory,
   getExploreNew,
+  getSources,
+  getStats,
   type ExploreHistoryArticle,
+  type ExploreOptions,
 } from '../api'
-import type { FeedArticle } from '../types/api'
+import type { FeedArticle, SourceFull } from '../types/api'
 
 const PAGE_SIZE = 20
 
@@ -25,6 +29,36 @@ type Mode = 'history' | 'new'
 // available and `published_at` otherwise.
 type Row = FeedArticle & { seen_at?: string }
 
+// E11-S2 — fixed score chips (in this order). `value: null` is the "Tous"
+// (no filter) state. The "≥ seuil" chip's effective value comes from
+// /stats.score_threshold and is injected at render time.
+type ScoreChipKind = 'all' | 'gte25' | 'gte50' | 'gteThreshold' | 'gte75'
+
+interface ScoreChip {
+  kind: ScoreChipKind
+  value: number | null
+}
+
+const SCORE_CHIPS: ScoreChip[] = [
+  { kind: 'all', value: null },
+  { kind: 'gte25', value: 0.25 },
+  { kind: 'gte50', value: 0.5 },
+  { kind: 'gteThreshold', value: null },
+  { kind: 'gte75', value: 0.75 },
+]
+
+const formatPct = (v: number) => `${Math.round(v * 100)} %`
+
+// Per-tab filter state. Each tab keeps its own selection so switching back
+// preserves what the user had.
+interface Filters {
+  scoreKind: ScoreChipKind
+  // Selected source UUIDs. Empty array means "Toutes".
+  sourceIds: string[]
+}
+
+const DEFAULT_FILTERS: Filters = { scoreKind: 'all', sourceIds: [] }
+
 interface TabState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   articles: Row[]
@@ -32,6 +66,7 @@ interface TabState {
   hasMore: boolean
   loadingMore: boolean
   errorMsg: string
+  filters: Filters
 }
 
 const EMPTY: TabState = {
@@ -41,15 +76,36 @@ const EMPTY: TabState = {
   hasMore: false,
   loadingMore: false,
   errorMsg: '',
+  filters: DEFAULT_FILTERS,
 }
 
-const FETCHERS: Record<Mode, (cursor?: string, limit?: number) => Promise<{
+const FETCHERS: Record<Mode, (opts: ExploreOptions) => Promise<{
   articles: (FeedArticle | ExploreHistoryArticle)[]
   next_cursor: string | null
   has_more: boolean
 }>> = {
   history: getExploreHistory,
   new: getExploreNew,
+}
+
+const resolveMinScore = (
+  filters: Filters,
+  threshold: number | null,
+): number | undefined => {
+  switch (filters.scoreKind) {
+    case 'all':
+      return undefined
+    case 'gte25':
+      return 0.25
+    case 'gte50':
+      return 0.5
+    case 'gte75':
+      return 0.75
+    case 'gteThreshold':
+      // Threshold chip is hidden when the value is unusable, so this branch
+      // should not fire — guard anyway to avoid sending NaN.
+      return threshold && threshold > 0 ? threshold : undefined
+  }
 }
 
 export const Explore = () => {
@@ -61,6 +117,11 @@ export const Explore = () => {
   })
   const loadingMoreRef = useRef(false)
 
+  // Sources + score threshold are mount-time fetches kept on refs so the
+  // chip bar renders even before /stats has resolved (chip simply hides).
+  const [sources, setSources] = useState<SourceFull[] | null>(null)
+  const [scoreThreshold, setScoreThreshold] = useState<number | null>(null)
+
   const active = tabs[mode]
 
   const patch = useCallback((target: Mode, change: Partial<TabState>) => {
@@ -68,10 +129,14 @@ export const Explore = () => {
   }, [])
 
   const fetchFirstPage = useCallback(
-    async (target: Mode) => {
-      patch(target, { status: 'loading' })
+    async (target: Mode, filters: Filters) => {
+      patch(target, { status: 'loading', filters })
       try {
-        const page = await FETCHERS[target](undefined, PAGE_SIZE)
+        const page = await FETCHERS[target]({
+          limit: PAGE_SIZE,
+          minScore: resolveMinScore(filters, scoreThreshold),
+          sourceIds: filters.sourceIds,
+        })
         patch(target, {
           status: 'ready',
           articles: page.articles as Row[],
@@ -87,27 +152,92 @@ export const Explore = () => {
         })
       }
     },
-    [patch],
+    [patch, scoreThreshold],
   )
+
+  // Mount-time fetches. Sources is a one-shot lookup; stats is read once for
+  // the threshold value (refreshed on pull-to-refresh below).
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const [s, st] = await Promise.all([getSources(), getStats()])
+        if (cancelled) return
+        setSources(s.sources)
+        setScoreThreshold(st.score_threshold)
+      } catch {
+        // Filter bar still works without these — the threshold chip just
+        // stays hidden and the sources row shows nothing extra.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Initial load of the active tab (and lazy-load on tab switch).
   useEffect(() => {
-    if (active.status === 'idle') fetchFirstPage(mode)
+    if (active.status === 'idle') fetchFirstPage(mode, active.filters)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode])
 
   const reload = useCallback(() => {
-    // Drop both tabs so a tab switch after refresh always fetches fresh.
+    // Pull-to-refresh resets both tabs' filters and refetches the active one.
     setTabs({ history: EMPTY, new: EMPTY })
-    fetchFirstPage(mode)
+    fetchFirstPage(mode, DEFAULT_FILTERS)
   }, [fetchFirstPage, mode])
+
+  const applyFilters = useCallback(
+    (next: Filters) => {
+      // New cursor on every filter change — the keyset would otherwise drag
+      // in irrelevant ranks from the previous filter state.
+      patch(mode, {
+        articles: [],
+        cursor: null,
+        hasMore: false,
+        filters: next,
+      })
+      fetchFirstPage(mode, next)
+    },
+    [fetchFirstPage, mode, patch],
+  )
+
+  const onScoreChip = useCallback(
+    (kind: ScoreChipKind) => {
+      if (active.filters.scoreKind === kind) return
+      applyFilters({ ...active.filters, scoreKind: kind })
+    },
+    [active.filters, applyFilters],
+  )
+
+  const onSourceChip = useCallback(
+    (id: string | null) => {
+      // null = "Toutes" — clears the multi-select.
+      if (id === null) {
+        if (active.filters.sourceIds.length === 0) return
+        applyFilters({ ...active.filters, sourceIds: [] })
+        return
+      }
+      const current = active.filters.sourceIds
+      const next = current.includes(id)
+        ? current.filter((x) => x !== id)
+        : [...current, id]
+      applyFilters({ ...active.filters, sourceIds: next })
+    },
+    [active.filters, applyFilters],
+  )
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !active.hasMore || !active.cursor) return
     loadingMoreRef.current = true
     patch(mode, { loadingMore: true })
     try {
-      const page = await FETCHERS[mode](active.cursor, PAGE_SIZE)
+      const page = await FETCHERS[mode]({
+        cursor: active.cursor,
+        limit: PAGE_SIZE,
+        minScore: resolveMinScore(active.filters, scoreThreshold),
+        sourceIds: active.filters.sourceIds,
+      })
       setTabs((prev) => ({
         ...prev,
         [mode]: {
@@ -123,7 +253,7 @@ export const Explore = () => {
     } finally {
       loadingMoreRef.current = false
     }
-  }, [active.cursor, active.hasMore, mode, patch])
+  }, [active.cursor, active.filters, active.hasMore, mode, patch, scoreThreshold])
 
   const sentinelRef = useInfiniteScroll({
     hasMore: active.hasMore,
@@ -137,6 +267,13 @@ export const Explore = () => {
     },
     [navigate],
   )
+
+  const hasActiveFilters =
+    active.filters.scoreKind !== 'all' || active.filters.sourceIds.length > 0
+  // The sources row is suppressed entirely when the user has 0 or 1 source —
+  // filtering a single source down to itself is meaningless.
+  const showSourcesRow = (sources?.length ?? 0) > 1
+  const showThresholdChip = scoreThreshold !== null && scoreThreshold > 0
 
   return (
     <div className="flex flex-col h-dvh overflow-y-auto relative">
@@ -155,6 +292,49 @@ export const Explore = () => {
         <Tabs mode={mode} onChange={setMode} />
       </header>
 
+      <div
+        className="relative z-10"
+        style={{ padding: '8px 0 4px', display: 'flex', flexDirection: 'column', gap: 6 }}
+      >
+        <ChipRow label="Score :">
+          {SCORE_CHIPS.map((chip) => {
+            if (chip.kind === 'gteThreshold' && !showThresholdChip) return null
+            const label =
+              chip.kind === 'all'
+                ? 'Tous'
+                : chip.kind === 'gteThreshold'
+                  ? `≥ seuil (${formatPct(scoreThreshold ?? 0)})`
+                  : `≥ ${formatPct(chip.value ?? 0)}`
+            return (
+              <FilterChip
+                key={chip.kind}
+                label={label}
+                active={active.filters.scoreKind === chip.kind}
+                onClick={() => onScoreChip(chip.kind)}
+              />
+            )
+          })}
+        </ChipRow>
+
+        {showSourcesRow && sources && (
+          <ChipRow label="Sources :">
+            <FilterChip
+              label="Toutes"
+              active={active.filters.sourceIds.length === 0}
+              onClick={() => onSourceChip(null)}
+            />
+            {sources.map((s) => (
+              <FilterChip
+                key={s.id}
+                label={s.name.length > 18 ? `${s.name.slice(0, 17)}…` : s.name}
+                active={active.filters.sourceIds.includes(s.id)}
+                onClick={() => onSourceChip(s.id)}
+              />
+            ))}
+          </ChipRow>
+        )}
+      </div>
+
       <div className="relative z-10 flex-1" style={{ padding: '8px 16px 90px' }}>
         {active.status === 'loading' || active.status === 'idle' ? (
           <div className="flex justify-center" style={{ paddingTop: 60 }}>
@@ -163,15 +343,21 @@ export const Explore = () => {
         ) : active.status === 'error' ? (
           <ErrorState message={active.errorMsg} onRetry={reload} />
         ) : active.articles.length === 0 ? (
-          <EmptyState
-            icon={Compass}
-            title={mode === 'history' ? 'Aucun article lu' : 'Pas de nouveaux articles'}
-            description={
-              mode === 'history'
-                ? 'Reviens ici après avoir parcouru ton feed pour retrouver les articles déjà vus.'
-                : 'Reviens plus tard — le prochain enrichissement va apporter de nouveaux articles.'
-            }
-          />
+          hasActiveFilters ? (
+            <FilteredEmptyState
+              onReset={() => applyFilters(DEFAULT_FILTERS)}
+            />
+          ) : (
+            <EmptyState
+              icon={Compass}
+              title={mode === 'history' ? 'Aucun article lu' : 'Pas de nouveaux articles'}
+              description={
+                mode === 'history'
+                  ? 'Reviens ici après avoir parcouru ton feed pour retrouver les articles déjà vus.'
+                  : 'Reviens plus tard — le prochain enrichissement va apporter de nouveaux articles.'
+              }
+            />
+          )
         ) : (
           <div className="flex flex-col gap-3">
             {active.articles.map((article) => (
@@ -239,5 +425,70 @@ const Tabs = ({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) =
         </button>
       )
     })}
+  </div>
+)
+
+const ChipRow = ({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) => (
+  <div
+    className="flex items-center"
+    style={{ gap: 8, padding: '0 16px', minHeight: 28 }}
+  >
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        color: 'var(--text-tertiary)',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        flex: '0 0 auto',
+      }}
+    >
+      {label}
+    </span>
+    <div
+      className="flex"
+      style={{
+        gap: 6,
+        overflowX: 'auto',
+        flex: '1 1 auto',
+        // Hide scrollbar visually but keep horizontal swipe.
+        scrollbarWidth: 'none',
+      }}
+    >
+      {children}
+    </div>
+  </div>
+)
+
+const FilteredEmptyState = ({ onReset }: { onReset: () => void }) => (
+  <div
+    className="flex flex-col items-center"
+    style={{ paddingTop: 60, gap: 12 }}
+  >
+    <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+      Aucun résultat avec ces filtres.
+    </p>
+    <button
+      type="button"
+      onClick={onReset}
+      style={{
+        padding: '8px 16px',
+        borderRadius: 20,
+        border: '1px solid var(--accent)',
+        background: 'var(--accent-subtle)',
+        color: 'var(--accent)',
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: 'pointer',
+      }}
+    >
+      Réinitialiser les filtres
+    </button>
   </div>
 )

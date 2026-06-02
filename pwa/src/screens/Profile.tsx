@@ -17,7 +17,13 @@ import { Spinner } from '../components/Spinner'
 import { useApiData } from '../hooks/useApiData'
 import { useAuthStore } from '../store/auth'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
-import { getMe, getStats, triggerRefresh, type Stats } from '../api'
+import {
+  getMe,
+  getStats,
+  triggerRefresh,
+  type PipelineWindow,
+  type Stats,
+} from '../api'
 
 // E10-S1 — the staleness threshold is now driven by the live
 // `cron_fetch_interval_minutes` from /stats; the previous hardcoded constant
@@ -43,12 +49,16 @@ export const Profile = () => {
   const [statsError, setStatsError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshDisabledUntil, setRefreshDisabledUntil] = useState(0)
+  // E10-S5 — picker state for the windowed pipeline aggregates. Default
+  // 6h matches the backend default and is wide enough to smooth out the
+  // 15-min cron cadence (~24 runs) while still reflecting recent state.
+  const [pipelineWindow, setPipelineWindow] = useState<PipelineWindow>('6h')
 
-  const loadStats = async () => {
+  const loadStats = async (window: PipelineWindow = pipelineWindow) => {
     setStatsLoading(true)
     setStatsError(null)
     try {
-      setStats(await getStats())
+      setStats(await getStats(window))
     } catch {
       setStatsError("Couldn't load system stats.")
     } finally {
@@ -62,6 +72,14 @@ export const Profile = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemOpen])
 
+  const handleWindowChange = (next: PipelineWindow) => {
+    if (next === pipelineWindow) return
+    setPipelineWindow(next)
+    // Refetch immediately — /stats is cheap and there's no client-side
+    // cache that would benefit from a debounce here.
+    loadStats(next)
+  }
+
   const runRefresh = async () => {
     if (refreshing || Date.now() < refreshDisabledUntil) return
     setRefreshing(true)
@@ -69,7 +87,7 @@ export const Profile = () => {
       await triggerRefresh()
       setRefreshDisabledUntil(Date.now() + REFRESH_DEBOUNCE_MS)
       // Give the background job a head start, then refetch stats.
-      setTimeout(loadStats, REFRESH_REFETCH_MS)
+      setTimeout(() => loadStats(), REFRESH_REFETCH_MS)
     } catch {
       setStatsError("Couldn't start refresh.")
     } finally {
@@ -303,10 +321,12 @@ export const Profile = () => {
                 stats={stats}
                 loading={statsLoading}
                 error={statsError}
-                onRetry={loadStats}
+                onRetry={() => loadStats()}
                 refreshing={refreshing}
                 refreshDisabled={Date.now() < refreshDisabledUntil}
                 onRefresh={runRefresh}
+                pipelineWindow={pipelineWindow}
+                onPipelineWindowChange={handleWindowChange}
               />
             )}
           </div>
@@ -359,6 +379,8 @@ interface SystemPanelProps {
   refreshing: boolean
   refreshDisabled: boolean
   onRefresh: () => void
+  pipelineWindow: PipelineWindow
+  onPipelineWindowChange: (next: PipelineWindow) => void
 }
 
 function truncate(s: string, n: number): string {
@@ -424,6 +446,8 @@ const SystemPanel = ({
   refreshing,
   refreshDisabled,
   onRefresh,
+  pipelineWindow,
+  onPipelineWindowChange,
 }: SystemPanelProps) => {
   if (loading && !stats) {
     return (
@@ -468,8 +492,6 @@ const SystemPanel = ({
   const stale = isStalled(pipeline, interval)
   const status = aiStatus(stats.enrichment)
   const running = pipeline.status === 'running'
-  const showLastRun =
-    pipeline.status === 'completed' || pipeline.status === 'failed'
 
   return (
     <div
@@ -485,34 +507,6 @@ const SystemPanel = ({
         gap: 8,
       }}
     >
-      {/* Pipeline run summary (E10-S1) */}
-      <Row label="Dernier run">
-        {pipeline.status === 'never_run' ? (
-          // On upgrade from a pre-E10 instance, pipeline_runs is empty until
-          // the first new cron tick. Show the last article ingestion time as
-          // a fallback so the panel isn't a wall of dashes; the next run will
-          // populate the real telemetry within minutes.
-          stats.articles.last_fetched_at ? (
-            <span title={stats.articles.last_fetched_at}>
-              ~{formatTimeAgo(stats.articles.last_fetched_at)}
-              <span style={{ color: 'var(--text-tertiary)', marginLeft: 6 }}>
-                · pré-E10
-              </span>
-            </span>
-          ) : (
-            <span>—</span>
-          )
-        ) : (
-          <span title={pipeline.started_at ?? ''}>
-            {pipeline.started_at ? formatTimeAgo(pipeline.started_at) : '—'}
-            {showLastRun && pipeline.total_duration_s !== null && (
-              <span style={{ color: 'var(--text-tertiary)', marginLeft: 6 }}>
-                · {formatDuration(pipeline.total_duration_s)}
-              </span>
-            )}
-          </span>
-        )}
-      </Row>
       <Row label="Prochain run">
         <span>{nextRunLabel(pipeline, interval)}</span>
       </Row>
@@ -523,7 +517,8 @@ const SystemPanel = ({
         <AiStatusPill status={status} />
       </Row>
 
-      {/* In-progress bar — only while a run is live (E10-S1) */}
+      {/* In-progress bar — kept above the aggregates block (E10-S5): it
+          is live and run-scoped, distinct from the historical window. */}
       {running && pipeline.in_progress && (
         <ProgressBar
           done={pipeline.in_progress.done}
@@ -531,38 +526,14 @@ const SystemPanel = ({
         />
       )}
 
-      {/* Last run result line — shown for completed and failed (E10-S1) */}
-      {showLastRun && (
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '4px 10px',
-            fontSize: 11,
-            color: 'var(--text-tertiary)',
-          }}
-        >
-          <span>{pipeline.articles_fetched} fetched</span>
-          <span>·</span>
-          <span>{pipeline.articles_enriched} enrichis</span>
-          {pipeline.articles_failed > 0 && (
-            <>
-              <span>·</span>
-              <span style={{ color: 'var(--action-save)' }}>
-                {pipeline.articles_failed} erreur
-                {pipeline.articles_failed > 1 ? 's' : ''}
-              </span>
-            </>
-          )}
-          {pipeline.articles_enriched > 0 &&
-            pipeline.avg_s_per_article !== null && (
-              <>
-                <span>·</span>
-                <span>~{formatDuration(pipeline.avg_s_per_article)}/article</span>
-              </>
-            )}
-        </div>
-      )}
+      {/* Windowed aggregates (E10-S5) — replaces the old single-run
+          summary so a 1-2 article cycle no longer dominates the panel. */}
+      <PipelineAggregatesBlock
+        aggregates={pipeline.aggregates}
+        selected={pipelineWindow}
+        onSelect={onPipelineWindowChange}
+        disabled={loading}
+      />
 
       {stale && (
         <Warning>
@@ -692,6 +663,103 @@ const ProgressBar = ({ done, total }: { done: number; total: number }) => {
     </div>
   )
 }
+
+const PIPELINE_WINDOW_OPTIONS: PipelineWindow[] = ['1h', '6h', '24h']
+
+const PipelineAggregatesBlock = ({
+  aggregates,
+  selected,
+  onSelect,
+  disabled,
+}: {
+  aggregates: Stats['pipeline']['aggregates']
+  selected: PipelineWindow
+  onSelect: (next: PipelineWindow) => void
+  disabled: boolean
+}) => (
+  <div
+    style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      paddingTop: 4,
+      borderTop: '1px solid rgba(255,255,255,0.06)',
+    }}
+  >
+    <div
+      className="flex items-center justify-between"
+      style={{ gap: 8, flexWrap: 'wrap' }}
+    >
+      <span style={{ color: 'var(--text-tertiary)' }}>Pipeline · Last</span>
+      <div
+        role="group"
+        aria-label="Pipeline window"
+        style={{ display: 'inline-flex', gap: 4 }}
+      >
+        {PIPELINE_WINDOW_OPTIONS.map((w) => {
+          const active = w === selected
+          return (
+            <button
+              key={w}
+              type="button"
+              aria-pressed={active}
+              disabled={disabled}
+              onClick={() => onSelect(w)}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: '4px 10px',
+                borderRadius: 999,
+                border: active
+                  ? '1px solid var(--accent-border)'
+                  : '1px solid rgba(255,255,255,0.10)',
+                background: active ? 'var(--accent-subtle)' : 'transparent',
+                color: active ? 'var(--accent-text)' : 'var(--text-secondary)',
+                cursor: disabled ? 'default' : 'pointer',
+                opacity: disabled ? 0.6 : 1,
+              }}
+            >
+              {w}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '4px 10px',
+        fontSize: 11,
+        color: 'var(--text-tertiary)',
+      }}
+    >
+      <span>
+        {aggregates.runs_count} run
+        {aggregates.runs_count === 1 ? '' : 's'}
+      </span>
+      <span>·</span>
+      <span>{aggregates.articles_fetched} fetched</span>
+      <span>·</span>
+      <span>{aggregates.articles_enriched} enrichis</span>
+      {aggregates.articles_failed > 0 && (
+        <>
+          <span>·</span>
+          <span style={{ color: 'var(--action-save)' }}>
+            {aggregates.articles_failed} erreur
+            {aggregates.articles_failed > 1 ? 's' : ''}
+          </span>
+        </>
+      )}
+      {aggregates.avg_s_per_article !== null && (
+        <>
+          <span>·</span>
+          <span>~{formatDuration(aggregates.avg_s_per_article)}/article</span>
+        </>
+      )}
+    </div>
+  </div>
+)
 
 const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="flex items-center justify-between">

@@ -53,8 +53,30 @@ class PipelineProgress(BaseModel):
     total: int
 
 
+class PipelineAggregates(BaseModel):
+    """Pipeline health summed over a configurable window (E10-S5).
+
+    Replaces the old "last run" snapshot for the admin System panel: on an
+    instance that ticks every 15 min, the previous run was a 1-2 article
+    photo that bounced wildly; the windowed sum lets the user gauge the
+    pipeline's actual recent health.
+
+    ``avg_s_per_article`` is weighted by ``articles_enriched`` per run (a
+    10-article run at 30 s contributes 10× more than a 1-article run at
+    60 s) — a plain arithmetic mean of run-level averages would over-weight
+    near-empty cycles.
+    """
+
+    window_hours: int
+    runs_count: int
+    articles_fetched: int
+    articles_enriched: int
+    articles_failed: int
+    avg_s_per_article: float | None
+
+
 class PipelineStats(BaseModel):
-    """Most recent fetch+enrich cycle (E10-S1).
+    """Most recent fetch+enrich cycle (E10-S1) + windowed aggregates (E10-S5).
 
     Global — not user-scoped. The whole instance shares one refresh worker
     and one ``pipeline_runs`` history; per-user telemetry would be
@@ -75,6 +97,7 @@ class PipelineStats(BaseModel):
     avg_s_per_article: float | None
     error: str | None
     in_progress: PipelineProgress | None
+    aggregates: PipelineAggregates
 
 
 class Stats(BaseModel):
@@ -82,6 +105,10 @@ class Stats(BaseModel):
     # against the live setting rather than a hardcoded number. Tracks
     # changes made via /admin/config (E8-S3, E10-S1).
     cron_fetch_interval_minutes: int
+    # E11-S1 — effective ``SCORE_THRESHOLD`` (DB override else env var).
+    # Lets the Explore filter bar render the "≥ seuil" chip with the
+    # real value instead of hardcoding it.
+    score_threshold: float
     articles: ArticlesStats
     sources: SourcesStats
     keywords: KeywordsStats

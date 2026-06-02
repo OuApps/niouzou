@@ -352,6 +352,8 @@ the user can scan the queue without consuming articles from their feed.
 |---|---|---|---|
 | `cursor` | string | No | Opaque cursor; keyset on `(seen_at, id)`. |
 | `limit` | integer | No | Default: `20`, max: `50`. |
+| `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Articles with `relevance_score < min_score` are dropped unless `is_cold_start = true`. Articles without a score row are also dropped when `min_score > 0`. |
+| `source_ids` | UUID list | No | Repeatable query param (`?source_ids=A&source_ids=B`). Max 20 values. Each UUID must belong to the current user — an unknown / foreign UUID returns `422`. |
 
 **Response `200`**
 ```json
@@ -399,6 +401,8 @@ formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
 |---|---|---|---|
 | `cursor` | string | No | Opaque cursor; keyset on `(feed_rank, id)`. |
 | `limit` | integer | No | Default: `20`, max: `50`. |
+| `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Same semantic as on `/explore/history`: cold-start articles bypass the cap (consistent with E10-S4). |
+| `source_ids` | UUID list | No | Repeatable query param (`?source_ids=A&source_ids=B`). Max 20 values. Each UUID must belong to the current user — an unknown / foreign UUID returns `422`. |
 
 **Response `200`**
 ```json
@@ -418,6 +422,11 @@ formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
 > Tap-through pattern: the PWA navigates to `/?start=:articleId` to drop the
 > user into the Feed with the chosen article as the first slide. See
 > `GET /feed?start=` above for the pivot semantics.
+
+> **E11-S1** — `min_score` and `source_ids` are independent filters. They
+> combine with `AND`: `?min_score=0.5&source_ids=A` returns articles from
+> source A with score ≥ 0.5 (or `is_cold_start`). The cursor format is
+> unchanged; the client must drop the cursor when filters change.
 
 ---
 
@@ -615,10 +624,17 @@ System and AI-enrichment health. `articles`, `sources`, `keywords`, and
 refresh worker is single-replica and the `pipeline_runs` history is shared
 across the instance.
 
+**Query params**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `pipeline_window` | `"1h" \| "6h" \| "24h"` | `"6h"` | Lookback for the `pipeline.aggregates` block (E10-S5). Any other value returns `422` — the closed set keeps the value out of the SQL `interval` literal. |
+
 **Response `200`**
 ```json
 {
   "cron_fetch_interval_minutes": 15,
+  "score_threshold": 0.6,
   "articles": {
     "total": 1842,
     "pending_enrichment": 7,
@@ -653,7 +669,15 @@ across the instance.
     "total_duration_s": null,
     "avg_s_per_article": null,
     "error": null,
-    "in_progress": { "done": 8, "total": 8 }
+    "in_progress": { "done": 8, "total": 8 },
+    "aggregates": {
+      "window_hours": 6,
+      "runs_count": 12,
+      "articles_fetched": 84,
+      "articles_enriched": 79,
+      "articles_failed": 5,
+      "avg_s_per_article": 28.7
+    }
   }
 }
 ```
@@ -677,12 +701,28 @@ across the instance.
 > the display when `articles_enriched === 0`. `error` is the captured
 > exception string when `status === "failed"`. Added in E10-S1.
 
+> **E10-S5** — `pipeline.aggregates` sums `pipeline_runs` over the
+> `pipeline_window` (default `6h`). Only `status="completed"` rows feed
+> the sums; `running` is in-flight and `failed` rows usually have zero
+> duration, both would skew `avg_s_per_article`. `avg_s_per_article` is
+> a **weighted** mean — `SUM(total_duration_s) / SUM(articles_enriched)`
+> across the window — so a 10-article run at 30 s contributes 10× more
+> than a 1-article run at 60 s. `null` when no `completed` run lands in
+> the window. The picker in the System panel drives this directly: no
+> client-side cache, `/stats` is cheap.
+
 > **E10-S3** — `keywords.distinct_keyword_count` is the global number of
 > distinct rows in `article_keywords.term` (instance-wide, not user-scoped).
 > `keywords.last_compact_at` is the most recent `applied_at` on
 > `compaction_runs`. `keywords.pending_compaction_id` is the most recent
 > preview that hasn't been applied or rejected, or null. These power the
 > Keywords section of the admin panel.
+
+> **E11-S1** — `score_threshold` is the effective `SCORE_THRESHOLD` (DB
+> override else env default), a float in `[0.0, 1.0]`. The PWA reads it
+> for the Explore filter bar's "≥ seuil" chip so the displayed value
+> always matches the live setting; admin edits via `PATCH /admin/config`
+> are reflected on the next `/stats` call.
 
 ---
 

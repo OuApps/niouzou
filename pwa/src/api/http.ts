@@ -103,14 +103,22 @@ interface RequestOptions {
   body?: unknown
   /** Set false for the auth endpoints, which must not carry a stale token. */
   auth?: boolean
-  query?: Record<string, string | number | undefined>
+  // An array value emits one `?key=v` per element (repeated query param, the
+  // shape FastAPI expects for `list[...]` query params — see /explore filters
+  // in E11-S1).
+  query?: Record<string, string | number | string[] | undefined>
 }
 
 async function rawRequest(path: string, opts: RequestOptions, accessToken: string | null): Promise<Response> {
   const url = new URL(`${BASE_URL}${path}`)
   if (opts.query) {
     for (const [k, v] of Object.entries(opts.query)) {
-      if (v !== undefined && v !== '') url.searchParams.set(k, String(v))
+      if (v === undefined || v === '') continue
+      if (Array.isArray(v)) {
+        for (const item of v) url.searchParams.append(k, item)
+      } else {
+        url.searchParams.set(k, String(v))
+      }
     }
   }
 

@@ -2245,7 +2245,7 @@ Frontend :
 
 ---
 
-#### [ ] E10-S5 — System panel : agrégats pipeline « Last X hours »
+#### [x] E10-S5 — System panel : agrégats pipeline « Last X hours »
 
 **Problème adressé** :
 
@@ -2373,7 +2373,7 @@ agrégats historiques.
 
 ### Stories
 
-#### [ ] E11-S1 — Backend : query params de filtrage sur `/explore/*`
+#### [x] E11-S1 — Backend : query params de filtrage sur `/explore/*`
 
 **Contexte** : Les endpoints `GET /explore/new` et `GET /explore/history` ne proposent aujourd'hui aucun filtrage. L'ajout de `min_score` et `source_ids` permet au frontend de déléguer le filtrage au serveur (pas de slicing côté client, pagination cohérente).
 
@@ -2429,7 +2429,7 @@ Cela permet au frontend d'afficher le chip "≥ seuil" avec la valeur réelle sa
 
 ---
 
-#### [ ] E11-S2 — Frontend : barre de filtres dans Explore
+#### [x] E11-S2 — Frontend : barre de filtres dans Explore
 
 **Layout** :
 
