@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Pencil, Check, SlidersHorizontal, Lock, LockOpen, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { ArrowLeft, Pencil, Check, SlidersHorizontal, Lock, LockOpen, Trash2 } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { EmptyState } from '../components/EmptyState'
@@ -16,6 +17,7 @@ interface Override {
 }
 
 export const Keywords = () => {
+  const navigate = useNavigate()
   const [keywords, setKeywords] = useState<KeywordWeight[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -353,7 +355,19 @@ export const Keywords = () => {
         className="relative z-10 flex items-center justify-between"
         style={{ padding: '16px 20px 8px' }}
       >
-        <span style={{ width: 24 }} />
+        <button
+          onClick={() => navigate(-1)}
+          aria-label="Back"
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 4,
+            cursor: 'pointer',
+            color: 'var(--text-primary)',
+          }}
+        >
+          <ArrowLeft size={20} />
+        </button>
         <h1 style={{ fontSize: 19, fontWeight: 600, color: 'var(--text-primary)' }}>
           Keywords
         </h1>
@@ -373,7 +387,7 @@ export const Keywords = () => {
             <Trash2 size={18} />
           </button>
         ) : (
-          <span style={{ width: 24 }} />
+          <span style={{ width: 28 }} />
         )}
       </header>
 

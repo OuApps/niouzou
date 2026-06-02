@@ -7,6 +7,7 @@ import {
   ChevronUp,
   ExternalLink,
   Lock,
+  Sparkles,
 } from 'lucide-react'
 import { ScoreBadge } from './ScoreBadge'
 import { ScoreDebugSheet } from './ScoreDebugSheet'
@@ -74,6 +75,13 @@ export const FeedArticleSlide = ({
   // E10-S2 — open/closed state of the score-debug bottom sheet. The sheet
   // itself owns its fetch; we only pass the article id when open.
   const [debugOpen, setDebugOpen] = useState(false)
+  // Swipe detection for vertical gestures at article boundaries (E11-S3).
+  const touchStartRef = useRef<{
+    y: number
+    time: number
+    atTop: boolean
+    atBottom: boolean
+  } | null>(null)
 
   // Detect when the next slide enters view so we can stop the chevron bounce.
   useEffect(() => {
@@ -94,6 +102,51 @@ export const FeedArticleSlide = ({
     scrollEl.current?.scrollTo({ top: 0, behavior: 'auto' })
     setContentExpanded(false)
   }, [article.id])
+
+  // Swipe gesture detection at article boundaries (E11-S3): when at top/bottom
+  // and the user swipes in the right direction, snap to next/previous article.
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0]
+    const scroll = scrollEl.current
+    if (!scroll) return
+    const atTop = scroll.scrollTop <= 0
+    const atBottom = Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) <= 1
+    touchStartRef.current = {
+      y: touch.clientY,
+      time: performance.now(),
+      atTop,
+      atBottom,
+    }
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const touch = e.changedTouches[0]
+    const state = touchStartRef.current
+    touchStartRef.current = null
+    if (!state) return
+    const dy = touch.clientY - state.y
+    const dt = performance.now() - state.time
+    // Only trigger snap if the gesture was fast or far enough.
+    const SWIPE_DIST_THRESHOLD = 40
+    const SWIPE_VELOCITY_THRESHOLD = 0.1 // px/ms
+    const passesDistance = Math.abs(dy) > SWIPE_DIST_THRESHOLD
+    const passesVelocity = Math.abs(dy) / Math.max(dt, 1) > SWIPE_VELOCITY_THRESHOLD
+    if (!passesDistance && !passesVelocity) return
+    // Snap only if the user swiped in a direction that makes sense at the boundary.
+    if (dy > 0 && state.atTop) {
+      // Swipe down at top → go to previous slide (if exists).
+      const sibling = slideEl.current?.previousElementSibling
+      if (sibling instanceof HTMLElement && sibling.classList.contains('feed-slide')) {
+        sibling.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    } else if (dy < 0 && (state.atBottom || (state.atTop && state.atBottom))) {
+      // Swipe up at bottom (or when article is short and at both) → next slide.
+      const sibling = slideEl.current?.nextElementSibling
+      if (sibling instanceof HTMLElement && sibling.classList.contains('feed-slide')) {
+        sibling.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }
+  }
 
   const contentPreview = useMemo(() => {
     const text = article.content ?? ''
@@ -162,6 +215,8 @@ export const FeedArticleSlide = ({
       <div
         ref={scrollEl}
         className="slide-scroll"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
         style={{ position: 'relative', zIndex: 1 }}
       >
         {/* ── Header ───────────────────────────────────────────────────── */}
@@ -282,16 +337,30 @@ export const FeedArticleSlide = ({
 
           {/* Short summary */}
           {article.summary_short && (
-            <p
-              style={{
-                fontSize: 14,
-                lineHeight: 1.55,
-                color: 'var(--text-secondary)',
-                margin: '0 0 16px',
-              }}
-            >
-              {article.summary_short}
-            </p>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)' }}>
+                  Summary
+                </span>
+                {article.scorer === 'ai_keyword' && (
+                  <Sparkles
+                    size={12}
+                    style={{ color: 'var(--accent)', flexShrink: 0 }}
+                    aria-label="AI-generated summary"
+                  />
+                )}
+              </div>
+              <p
+                style={{
+                  fontSize: 15,
+                  lineHeight: 1.6,
+                  color: 'var(--text-secondary)',
+                  margin: 0,
+                }}
+              >
+                {article.summary_short}
+              </p>
+            </div>
           )}
 
           {/* Full crawled content — paragraphs, not raw HTML. The

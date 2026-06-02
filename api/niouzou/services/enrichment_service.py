@@ -56,7 +56,9 @@ _ENRICHMENT_SYSTEM = (
     '{"summary_short": "<2 engaging sentences that make the reader want to click>", '
     '"summary_executive": "<3-5 markdown bullet points, one per line starting with \'- \'>", '
     '"keywords": [{"term": "<lowercase 1-3 word topic>", "salience": <0.0-1.0>}]}. '
-    "At most 10 keywords. salience = how central the topic is (1.0 = main subject). "
+    "At most 10 keywords. Aim for: 3-4 broad categories (e.g., Science, Sports, Politics, "
+    "Technology) and 3-4 specific/entity keywords (e.g., person names, company names, places). "
+    "salience = how central the topic is (1.0 = main subject). "
     "Keywords should be stable reusable concepts — prefer named entities (clubs, "
     "countries, people, companies), domains (football, AI, finance) and topics "
     "(climate, elections) over ephemeral events or actions ('defeat', 'final', "

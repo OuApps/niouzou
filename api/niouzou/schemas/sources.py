@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 class SourceCreate(BaseModel):
     url: str
-    fetch_full_content: bool = False
+    # New sources always crawl the full article — the UI no longer exposes a
+    # toggle and pre-existing sources keep whatever value Miniflux already has.
+    fetch_full_content: bool = True
 
     @field_validator("url")
     @classmethod

@@ -29,10 +29,9 @@ type Mode = 'history' | 'new'
 // available and `published_at` otherwise.
 type Row = FeedArticle & { seen_at?: string }
 
-// E11-S2 — fixed score chips (in this order). `value: null` is the "Tous"
-// (no filter) state. The "≥ seuil" chip's effective value comes from
-// /stats.score_threshold and is injected at render time.
-type ScoreChipKind = 'all' | 'gte25' | 'gte50' | 'gteThreshold' | 'gte75'
+// E11-S2 — fixed score chips (in this order). Default is the threshold value.
+// The "gteThreshold" chip's effective value comes from /stats.score_threshold.
+type ScoreChipKind = 'gte0' | 'gte25' | 'gte50' | 'gteThreshold' | 'gte75'
 
 interface ScoreChip {
   kind: ScoreChipKind
@@ -40,7 +39,7 @@ interface ScoreChip {
 }
 
 const SCORE_CHIPS: ScoreChip[] = [
-  { kind: 'all', value: null },
+  { kind: 'gte0', value: 0 },
   { kind: 'gte25', value: 0.25 },
   { kind: 'gte50', value: 0.5 },
   { kind: 'gteThreshold', value: null },
@@ -57,7 +56,7 @@ interface Filters {
   sourceIds: string[]
 }
 
-const DEFAULT_FILTERS: Filters = { scoreKind: 'all', sourceIds: [] }
+const DEFAULT_FILTERS: Filters = { scoreKind: 'gteThreshold', sourceIds: [] }
 
 interface TabState {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -93,8 +92,8 @@ const resolveMinScore = (
   threshold: number | null,
 ): number | undefined => {
   switch (filters.scoreKind) {
-    case 'all':
-      return undefined
+    case 'gte0':
+      return 0
     case 'gte25':
       return 0.25
     case 'gte50':
@@ -102,8 +101,7 @@ const resolveMinScore = (
     case 'gte75':
       return 0.75
     case 'gteThreshold':
-      // Threshold chip is hidden when the value is unusable, so this branch
-      // should not fire — guard anyway to avoid sending NaN.
+      // Threshold chip's value comes from /stats — guard to avoid NaN.
       return threshold && threshold > 0 ? threshold : undefined
   }
 }
@@ -211,13 +209,9 @@ export const Explore = () => {
   )
 
   const onSourceChip = useCallback(
-    (id: string | null) => {
-      // null = "Toutes" — clears the multi-select.
-      if (id === null) {
-        if (active.filters.sourceIds.length === 0) return
-        applyFilters({ ...active.filters, sourceIds: [] })
-        return
-      }
+    (id: string) => {
+      // Multi-select: click to toggle individual source in/out.
+      // Empty array = all sources (no filter).
       const current = active.filters.sourceIds
       const next = current.includes(id)
         ? current.filter((x) => x !== id)
@@ -269,7 +263,7 @@ export const Explore = () => {
   )
 
   const hasActiveFilters =
-    active.filters.scoreKind !== 'all' || active.filters.sourceIds.length > 0
+    active.filters.scoreKind !== 'gteThreshold' || active.filters.sourceIds.length > 0
   // The sources row is suppressed entirely when the user has 0 or 1 source —
   // filtering a single source down to itself is meaningless.
   const showSourcesRow = (sources?.length ?? 0) > 1
@@ -300,11 +294,9 @@ export const Explore = () => {
           {SCORE_CHIPS.map((chip) => {
             if (chip.kind === 'gteThreshold' && !showThresholdChip) return null
             const label =
-              chip.kind === 'all'
-                ? 'Tous'
-                : chip.kind === 'gteThreshold'
-                  ? `≥ seuil (${formatPct(scoreThreshold ?? 0)})`
-                  : `≥ ${formatPct(chip.value ?? 0)}`
+              chip.kind === 'gteThreshold'
+                ? `≥ ${formatPct(scoreThreshold ?? 0)}`
+                : `≥ ${formatPct(chip.value ?? 0)}`
             return (
               <FilterChip
                 key={chip.kind}
@@ -318,16 +310,11 @@ export const Explore = () => {
 
         {showSourcesRow && sources && (
           <ChipRow label="Sources :">
-            <FilterChip
-              label="Toutes"
-              active={active.filters.sourceIds.length === 0}
-              onClick={() => onSourceChip(null)}
-            />
             {sources.map((s) => (
               <FilterChip
                 key={s.id}
                 label={s.name.length > 18 ? `${s.name.slice(0, 17)}…` : s.name}
-                active={active.filters.sourceIds.includes(s.id)}
+                active={active.filters.sourceIds.length === 0 || active.filters.sourceIds.includes(s.id)}
                 onClick={() => onSourceChip(s.id)}
               />
             ))}

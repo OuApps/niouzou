@@ -14,6 +14,8 @@
 | EPIC 8 | Admin panel | EPIC 3, EPIC 4 |
 | EPIC 9 | Refonte UX TikTok-like | EPIC 3, EPIC 4, EPIC 5 |
 | EPIC 10 | Scaling | EPIC 5 |
+| EPIC 11 | Filtres Explore | EPIC 9, EPIC 10 |
+| EPIC 12 | Robustesse des keywords | EPIC 5, EPIC 9 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -358,15 +360,22 @@ api/
 
 #### [x] E5-S2 — `cron_enrich` — LLM enrichment
 - If `OPENROUTER_API_KEY` set: call OpenRouter with `OPENROUTER_MODEL`
-- Generate `summary_short` (3 engaging sentences)
-- Generate `summary_executive` (bullet points)
+- Generate `summary_short` (2 engaging sentences to hook the reader)
+- Generate `summary_executive` (3-5 markdown bullet points)
 - Extract keywords with salience as JSON: `[{"term": "rust", "salience": 0.9}]`
+  - Keywords extracted from full article content (after `newspaper4k` extraction or RSS fallback)
+  - Inject existing vocabulary (top ~200 most-frequent keywords from the DB) to orient the LLM toward coherent terms
+  - Request 3-4 broad categories (e.g., "Science", "Sports", "Politics") and 3-4 specific entity keywords (e.g., person names, company names, places)
+  - Capped at 10 keywords; excess low-salience keywords trimmed post-generation
 - Store in `articles` and `article_keywords`
 - Set `articles.enriched_at`, `articles.status = enriched`
 
 **Acceptance criteria**:
 - LLM output parsed as JSON without error
-- Malformed LLM response retried once, then falls back to TF-IDF
+- Malformed LLM response retried once (up to 3 total attempts with backoff), then falls back to TF-IDF
+- Keywords extracted from the full article content, not just the summary
+- Injected vocabulary bias guides the LLM toward existing keywords when applicable
+- Keywords lean toward 3-4 general + 3-4 specific to improve coherence and accumulation
 
 > **Open item for Epic 5**: scoring is per-user and frozen at enrichment, so the
 > cron must loop over the article's relevant users when writing
@@ -1006,11 +1015,17 @@ Add `POST /admin/refresh` (requires `require_admin` from E8-S1):
 - Add `PATCH /sources/{id}` accepting `{ "fetch_full_content": bool }`, which calls `update_feed`. The Niouzou-side `Source` row is unchanged; the state lives entirely on the Miniflux feed.
 - Surface `fetch_full_content` (read from Miniflux's `crawler` field) in `GET /sources` so the PWA can render the current state.
 
-*PWA*:
+*PWA — Ancien design (E7-S26 original)* :
 
-- "Add a source" form: checkbox **"Récupérer l'article complet"** with helper text "Recommandé pour les sites où le flux RSS ne contient qu'un résumé.". Unchecked by default.
-- Source detail or list screen: same toggle for existing sources, with a small warning **"Ce réglage s'applique à tous les utilisateurs abonnés à cette source."** displayed near the toggle.
-- Toggling calls `PATCH /sources/{id}`; the UI optimistically reflects the new state.
+Supprimé et remplacé par la version E11-S3bis ci-dessous. L'option utilisateur d'activer/désactiver la récupération du contenu complet a été retirée ; le comportement par défaut est désormais toujours activé pour les nouvelles sources.
+
+*PWA — Nouveau design (E11-S3bis)* :
+
+- "Add a source" form: suppression complète du checkbox **"Récupérer l'article complet"**. Le formulaire ne contient que le champ URL et le bouton Add.
+- Nouvelles sources sont créées avec `fetch_full_content: true` par défaut.
+- Source detail or list screen: suppression du toggle `FullContentToggle`. Les utilisateurs ne peuvent plus modifier le paramètre `fetch_full_content` via l'UI.
+- Comportement : les sources créées avant cette modification gardent leur valeur `fetch_full_content` existante (pas de backfill) ; seules les **nouvelles** sources utilisent `true` par défaut.
+- Colonne de DB non supprimée — elle reste available si une future feature permet à l'admin de l'ajuster pour toutes les sources d'un feed partagé.
 
 **Acceptance criteria**:
 
@@ -2196,10 +2211,11 @@ Idem côté `pwa/src/types/api.ts`.
 
 **PWA** :
 
-- `ScoreBadge` : si `is_cold_start === true`, afficher `New` (style identique
-  au % — même fond accent-subtle, même tap target). L'icône Sparkles reste
-  affichée si scorer == AI (donc un article cold AI-enriched affiche
-  `New ✨`).
+- `ScoreBadge` : si `is_cold_start === true`, afficher un tiret `–` au lieu du
+  pourcentage (style identique au % — même fond accent, même tap target).
+  L'icône Sparkles reste affichée si scorer == AI (donc un article cold
+  AI-enriched affiche `– ✨`). Le tiret évite la confusion avec un "nouvel
+  article" fraîchement ingestié — deux concepts distincts.
 - `ScoreDebugSheet` : aucune modif spécifique — les keywords s'affichent
   déjà avec `—` (poids null) pour un user sans signal, et le header
   `Score — · AI · …` rend correctement le `relevance_score: null`.
@@ -2441,10 +2457,10 @@ Cela permet au frontend d'afficher le chip "≥ seuil" avec la valeur réelle sa
 │ └──────────┘  └─────────────┘       │
 │                                     │
 │  Score :                            │
-│  [Tous✓] [≥25%] [≥50%] [≥seuil] …  │  ← scrollable
+│  [0%] [≥25%] [≥50%] [≥60%✓] [≥75%] │  ← scrollable, seuil dynamique
 │                                     │
 │  Sources :                          │
-│  [Toutes✓] [Le Monde] [HN] …        │  ← scrollable
+│  [Le Monde✓] [HN✓] [BBC] …         │  ← scrollable, toutes sélectionnées
 │ ─────────────────────────────────── │
 │  Article 1                          │
 │  Article 2                          │
@@ -2457,25 +2473,28 @@ Valeurs fixes (dans cet ordre) :
 
 | Chip       | `min_score` envoyé |
 |------------|--------------------|
-| Tous       | absent (défaut)    |
+| 0%         | `0.0`              |
 | ≥ 25 %     | `0.25`             |
 | ≥ 50 %     | `0.50`             |
-| ≥ seuil    | valeur de `stats.score_threshold` |
+| ≥ 60 % (ou seuil) | valeur de `stats.score_threshold` |
 | ≥ 75 %     | `0.75`             |
 
-- Le chip "≥ seuil" est masqué si `stats.score_threshold` est `0.0` ou non disponible (stats pas encore chargées).
-- "≥ seuil" affiche la valeur entre parenthèses : `≥ seuil (60 %)`.
+- Suppression du chip "Tous" — le chip avec la valeur du seuil serveur est sélectionné par défaut.
+- Ajout du chip "0 %" pour inclure tous les articles (no filter).
+- Le chip seuil affiche sa valeur numérique uniquement (ex. `≥ 60 %`) sans le label "seuil".
+- Le chip seuil est masqué si `stats.score_threshold` est `0.0` ou non disponible.
 - Un seul chip score actif à la fois (single-select).
-- Par défaut : "Tous" actif.
+- Par défaut : le chip correspondant à `score_threshold` est actif (ex. `≥ 60 %` si threshold=0.6).
 
 **Chips Sources** :
 
+- Suppression du chip "Toutes" — toutes les sources sont sélectionnées par défaut.
 - Chargés via `GET /sources` au mount de l'écran (un seul fetch, réponse mise en cache dans un ref pour la durée de session).
-- Chip "Toutes" en tête, actif par défaut.
-- Les autres chips = nom de la source (tronqué à 18 chars avec ellipse si besoin).
+- Les chips = noms des sources (tronqués à 18 chars avec ellipse si besoin).
 - Multi-select : plusieurs sources peuvent être cochées simultanément (OR logique).
-- Tapper "Toutes" désélectionne tous les autres chips et les remplace par "Toutes" actif.
-- Tapper un chip source désélectionne "Toutes" automatiquement.
+- Par défaut : **toutes les sources sont sélectionnées** (état `sourceIds: []` = all).
+- Tapper un chip source le dé-sélectionne (il sort de la sélection).
+- Ré-sélectionner toutes les sources revient à l'état `sourceIds: []`.
 - Si l'utilisateur n'a qu'une seule source : la row Sources est masquée (inutile).
 
 **Comportement** :
@@ -2508,9 +2527,240 @@ Le empty state existant (sans filtres) reste inchangé.
 - Les deux rows (Score et Sources) s'affichent sous les tabs Nouveaux / Lus.
 - La row Sources est masquée si l'utilisateur n'a qu'une source.
 - Tapper "≥ 50 %" envoie `?min_score=0.50` et recharge la liste depuis la première page.
-- Tapper deux sources envoie `?source_ids=uuid1&source_ids=uuid2`.
-- "≥ seuil" affiche la valeur numérique entre parenthèses et n'est visible que si `score_threshold > 0`.
+- Le chip seuil affiche uniquement la valeur numérique (ex. "≥ 60 %"), sans label "seuil".
+- Par défaut, le chip correspondant à `score_threshold` est actif (ex. "≥ 60 %" si seuil=0.6).
+- Toutes les sources sont sélectionnées par défaut (état `sourceIds: []`).
+- Tapper un chip source le dé-sélectionne ; aucun chip "Toutes" pour le re-sélectionner.
+- Tapper plusieurs sources envoie `?source_ids=uuid1&source_ids=uuid2`.
 - Les filtres de l'onglet "Nouveaux" ne sont pas réinitialisés quand on bascule sur "Lus" et inversement.
-- Pull-to-refresh remet les deux filtres à "Tous" / "Toutes" avant de recharger.
+- Pull-to-refresh remet le score au chip seuil et sélectionne toutes les sources avant de recharger.
 - Le empty state avec filtres actifs propose un bouton "Réinitialiser les filtres".
 - `npm run build` passe sans erreur TypeScript.
+
+---
+
+#### [x] E11-S3 — Frontend : geste swipe vertical au-delà des limites de défilement
+
+**Problème** : Sur les articles longs, l'utilisateur peut scroller le contenu de l'article, mais le swipe vertical ne fonctionne pas fiablement pour passer à l'article suivant — seul le bouton "Article suivant" au bas du slide fonctionne.
+
+**Solution** : Ajouter un détecteur de geste tactile qui, en haut et bas du défilement intérieur de l'article, interprète un swipe vertical comme une commande de navigation vers l'article suivant/précédent.
+
+**Implémentation** (`pwa/src/components/FeedArticleSlide.tsx`) :
+
+- Ajouter des handlers `onTouchStart` et `onTouchEnd` au conteneur `.slide-scroll`.
+- Sur `touchstart` : enregistrer la position Y, le timestamp, et l'état du scroll (atTop, atBottom).
+- Sur `touchend` : calculer le delta Y et déterminer si c'est un swipe :
+  - Seuil distance : ≥ 40 px.
+  - Seuil vitesse : ≥ 0.1 px/ms.
+  - Si le delta répond à l'un des deux, c'est un swipe.
+- Actions :
+  - **Swipe vers le bas (dy > 0) au-dessus du slide** (`atTop`) → snapper au slide **précédent** via `scrollIntoView`.
+  - **Swipe vers le haut (dy < 0) au-bas du slide** (`atBottom`) → snapper au slide **suivant**.
+  - **Cas particulier** : article court où `atTop && atBottom` → swipe haut = suivant.
+- Comportement : utiliser `scrollIntoView({ behavior: 'smooth', block: 'start' })` pour un snap fluide.
+
+**Acceptance criteria** :
+
+- Sur un article dont la scroll-height dépasse la viewport, un swipe vers le haut au bas du contenu scrollable passe à l'article suivant.
+- Sur un article court (pas de scroll possible), un swipe vers le haut passe au suivant.
+- Un swipe vers le bas au-dessus de l'article passe au précédent (s'il existe).
+- Les swipes accidentels (petite distance, lent) n'activent pas la navigation.
+- La navigation par swipe ne se déclenche que si on est réellement à la limite (top ou bottom) du défilement intérieur.
+- Aucune régression sur le défilement normal à l'intérieur de l'article.
+
+---
+
+## EPIC 12 — Robustesse des keywords
+
+**Objectif** : Remplacer l'extraction libre de keywords (TF-IDF brut / LLM non contraint) par une extraction à deux niveaux stables — une taxonomie fixe de ~200 topics et des entités nommées dynamiques via NER. Résultat : des `keyword_weights` qui s'accumulent de façon cohérente sur des termes récurrents, et non sur des tokens éphémères propres à un seul article.
+
+> Dépend de EPIC 5 (enrichissement AI/TF-IDF), EPIC 9 (refonte keyword_weights).
+
+**Problèmes actuels résolus** :
+- TF-IDF extrait des termes rares propres à un seul article → n'accumulent jamais de poids utiles
+- LLM libre génère des variantes ("IA", "intelligence artificielle", "AI", "LLM") → poids fragmentés entre synonymes
+- Aucune distinction entre topics stables (rugby) et entités spécifiques (Toulouse, Ntamack)
+
+---
+
+### Deux niveaux de keywords
+
+| Niveau | `kind` | Source | Vocabulaire | Stabilité |
+|---|---|---|---|---|
+| **Taxonomie** | `taxonomy` | Liste hardcodée ~200 termes | Fixe | Permanente — change uniquement par PR |
+| **Entités** | `entity` | NER spaCy (ORG, GPE, PER, PRODUCT) | Illimité | Croît au fil des articles |
+| *(legacy)* | `legacy` | Ancien TF-IDF/LLM libre | Variable | Marqueur de migration uniquement |
+
+Les deux niveaux alimentent la même table `keyword_weights` avec la même formule. Pas de pondération différentielle entre kinds.
+
+**Ordre de livraison** : S1 → S2 → S3 → S4. S1 est bloquant.
+
+---
+
+### Stories
+
+#### [ ] E12-S1 — Schéma : colonne `kind` sur `article_keywords`
+
+Migration Alembic : ajouter `kind VARCHAR NOT NULL DEFAULT 'legacy'` sur `article_keywords`.
+
+Valeurs : `'taxonomy'` | `'entity'` | `'legacy'`.
+
+Mettre à jour le modèle SQLAlchemy `ArticleKeyword` et le schéma Pydantic `ArticleKeywordOut`.
+
+**Acceptance criteria** :
+- Migration tourne proprement sur DB vierge et DB avec données existantes
+- Les rows existantes ont `kind='legacy'` après migration
+- Les nouveaux keywords insérés par `cron_enrich` ont `kind='taxonomy'` ou `kind='entity'`
+
+---
+
+#### [ ] E12-S2 — Taxonomie fixe (~200 termes)
+
+**Fichier** : `api/niouzou/data/taxonomy.py`
+
+Structure : dict par domaine → liste de termes canoniques minuscules. Un flat `set` dérivé pour les lookups O(1).
+
+```python
+TAXONOMY: dict[str, list[str]] = {
+    "sport":        ["sport", "rugby", "football", "tennis", "cyclisme",
+                     "natation", "athletisme", "basketball", "handball",
+                     "ski", "formule-1", "judo", "golf", "voile",
+                     "top-14", "pro-d2", "six-nations", "ligue-des-champions"],
+    "tech":         ["tech", "intelligence-artificielle", "machine-learning",
+                     "open-source", "linux", "python", "javascript",
+                     "cybersecurite", "cloud", "devops", "startup",
+                     "blockchain", "crypto", "web", "mobile"],
+    "politique":    ["politique", "france", "europe", "etats-unis",
+                     "elections", "parlement", "gouvernement", "diplomatie",
+                     "guerre", "conflit", "terrorisme", "defense"],
+    "economie":     ["economie", "finance", "bourse", "immobilier",
+                     "inflation", "emploi", "fusions-acquisitions"],
+    "sante":        ["sante", "medecine", "cancer", "vaccin", "medicament",
+                     "recherche-medicale", "nutrition", "psychologie"],
+    "environnement":["environnement", "climat", "energie", "nucleaire",
+                     "renouvelable", "ecologie", "biodiversite"],
+    "science":      ["science", "astronomie", "physique", "biologie",
+                     "genetique", "espace", "recherche"],
+    "culture":      ["culture", "cinema", "musique", "litterature",
+                     "art", "jeux-video", "streaming", "medias"],
+    "societe":      ["societe", "education", "immigration", "justice",
+                     "police", "religion", "droits-humains"],
+    "international":["international", "proche-orient", "afrique", "asie",
+                     "amerique-latine", "ukraine"],
+}
+
+TAXONOMY_TERMS: frozenset[str] = frozenset(
+    t for terms in TAXONOMY.values() for t in terms
+)
+```
+
+> La liste ci-dessus est un point de départ (~140 termes). L'objectif cible est ~200 termes ; les manquants sont ajoutés par PR avant de merger E12-S2.
+
+**Prompt LLM modifié** (`services/enrichment_service.py`) :
+- Injecter `sorted(TAXONOMY_TERMS)` dans le system prompt
+- Consigne : *"Extrait uniquement des keywords présents dans cette liste. Retourne entre 3 et 8 termes avec leur salience (0.0–1.0). Ignore tout terme hors-liste."*
+- Format de réponse inchangé : `[{"term": "rugby", "salience": 0.9}, ...]`
+- Les termes retournés hors-taxonomie sont filtrés côté Python sans lever d'erreur
+
+**Fallback TF-IDF modifié** :
+- Conserver l'extraction TF-IDF existante
+- Post-filtrer : ne garder que les termes présents dans `TAXONOMY_TERMS`
+- Salience : score TF-IDF normalisé 0.0–1.0 sur les termes retenus uniquement
+
+**Stockage** : `kind='taxonomy'` sur les rows insérées.
+
+**Tests** :
+- LLM retourne `"dupont"` → ignoré, non inséré
+- LLM retourne `"rugby"` → inséré avec `kind='taxonomy'`, salience retournée
+- TF-IDF sur article tech → extrait `"open-source"`, `"python"` si présents dans `TAXONOMY_TERMS`
+- Article hors-taxonomie → 0 keywords taxonomy, pas d'erreur, enrichissement continue vers NER
+
+**Acceptance criteria** :
+- Aucun keyword `kind='taxonomy'` contient un terme absent de `TAXONOMY_TERMS`
+- Au moins 1 keyword taxonomy par article enrichi (sauf contenu < 50 mots)
+- `MAX_KEYWORDS_PER_ARTICLE` s'applique sur les taxonomy keywords indépendamment des entity keywords
+
+---
+
+#### [ ] E12-S3 — Entités nommées (NER spaCy)
+
+**Dépendance** : `spacy` + modèle `xx_ent_wiki_sm` (multilingual, ~12 MB). Ajouté dans `api/pyproject.toml`.
+
+**Nouveau composant** : `api/niouzou/enrichment/ner_extractor.py`
+
+```python
+class NERExtractor:
+    _nlp = None  # chargé une fois, singleton de module
+
+    def extract(self, text: str, title: str) -> list[dict]:
+        """
+        Retourne [{"term": "toulouse", "salience": 0.7, "kind": "entity"}, ...]
+        """
+```
+
+**Labels retenus** : `ORG`, `GPE`, `PER`, `PRODUCT`
+
+**Normalisation** :
+- `.lower().strip()`
+- Suppression de la ponctuation en début/fin
+- Déduplication : occurrences multiples du même terme fusionnées
+
+**Salience formula** :
+```
+raw = count_in_text / max(1, total_entity_mentions)
+boost = 1.5 if term appears in title else 1.0
+salience = min(0.9, raw * boost)  # floor à 0.1 si count >= 1
+```
+
+**Filtres** :
+- Rejeter les termes < 3 caractères
+- Rejeter les termes présents dans `TAXONOMY_TERMS` (évite les doublons — taxonomy prime)
+- Limite : `MAX_ENTITY_KEYWORDS_PER_ARTICLE` (défaut : `10`, nouveau paramètre `app_settings`)
+
+**Intégration dans `cron_enrich`** :
+- NER tourne sur `article.content` si disponible, sinon `article.title + " " + article.summary_short`
+- S'exécute après l'extraction taxonomy (taxonomy prime en cas de conflit de terme)
+- Les deux types sont insérés dans la même transaction `article_keywords`
+
+**Tests** :
+- `"Toulouse gagne le Top 14"` → entité `("toulouse", GPE/ORG)`
+- Article Python → entités `("python", PRODUCT)`, `("linux", PRODUCT)`
+- `"rugby"` présent dans le texte comme entité → non inséré en `entity` (déjà couvert par taxonomy)
+- Texte vide → liste vide, pas d'exception
+- Modèle chargé une seule fois au démarrage du worker (pas de rechargement à chaque article)
+
+**Acceptance criteria** :
+- Chaque article enrichi contient des keywords `kind='entity'` (sauf contenu < 50 mots)
+- Aucun terme taxonomy n'apparaît aussi en `kind='entity'` pour le même article
+- `MAX_ENTITY_KEYWORDS_PER_ARTICLE` respecté
+- Temps d'enrichissement NER < 200 ms par article sur CPU
+
+---
+
+#### [ ] E12-S4 — UI : badges `kind` dans Keywords screen
+
+**Contexte** : l'utilisateur ne sait pas d'où vient un keyword. Afficher l'origine aide à comprendre pourquoi un terme est apparu et pourquoi il accumule (ou non) du poids.
+
+**Changement API** (`GET /keywords`) : ajouter `kind: 'taxonomy' | 'entity' | 'legacy'` dans `KeywordWeightOut`.
+
+La valeur est dérivée des `article_keywords` associés : si le keyword a au moins un row `kind='taxonomy'` → `'taxonomy'`, sinon si au moins un `kind='entity'` → `'entity'`, sinon `'legacy'`.
+
+**Changement PWA** (`screens/Keywords.tsx`) :
+- Badge compact à droite du terme : "topic" (pill cyan) pour taxonomy, "entité" (pill gris) pour entity, aucun badge pour legacy
+- Pas de filtre ni de section séparée — juste information visuelle
+
+**Acceptance criteria** :
+- Keywords taxonomy affichent le badge "topic"
+- Keywords entity affichent le badge "entité"
+- Keywords legacy n'ont aucun badge
+- `npm run build` passe sans erreur TypeScript
+
+---
+
+### Notes d'implémentation
+
+**Pas de ré-enrichissement massif** : les articles existants gardent leurs keywords `kind='legacy'`. Ils décroissent naturellement dans `keyword_weights` au fur et à mesure que les nouveaux articles accumulant de vrais poids taxonomy/entity prennent le relais. Un reset admin optionnel (passer tous les articles `enriched` → `pending`) est hors scope de cette epic.
+
+**Interaction avec keyword compaction** (E10-S3) : la compaction continue de fonctionner sur tous les kinds. Elle est particulièrement utile pour les entités (ex: `"stade toulousain"` → `"toulouse"`). Les entités `kind='entity'` bénéficient donc de la compaction sans changement.
+
+**`keyword_weights` inchangée** : même table, même formule de poids. Les deux kinds y contribuent à égalité.

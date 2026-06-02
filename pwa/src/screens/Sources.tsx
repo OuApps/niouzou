@@ -1,18 +1,12 @@
 import { useState } from 'react'
-import { ArrowLeft, Trash2, Plus, Rss, FileText } from 'lucide-react'
+import { ArrowLeft, Trash2, Plus, Rss } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
-import {
-  addSource,
-  deleteSource,
-  getSources,
-  updateSource,
-  ApiError,
-} from '../api'
+import { addSource, deleteSource, getSources, ApiError } from '../api'
 import type { SourceFull } from '../types/api'
 
 export const Sources = () => {
@@ -21,24 +15,15 @@ export const Sources = () => {
   const [newUrl, setNewUrl] = useState('')
   const [urlError, setUrlError] = useState('')
   const [adding, setAdding] = useState(false)
-  const [fetchFullContent, setFetchFullContent] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   // Optimistic overlays over the fetched list (no effect copying into state).
   const [added, setAdded] = useState<SourceFull[]>([])
   const [removed, setRemoved] = useState<Set<string>>(new Set())
-  // Per-source crawler overrides applied on top of the server payload — lets
-  // the toggle reflect immediately without waiting for a refetch.
-  const [crawlerOverrides, setCrawlerOverrides] = useState<Record<string, boolean>>({})
-  const [togglingId, setTogglingId] = useState<string | null>(null)
 
   const sources: SourceFull[] = [
     ...(data?.sources ?? []).filter((s) => !removed.has(s.id)),
     ...added.filter((s) => !removed.has(s.id)),
-  ].map((s) =>
-    s.id in crawlerOverrides
-      ? { ...s, fetch_full_content: crawlerOverrides[s.id] }
-      : s,
-  )
+  ]
 
   const handleAdd = async () => {
     setUrlError('')
@@ -53,10 +38,11 @@ export const Sources = () => {
     }
     setAdding(true)
     try {
-      const created = await addSource(url, fetchFullContent)
+      // Full-article extraction is always on for new sources — the toggle was
+      // removed from the UI; existing sources keep whatever Miniflux had.
+      const created = await addSource(url, true)
       setAdded((prev) => [...prev, created])
       setNewUrl('')
-      setFetchFullContent(false)
     } catch (err) {
       setUrlError(
         err instanceof ApiError && err.status === 409
@@ -88,23 +74,6 @@ export const Sources = () => {
         next.delete(id)
         return next
       }) // restore on failure
-    }
-  }
-
-  const handleToggleFullContent = async (source: SourceFull) => {
-    const next = !source.fetch_full_content
-    setCrawlerOverrides((prev) => ({ ...prev, [source.id]: next }))
-    setTogglingId(source.id)
-    try {
-      await updateSource(source.id, { fetch_full_content: next })
-    } catch {
-      // Rollback on failure.
-      setCrawlerOverrides((prev) => ({
-        ...prev,
-        [source.id]: source.fetch_full_content,
-      }))
-    } finally {
-      setTogglingId(null)
     }
   }
 
@@ -183,30 +152,6 @@ export const Sources = () => {
               Add
             </button>
           </div>
-          <label
-            className="flex items-start gap-2"
-            style={{ marginTop: 10, cursor: 'pointer', fontSize: 12 }}
-          >
-            <input
-              type="checkbox"
-              checked={fetchFullContent}
-              onChange={(e) => setFetchFullContent(e.target.checked)}
-              style={{ marginTop: 2, accentColor: 'var(--accent)' }}
-            />
-            <span style={{ color: 'var(--text-secondary)' }}>
-              Récupérer l'article complet
-              <span
-                style={{
-                  display: 'block',
-                  color: 'var(--text-tertiary)',
-                  fontSize: 11,
-                  marginTop: 2,
-                }}
-              >
-                Recommandé pour les sites où le flux RSS ne contient qu'un résumé.
-              </span>
-            </span>
-          </label>
           {urlError && (
             <p style={{ fontSize: 11, color: 'var(--action-dislike)', marginTop: 6, paddingLeft: 2 }}>
               {urlError}

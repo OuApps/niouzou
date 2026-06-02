@@ -187,7 +187,7 @@ export function getSources(): Promise<{ sources: SourceFull[] }> {
 
 export function addSource(
   url: string,
-  fetchFullContent = false,
+  fetchFullContent = true,
 ): Promise<SourceFull> {
   return request<SourceFull>('/sources', {
     method: 'POST',

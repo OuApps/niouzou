@@ -6,11 +6,10 @@ interface ScoreBadgeProps {
   score: number
   scorer?: Scorer | null
   className?: string
-  // E10-S4 — when true, the badge renders ``New`` instead of a percentage.
+  // E10-S4 — when true, the badge renders a dash instead of a percentage.
   // Cold-start articles have no user signal on any of their keywords yet,
-  // so the neutral 50 % output is misleading: showing it would hide the
-  // article behind a high ``score_threshold`` and confuse the user about
-  // why a brand-new topic landed at half-mast.
+  // so the neutral 50 % output is misleading. We show "-" rather than "New"
+  // to avoid confusion with a freshly-ingested article ("nouvel article").
   isColdStart?: boolean
   // E10-S2 — when provided, the badge renders as a button and triggers the
   // score debug panel. The caller is responsible for calling
@@ -58,7 +57,7 @@ export const ScoreBadge = ({
         cursor: onClick ? 'pointer' : 'default',
       }}
     >
-      {isColdStart ? 'New' : `${Math.round(score * 100)}%`}
+      {isColdStart ? '–' : `${Math.round(score * 100)}%`}
       {isAi && (
         <Sparkles
           size={11}
