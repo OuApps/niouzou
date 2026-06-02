@@ -23,9 +23,21 @@ interface Props {
   onActivate?: () => void
   /** Suppress the chevron + label when there's no next slide. */
   hidden?: boolean
+  /**
+   * Extra height appended below the chevron/label so the tap target swallows
+   * the visual "empty" space behind the action bar gradient (E10 follow-up).
+   * The action bar must be ``pointer-events: none`` on its container so taps
+   * on the gradient gap fall through here.
+   */
+  tailExtraPx?: number
 }
 
-export const ScrollBoundaryHint = ({ bouncing, onActivate, hidden }: Props) => {
+export const ScrollBoundaryHint = ({
+  bouncing,
+  onActivate,
+  hidden,
+  tailExtraPx = 0,
+}: Props) => {
   if (hidden) return null
   const inner = (
     <>
@@ -60,8 +72,10 @@ export const ScrollBoundaryHint = ({ bouncing, onActivate, hidden }: Props) => {
   const sharedStyle: React.CSSProperties = {
     gap: 6,
     // Generous tap target — the chevron alone is ~22px and the label ~16px,
-    // so the surrounding padding makes the whole region reactive.
-    padding: '18px 24px',
+    // so the surrounding padding makes the whole region reactive. The tail
+    // extends the hit zone under the action bar so users can advance from
+    // any point in the bottom strip, not just on the visible chevron+label.
+    padding: `18px 24px calc(env(safe-area-inset-bottom, 0px) + ${18 + tailExtraPx}px)`,
     width: '100%',
     background: 'transparent',
     border: 'none',

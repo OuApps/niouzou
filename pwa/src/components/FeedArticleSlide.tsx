@@ -380,15 +380,17 @@ export const FeedArticleSlide = ({
 
         {/* ── Scroll boundary hint ─────────────────────────────────────────
             Tappable: chevron + label together act as a single button that
-            snaps to the next slide. The action bar sits ~140px below; that
-            spacer is intentionally a bit larger than the action-bar gradient
-            so the hint isn't hidden under it. */}
-        <ScrollBoundaryHint bouncing={!nextVisible} onActivate={goToNext} />
-
-        <div
-          style={{
-            height: 'calc(env(safe-area-inset-bottom, 0px) + 180px)',
-          }}
+            snaps to the next slide. We extend the button vertically with
+            ``tailExtraPx`` so the *whole* region below the separator —
+            including the area visually covered by the action bar's
+            gradient — registers as a "next article" tap target. The
+            action bar's container is pointer-events: none (auto on the
+            buttons themselves), so taps on the gradient gap fall through
+            to this hint underneath. */}
+        <ScrollBoundaryHint
+          bouncing={!nextVisible}
+          onActivate={goToNext}
+          tailExtraPx={180}
         />
 
 
@@ -421,6 +423,13 @@ export const FeedArticleSlide = ({
           zIndex: 6,
           gap: 48,
           padding: '14px 0 18px',
+          // The container ignores pointer events so a tap on the gradient
+          // gap (between the like/dislike/save buttons) passes through to
+          // the ScrollBoundaryHint underneath — the user can advance to
+          // the next slide from anywhere in the bottom region, not just
+          // on the small chevron+label area. Each ActionButton re-enables
+          // pointer events on itself.
+          pointerEvents: 'none',
           background:
             'linear-gradient(to top, rgba(12,16,24,0.95) 0%, rgba(12,16,24,0.85) 60%, rgba(12,16,24,0) 100%)',
         }}
@@ -493,6 +502,9 @@ const ActionButton = ({
       alignItems: 'center',
       justifyContent: 'center',
       cursor: 'pointer',
+      // Parent action-bar is pointer-events: none so taps fall through to
+      // the next-article hint. Each button reclaims its own hit area.
+      pointerEvents: 'auto',
       // SVG fill follows currentColor when the inner icon uses fill="currentColor".
       transition: 'color 0.15s ease, border-color 0.15s ease, background 0.15s ease',
     }}

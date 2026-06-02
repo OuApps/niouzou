@@ -661,7 +661,10 @@ across the instance.
 > `total_tfidf` counts every article enriched with TF-IDF (pure TF-IDF when AI
 > is off, plus fallbacks). `total_tfidf_fallback` is the subset where AI was
 > attempted and failed — useful for monitoring AI reliability.
-> `last_error` / `last_error_at` are null when no fallback has ever happened.
+> `last_error` / `last_error_at` are null when no enrichment error has
+> happened **in the last hour**. The 1 h window prevents an old failure
+> from flagging the System panel as broken indefinitely — a recurring
+> error keeps getting reported on every new failed enrichment.
 
 > `pipeline.status` is one of `"running"`, `"completed"`, `"failed"`, or
 > `"never_run"` (synthetic, returned when `pipeline_runs` is empty — fresh

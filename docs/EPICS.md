@@ -2243,3 +2243,119 @@ Frontend :
   `docs/API_SPEC.md` (champ `is_cold_start` dans `/feed`, `/explore/*`,
   `/saved`).
 
+---
+
+#### [ ] E10-S5 — System panel : agrégats pipeline « Last X hours »
+
+**Problème adressé** :
+
+Le bloc System actuel affiche les compteurs du **dernier run pipeline**
+(``fetched=8 enriched=7 failed=0, ~32s/article``). C'est une photo
+instantanée — sur une instance qui tourne toutes les 15 min, ce sont
+souvent des chiffres minuscules (1-2 articles), et le run précédent peut
+être très différent (10 articles avec 1 erreur). Pas de vue agrégée pour
+juger de la santé du pipeline sur les dernières heures.
+
+Le ``last_error`` qui restait affiché 3 h après une erreur est traité
+indépendamment (auto-hide après 1 h, déjà livré dans la même PR que cette
+spec).
+
+**Décisions actées** :
+
+- **Remplacer** le bloc "Last run" — pas de double affichage. Le run
+  individuel reste accessible si besoin via Railway logs ; l'écran admin
+  doit privilégier la santé agrégée.
+- Window picker à **3 positions** : ``1h | 6h | 24h``. Default ``6h`` —
+  assez large pour lisser les runs courts (4-6 cycles à 15 min), assez
+  étroit pour refléter l'état actuel.
+- Agrégats fournis : ``runs_count``, ``articles_fetched``,
+  ``articles_enriched``, ``articles_failed``, ``avg_s_per_article``. Pas
+  besoin de plus.
+- Pas de stockage supplémentaire — tout se calcule depuis ``pipeline_runs``.
+
+**Backend** :
+
+Nouveau champ sur ``StatsResponse.pipeline`` :
+
+```python
+class PipelineAggregates(BaseModel):
+    window_hours: int          # echoes the query param
+    runs_count: int
+    articles_fetched: int
+    articles_enriched: int
+    articles_failed: int
+    avg_s_per_article: float | None  # null when no run completed in the window
+
+class PipelineStats(BaseModel):
+    # … existing fields (status, started_at, etc., in_progress) …
+    aggregates: PipelineAggregates
+```
+
+Endpoint ``GET /stats`` accepte un nouveau query param :
+
+```
+GET /stats?pipeline_window=6h
+```
+
+Valeurs acceptées : ``1h``, ``6h``, ``24h``. Default ``6h``. Validation
+stricte (rejet 422 sur autre valeur — évite l'injection SQL via interval
+string).
+
+Calcul SQL (un seul aller-retour) :
+
+```sql
+SELECT
+    COUNT(*) AS runs_count,
+    COALESCE(SUM(articles_fetched), 0) AS articles_fetched,
+    COALESCE(SUM(articles_enriched), 0) AS articles_enriched,
+    COALESCE(SUM(articles_failed), 0) AS articles_failed,
+    -- Moyenne pondérée par articles_enriched, pas moyenne des moyennes :
+    -- un run avec 10 articles compte 10× plus qu'un run avec 1.
+    NULLIF(SUM(total_duration_s), 0)
+        / NULLIF(SUM(articles_enriched), 0) AS avg_s_per_article
+FROM pipeline_runs
+WHERE started_at > now() - :window
+  AND status = 'completed';  -- les runs failed/running ne polluent pas la moyenne
+```
+
+**PWA — System panel** :
+
+Remplacer le bloc actuel par :
+
+```
+Pipeline · Last  [1h] [6h] [24h]
+                       ───
+12 runs · 84 fetched · 79 enriched · 5 failed · ~29s/article
+```
+
+Toggle 3 boutons ; le sélectionné a le fond accent. Au tap, refetch
+``/stats?pipeline_window=…`` — pas de cache local plus malin que ça,
+``/stats`` est déjà rapide.
+
+Le statut du run en cours (« Enrichissement en cours · 3/10 articles »
+quand ``status='running'``, depuis E10-S1) reste affiché **au-dessus** du
+bloc agrégats — c'est une info temps-réel utile et distincte des
+agrégats historiques.
+
+**Tests** :
+
+- Endpoint avec ``?pipeline_window=1h`` retourne uniquement les runs de la
+  dernière heure.
+- Window invalide (ex. ``?pipeline_window=2h``) → 422.
+- ``avg_s_per_article`` = ``null`` quand aucun run ``completed`` dans la
+  fenêtre.
+- La moyenne est pondérée par ``articles_enriched`` (un run avec 10
+  articles à 30 s contribue 10× plus qu'un run avec 1 article à 60 s).
+- Aucun run dans la fenêtre → tous les compteurs à 0, ``runs_count = 0``.
+
+**Acceptance criteria** :
+
+- Le bloc « Last run » disparaît du System panel ; remplacé par
+  « Pipeline · Last X » avec picker.
+- Default 6 h ; le user peut passer à 1 h ou 24 h sans rafraîchir la page.
+- Les compteurs sont des sommes sur la fenêtre, pas le dernier run isolé.
+- ``avg_s_per_article`` est pondérée par le nombre d'articles, pas une
+  moyenne arithmétique.
+- Docs mises à jour : ``docs/API_SPEC.md`` (param ``pipeline_window``,
+  nouveau bloc ``aggregates``).
+

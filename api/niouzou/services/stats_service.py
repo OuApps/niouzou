@@ -8,7 +8,7 @@ block is global: the refresh worker is single-replica and the
 
 import uuid
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 
 from niouzou.deps import SessionDep
 from niouzou.models import (
@@ -83,7 +83,14 @@ class StatsService:
             )
         ).one()
 
-        # ── Last enrichment error (most recent non-null) ───────────────────
+        # ── Last enrichment error (most recent non-null, ≤ 1 h old) ────────
+        # ``articles.enrichment_error`` is per-article and persists until the
+        # row is re-enriched — without the time window an error from 3 h ago
+        # would still flag the System panel as broken even after a dozen
+        # healthy runs. 1 h matches the typical ``cron_fetch_interval`` (15
+        # min) × ~4 runs of recovery time: long enough to be diagnostic, short
+        # enough not to be noise. Recurring errors will keep being detected on
+        # each new failed enrichment.
         last_err_row = (
             await self.session.execute(
                 select(
@@ -91,6 +98,10 @@ class StatsService:
                     article_join.c.enriched_at,
                 )
                 .where(article_join.c.enrichment_error.is_not(None))
+                .where(
+                    article_join.c.enriched_at
+                    > func.now() - text("interval '1 hour'")
+                )
                 .order_by(article_join.c.enriched_at.desc())
                 .limit(1)
             )
