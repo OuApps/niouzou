@@ -2359,3 +2359,158 @@ agrégats historiques.
 - Docs mises à jour : ``docs/API_SPEC.md`` (param ``pipeline_window``,
   nouveau bloc ``aggregates``).
 
+---
+
+## EPIC 11 — Filtres Explore
+
+**Objectif** : Permettre à l'utilisateur de restreindre la vue Explore par score minimum et par source, via une barre de filtres permanente sous les tabs (2 lignes de chips scrollables).
+
+> Dépend de EPIC 9 (Explore tab), EPIC 10-S4 (is_cold_start).
+
+**Ordre de livraison** : `S1 → S2`. S1 est bloquant (les nouveaux query params sont requis pour que le frontend filtre côté serveur).
+
+---
+
+### Stories
+
+#### [ ] E11-S1 — Backend : query params de filtrage sur `/explore/*`
+
+**Contexte** : Les endpoints `GET /explore/new` et `GET /explore/history` ne proposent aujourd'hui aucun filtrage. L'ajout de `min_score` et `source_ids` permet au frontend de déléguer le filtrage au serveur (pas de slicing côté client, pagination cohérente).
+
+**Changements `GET /explore/new`** :
+
+- Nouveau param `min_score` (float, 0.0 – 1.0, optionnel, défaut `0.0`) :
+  - Condition SQL : `(ars.relevance_score >= :min_score OR ars.is_cold_start = TRUE)` — les articles cold passent toujours, cohérent avec E10-S4.
+  - Valeur `0.0` explicite = même comportement qu'aujourd'hui (aucun filtrage).
+- Nouveau param `source_ids` (liste de UUID, optionnel, max 20 valeurs) :
+  - Encodé en query string répété : `?source_ids=uuid1&source_ids=uuid2`.
+  - Condition SQL : `AND a.source_id IN (:source_ids)`.
+  - Validation : chaque UUID fourni doit appartenir à `current_user` ; un UUID invalide ou étranger retourne `422` (pas de fuite silencieuse).
+  - Liste vide ou param absent = pas de filtre.
+
+**Changements `GET /explore/history`** :
+
+- Mêmes params `min_score` et `source_ids`, mêmes règles de validation.
+- `min_score` filtre sur `ars.relevance_score` (la colonne existe via le LEFT JOIN sur `article_relevance_scores`). Les articles sans score (edge case : article sans row `ars`) sont exclus quand `min_score > 0`.
+
+**Pagination** : le curseur keyset ne change pas de format. Quand les filtres changent, le client recommence à la première page (cursor absent) — c'est lui qui en a la responsabilité.
+
+**`GET /stats` — ajout `score_threshold`** :
+
+Exposer le `SCORE_THRESHOLD` effectif (DB override via `SettingsService` puis env var) dans la réponse `/stats` :
+
+```json
+{
+  "score_threshold": 0.6,
+  "cron_fetch_interval_minutes": 15,
+  ...
+}
+```
+
+Cela permet au frontend d'afficher le chip "≥ seuil" avec la valeur réelle sans la hardcoder.
+
+**Docs à mettre à jour** :
+- `docs/API_SPEC.md` : params `min_score` et `source_ids` sur `GET /explore/new` et `GET /explore/history` ; champ `score_threshold` dans `GET /stats`.
+
+**Tests** :
+- `min_score=0.5` sur `/explore/new` exclut les articles avec score < 0.5, mais inclut les cold-start (is_cold_start=true).
+- `source_ids=[uuid_A]` retourne uniquement les articles de la source A.
+- `source_ids=[uuid_autre_user]` → 422.
+- Combinaison `min_score + source_ids` : les deux filtres s'appliquent conjointement (AND).
+- Pagination stable : deux pages successives avec mêmes filtres ne retournent pas de doublons.
+
+**Acceptance criteria** :
+
+- `GET /explore/new?min_score=0.75` n'inclut que les articles avec `relevance_score ≥ 0.75` ou `is_cold_start = true`.
+- `GET /explore/new?source_ids=<uuid>` n'inclut que les articles issus de cette source.
+- Un UUID de source appartenant à un autre utilisateur retourne `422`, pas un résultat filtré silencieusement.
+- `GET /stats` inclut `score_threshold` (valeur effective, entre 0.0 et 1.0).
+- Aucune régression sur les endpoints sans paramètres (défauts identiques à aujourd'hui).
+
+---
+
+#### [ ] E11-S2 — Frontend : barre de filtres dans Explore
+
+**Layout** :
+
+```
+┌─────────────────────────────────────┐
+│  Explore                            │
+│ ┌──────────┐  ┌─────────────┐       │
+│ │ Nouveaux │  │ Lus         │       │
+│ └──────────┘  └─────────────┘       │
+│                                     │
+│  Score :                            │
+│  [Tous✓] [≥25%] [≥50%] [≥seuil] …  │  ← scrollable
+│                                     │
+│  Sources :                          │
+│  [Toutes✓] [Le Monde] [HN] …        │  ← scrollable
+│ ─────────────────────────────────── │
+│  Article 1                          │
+│  Article 2                          │
+└─────────────────────────────────────┘
+```
+
+**Chips Score** :
+
+Valeurs fixes (dans cet ordre) :
+
+| Chip       | `min_score` envoyé |
+|------------|--------------------|
+| Tous       | absent (défaut)    |
+| ≥ 25 %     | `0.25`             |
+| ≥ 50 %     | `0.50`             |
+| ≥ seuil    | valeur de `stats.score_threshold` |
+| ≥ 75 %     | `0.75`             |
+
+- Le chip "≥ seuil" est masqué si `stats.score_threshold` est `0.0` ou non disponible (stats pas encore chargées).
+- "≥ seuil" affiche la valeur entre parenthèses : `≥ seuil (60 %)`.
+- Un seul chip score actif à la fois (single-select).
+- Par défaut : "Tous" actif.
+
+**Chips Sources** :
+
+- Chargés via `GET /sources` au mount de l'écran (un seul fetch, réponse mise en cache dans un ref pour la durée de session).
+- Chip "Toutes" en tête, actif par défaut.
+- Les autres chips = nom de la source (tronqué à 18 chars avec ellipse si besoin).
+- Multi-select : plusieurs sources peuvent être cochées simultanément (OR logique).
+- Tapper "Toutes" désélectionne tous les autres chips et les remplace par "Toutes" actif.
+- Tapper un chip source désélectionne "Toutes" automatiquement.
+- Si l'utilisateur n'a qu'une seule source : la row Sources est masquée (inutile).
+
+**Comportement** :
+
+- Tout changement de filtre (score ou source) réinitialise le curseur et refetche la première page du tab actif.
+- Les filtres sont **per-tab** : changer d'onglet (Nouveaux ↔ Lus) conserve les filtres de chaque onglet indépendamment.
+- Pull-to-refresh (`BlobBackground.onRefresh`) remet les filtres à zéro ET refetche — comportement cohérent avec le `reload()` existant.
+- Si `stats` n'est pas encore chargé au rendu initial, le chip "≥ seuil" n'est simplement pas affiché (pas de spinner dédié — la row Score s'affiche avec les autres chips).
+
+**Empty state avec filtres actifs** :
+
+Quand la liste est vide et qu'au moins un filtre non-défaut est actif :
+
+> *"Aucun résultat avec ces filtres."*
+> `[Réinitialiser les filtres]` → bouton inline qui réinitialise à "Tous" / "Toutes".
+
+Le empty state existant (sans filtres) reste inchangé.
+
+**État visuel d'un chip actif** :
+
+- Background : `var(--accent-subtle)`
+- Texte : `var(--accent)`
+- Bordure : `1px solid var(--accent)` (pour distinguer du chip inactif qui n'a pas de bordure colorée)
+
+**Docs à mettre à jour** :
+- `docs/DESIGN_SYSTEM.md` : composant `FilterChip` (variantes active/inactive), pattern "filter bar à 2 rows" dans la section Explore.
+
+**Acceptance criteria** :
+
+- Les deux rows (Score et Sources) s'affichent sous les tabs Nouveaux / Lus.
+- La row Sources est masquée si l'utilisateur n'a qu'une source.
+- Tapper "≥ 50 %" envoie `?min_score=0.50` et recharge la liste depuis la première page.
+- Tapper deux sources envoie `?source_ids=uuid1&source_ids=uuid2`.
+- "≥ seuil" affiche la valeur numérique entre parenthèses et n'est visible que si `score_threshold > 0`.
+- Les filtres de l'onglet "Nouveaux" ne sont pas réinitialisés quand on bascule sur "Lus" et inversement.
+- Pull-to-refresh remet les deux filtres à "Tous" / "Toutes" avant de recharger.
+- Le empty state avec filtres actifs propose un bouton "Réinitialiser les filtres".
+- `npm run build` passe sans erreur TypeScript.
