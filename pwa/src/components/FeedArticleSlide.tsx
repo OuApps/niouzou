@@ -322,12 +322,12 @@ export const FeedArticleSlide = ({
                   {contentExpanded ? (
                     <>
                       <ChevronUp size={14} />
-                      Réduire
+                      Show less
                     </>
                   ) : (
                     <>
                       <ChevronDown size={14} />
-                      Lire plus
+                      Read more
                     </>
                   )}
                 </button>
@@ -390,24 +390,17 @@ export const FeedArticleSlide = ({
         />
       </div>
 
-      {/* ── Action bar (sticky) ─────────────────────────────────────────────
-          The container itself is pointer-events: none so a vertical swipe
-          anywhere across the slide — including over the action bar — still
-          drives the scroll container behind it (the buttons reclaim
-          pointer-events on themselves). Bottom value matches the BottomNav
-          height so the gradient stops right where the nav starts and no
-          article text bleeds through above the nav. */}
+      {/* ── Action bar (sticky) ─────────────────────────────────────────── */}
       <div
         className="flex items-center justify-center"
         style={{
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: 'calc(env(safe-area-inset-bottom, 0px) + 62px)',
+          bottom: 'calc(env(safe-area-inset-bottom, 0px) + 76px)',
           zIndex: 6,
           gap: 48,
           padding: '14px 0',
-          pointerEvents: 'none',
           background:
             'linear-gradient(to top, rgba(12,16,24,0.92), rgba(12,16,24,0))',
         }}
@@ -480,9 +473,6 @@ const ActionButton = ({
       alignItems: 'center',
       justifyContent: 'center',
       cursor: 'pointer',
-      // Parent action-bar disables pointer events so swipes scroll the slide;
-      // each button opts back in for its own hit area.
-      pointerEvents: 'auto',
       // SVG fill follows currentColor when the inner icon uses fill="currentColor".
       transition: 'color 0.15s ease, border-color 0.15s ease, background 0.15s ease',
     }}

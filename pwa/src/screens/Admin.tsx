@@ -46,7 +46,7 @@ export const Admin = () => {
   } = useApiData(getStats, [])
 
   return (
-    <div className="flex flex-col min-h-dvh relative">
+    <div className="flex flex-col h-dvh overflow-y-auto relative">
       <BlobBackground />
 
       <header className="relative z-10 flex items-center" style={{ padding: '16px 16px 8px' }}>
@@ -580,9 +580,9 @@ const KeywordsSection = ({ stats, onChange }: KeywordsSectionProps) => {
       if (err instanceof ApiError && err.status === 404) {
         // Race window: the preview was rejected/applied from another tab
         // between our stats read and this fetch. Refresh stats so the
-        // "Reprendre" button disappears.
+        // "Resume" button disappears.
         onChange()
-        setError("Cette analyse n'est plus disponible.")
+        setError('This analysis is no longer available.')
       } else {
         setError(err instanceof ApiError ? err.message : 'Resume failed')
       }
@@ -625,7 +625,7 @@ const KeywordsSection = ({ stats, onChange }: KeywordsSectionProps) => {
       >
         <div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Termes distincts
+            Distinct keywords
           </div>
           <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>
             {stats?.keywords.distinct_keyword_count ?? '—'}
@@ -633,12 +633,12 @@ const KeywordsSection = ({ stats, onChange }: KeywordsSectionProps) => {
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Dernière compaction
+            Last compaction
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
             {stats?.keywords.last_compact_at
               ? formatTimeAgo(stats.keywords.last_compact_at)
-              : 'jamais'}
+              : 'never'}
           </div>
         </div>
       </div>
@@ -658,7 +658,7 @@ const KeywordsSection = ({ stats, onChange }: KeywordsSectionProps) => {
           opacity: loading || applying ? 0.6 : 1,
         }}
       >
-        {loading ? 'Analyse en cours…' : 'Analyser la compaction'}
+        {loading ? 'Analysing…' : 'Analyse compaction'}
       </button>
 
       {stats?.keywords.pending_compaction_id && !preview && (
@@ -674,7 +674,7 @@ const KeywordsSection = ({ stats, onChange }: KeywordsSectionProps) => {
             cursor: 'pointer',
           }}
         >
-          Reprendre la dernière analyse
+          Resume previous analysis
         </button>
       )}
 
@@ -725,20 +725,23 @@ const CompactionPreviewModal = ({
       background: 'rgba(0,0,0,0.55)',
       zIndex: 60,
       display: 'flex',
-      alignItems: 'flex-end',
+      // Centred dialog rather than bottom sheet — feels less mobile-tacked
+      // on the admin desktop view and stays balanced on tall screens too.
+      alignItems: 'center',
       justifyContent: 'center',
+      padding: 16,
     }}
     onClick={onReject}
   >
     <div
       onClick={(e) => e.stopPropagation()}
-      className="glass-sm"
+      className="glass"
       style={{
         width: '100%',
         maxWidth: 560,
-        borderTopLeftRadius: 20,
-        borderTopRightRadius: 20,
-        padding: '18px 18px calc(env(safe-area-inset-bottom, 0px) + 24px)',
+        borderRadius: 20,
+        background: 'rgba(12, 16, 24, 0.98)',
+        padding: '18px 18px 20px',
         maxHeight: '85vh',
         overflowY: 'auto',
       }}
@@ -747,8 +750,8 @@ const CompactionPreviewModal = ({
         style={{ fontSize: 14, fontWeight: 600, marginBottom: 14, color: 'var(--text-primary)' }}
       >
         {preview.groups.length === 0
-          ? 'Aucun groupe à fusionner'
-          : `${preview.groups.length} groupe(s) à fusionner`}
+          ? 'No groups to merge'
+          : `${preview.groups.length} group(s) to merge`}
       </div>
 
       {preview.groups.length > 0 && (
@@ -777,7 +780,7 @@ const CompactionPreviewModal = ({
             opacity: applying || preview.groups.length === 0 ? 0.6 : 1,
           }}
         >
-          {applying ? 'En cours…' : 'Appliquer'}
+          {applying ? 'Running…' : 'Apply'}
         </button>
         <button
           onClick={onReject}
@@ -792,7 +795,7 @@ const CompactionPreviewModal = ({
             cursor: 'pointer',
           }}
         >
-          Annuler
+          Cancel
         </button>
       </div>
     </div>
@@ -829,7 +832,7 @@ const CompactionGroupRow = ({ group }: { group: CompactionGroup }) => {
               color: 'var(--text-tertiary)',
             }}
           >
-            (épinglé — ignoré)
+            (pinned — skipped)
           </span>
         )}
       </div>

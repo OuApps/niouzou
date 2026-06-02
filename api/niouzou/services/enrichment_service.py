@@ -44,6 +44,10 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 # topic; sending more just inflates latency and cost on slow models. Down from
 # the previous 8000/6000 split for summaries/keywords.
 _MAX_INPUT_CHARS = 2500
+# Hard cap on the vocab nudge — leaves enough room in the 2500-char user
+# prompt for the title + a meaningful article excerpt. ~800 chars is about
+# 60-80 terms, plenty to anchor canonical forms (E10-S2).
+_MAX_VOCAB_CHARS = 800
 # Keyword cap negotiated in the prompt — persistence still applies its own cap.
 _MAX_KEYWORDS = 10
 
@@ -238,17 +242,26 @@ class EnrichmentService:
 
         lang = _detect_language(title, content)
         header = f"Language: {lang}\n" if lang else ""
-        # E10-S2: nudge the LLM to reuse existing keyword terms (canonical
-        # names, stable concepts) so per-user weights don't fragment across
-        # near-duplicates. Placed *before* the title so the model reads it
-        # first; truncation by ``_MAX_INPUT_CHARS`` then preferentially drops
-        # article body, never the vocab.
-        vocab_line = (
-            f"Existing vocabulary (reuse when applicable): {', '.join(self._vocab)}\n"
-            if self._vocab
-            else ""
-        )
-        body = f"{header}{vocab_line}Title: {title}\n\n{content}"
+        # E10-S2 — vocab nudge. The original version pasted all 200 terms
+        # then relied on ``body[:_MAX_INPUT_CHARS]`` to trim, but with avg
+        # term length ~12 chars the vocab line alone runs ~2.5kB and the
+        # naive slice ate the title + content entirely — the LLM kept
+        # replying "Please provide the news article" because it literally
+        # never saw it. Cap the vocab at ``_MAX_VOCAB_CHARS`` and budget
+        # the content from what's left so the article always wins.
+        vocab_line = ""
+        if self._vocab:
+            full = ", ".join(self._vocab)
+            if len(full) <= _MAX_VOCAB_CHARS:
+                joined = full
+            else:
+                # Trim to the cap then drop the trailing partial term so we
+                # never emit "barcelona f" instead of "barcelona fc".
+                joined = full[:_MAX_VOCAB_CHARS].rsplit(",", 1)[0]
+            vocab_line = f"Existing vocabulary (reuse when applicable): {joined}\n"
+        prefix = f"{header}{vocab_line}Title: {title}\n\n"
+        budget = max(0, _MAX_INPUT_CHARS - len(prefix))
+        body = prefix + (content[:budget] if budget else "")
         last_exc: Exception | None = None
         # Tries: 1 initial + len(_LLM_BACKOFFS_S) retries = 3 total.
         for attempt in range(len(_LLM_BACKOFFS_S) + 1):
@@ -264,7 +277,7 @@ class EnrichmentService:
             try:
                 return self._client.complete_json(
                     system=_ENRICHMENT_SYSTEM,
-                    user=body[:_MAX_INPUT_CHARS],
+                    user=body,
                     parse=_parse_enrichment,
                     retries=0,
                 )

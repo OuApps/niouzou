@@ -34,7 +34,7 @@ export const ScoreDebugSheet = ({ articleId, onClose }: Props) => {
         if (!cancelled) setData(debug)
       })
       .catch(() => {
-        if (!cancelled) setError('Impossible de charger le détail du score.')
+        if (!cancelled) setError('Could not load score details.')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -52,24 +52,31 @@ export const ScoreDebugSheet = ({ articleId, onClose }: Props) => {
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.45)',
+        background: 'rgba(0,0,0,0.55)',
         zIndex: 50,
         display: 'flex',
-        alignItems: 'flex-end',
+        // Centred modal — the previous bottom-sheet variant felt off-balance
+        // on tablet widths and on screens with a small content surface.
+        alignItems: 'center',
         justifyContent: 'center',
+        padding: 16,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="glass-sm"
+        className="glass"
         style={{
           width: '100%',
           maxWidth: 520,
-          borderTopLeftRadius: 20,
-          borderTopRightRadius: 20,
-          padding: '18px 18px calc(env(safe-area-inset-bottom, 0px) + 24px)',
+          borderRadius: 20,
+          // Solid dark background — ``.glass`` already paints 92% opaque,
+          // but Safari's backdrop-filter can briefly fall back to the raw
+          // rgba which still felt see-through on a busy feed slide. Add
+          // an explicit opaque layer so the sheet is always legible.
+          background: 'rgba(12, 16, 24, 0.98)',
+          padding: '18px 18px 20px',
           color: 'var(--text-primary)',
-          maxHeight: '70vh',
+          maxHeight: '80vh',
           overflowY: 'auto',
         }}
       >
@@ -78,12 +85,12 @@ export const ScoreDebugSheet = ({ articleId, onClose }: Props) => {
           style={{ marginBottom: 14 }}
         >
           <span style={{ fontSize: 13, fontWeight: 600 }}>
-            Détail du score
+            Score breakdown
           </span>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Fermer"
+            aria-label="Close"
             style={{
               background: 'transparent',
               border: 'none',
@@ -154,7 +161,7 @@ const ScoreDebugContent = ({ debug }: { debug: ScoreDebug }) => {
 
       {debug.keywords.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          Aucun mot-clé extrait pour cet article.
+          No keywords extracted for this article.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

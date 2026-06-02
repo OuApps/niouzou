@@ -270,6 +270,34 @@ def test_generate_enrichment_injects_vocab():
     )
 
 
+def test_generate_enrichment_huge_vocab_preserves_article():
+    """Regression: a vocab dump larger than the prompt budget must not
+    starve out the article body. Before the fix the naive slice kept the
+    vocab and dropped Title+content entirely, so the LLM replied
+    "Please provide the news article" and every enrichment fell back to
+    TF-IDF in production."""
+
+    class _RecordingClient(FakeClient):
+        def __init__(self, replies):
+            super().__init__(replies)
+            self.last_user: str | None = None
+
+        def complete(self, *, system, user, temperature=0.2):
+            self.last_user = user
+            return super().complete(system=system, user=user, temperature=temperature)
+
+    client = _RecordingClient(
+        ['{"summary_short": "X.", "summary_executive": null, "keywords": []}']
+    )
+    svc = EnrichmentService(openrouter_client=client)
+    # 200 terms ~12 chars each → far past the prompt budget.
+    svc.set_vocab([f"longish-keyword-term-{i:03d}" for i in range(200)])
+    svc.generate_enrichment("UniqueTitle", "ArticleBodyMarker " * 50)
+    assert client.last_user is not None
+    assert "UniqueTitle" in client.last_user
+    assert "ArticleBodyMarker" in client.last_user
+
+
 def test_parse_executive_nested_list_drops_inner_lists():
     result = _parse_enrichment(
         {
