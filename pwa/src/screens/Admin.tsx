@@ -71,7 +71,11 @@ export const Admin = () => {
         </h1>
       </header>
 
-      <div className="relative z-10 flex-1" style={{ padding: '16px 16px 90px' }}>
+      {/* No flex-1 here: a flex-basis:0% child inside a column flex container
+          can short-circuit the parent's intrinsic height calculation, leaving
+          the long Users list unscrollable on iOS. The wrapper already owns
+          ``overflow-y-auto h-dvh`` so a normal block grows naturally. */}
+      <div className="relative z-10" style={{ padding: '16px 16px 40px' }}>
         {/* Config section */}
         <div style={{ marginBottom: 24 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12 }}>
@@ -120,12 +124,12 @@ export const Admin = () => {
                 onSave={reloadConfig}
               />
               <ConfigRow
-                label="Score Threshold (0–1)"
+                label="Score threshold (%)"
                 config={config}
                 field="score_threshold"
-                type="float"
+                type="percent"
                 min={0}
-                max={1}
+                max={100}
                 onSave={reloadConfig}
               />
             </div>
@@ -202,7 +206,10 @@ interface ConfigRowProps {
   label: string
   config: AdminConfig
   field: keyof AdminConfig
-  type: 'text' | 'password' | 'number' | 'float' | 'model'
+  // ``percent`` stores 0-1 server-side but edits/displays 0-100 % — used by
+  // ``score_threshold`` so the admin types a number that matches what the
+  // score badge shows on the feed.
+  type: 'text' | 'password' | 'number' | 'float' | 'percent' | 'model'
   models?: AdminModel[]
   min?: number
   max?: number
@@ -210,34 +217,44 @@ interface ConfigRowProps {
 }
 
 const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }: ConfigRowProps) => {
+  // For percent fields the raw stored value is 0-1; the editor speaks 0-100.
+  const initial = config[field]
+  const editValue =
+    type === 'percent' && typeof initial === 'number'
+      ? String(Math.round(initial * 100))
+      : String(initial ?? '')
   const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(String(config[field] ?? ''))
+  const [value, setValue] = useState(editValue)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const isNumeric = type === 'number' || type === 'float' || type === 'percent'
 
   const handleSave = async () => {
     setError(null)
     setSaving(true)
     try {
       const patch: Record<string, string | number> = {}
-      if (type === 'number' || type === 'float') {
-        const num = type === 'float' ? parseFloat(value) : parseInt(value, 10)
-        if (isNaN(num)) {
+      if (isNumeric) {
+        const raw =
+          type === 'number' ? parseInt(value, 10) : parseFloat(value)
+        if (isNaN(raw)) {
           setError('Invalid number')
           setSaving(false)
           return
         }
-        if (min !== undefined && num < min) {
+        if (min !== undefined && raw < min) {
           setError(`Must be at least ${min}`)
           setSaving(false)
           return
         }
-        if (max !== undefined && num > max) {
+        if (max !== undefined && raw > max) {
           setError(`Must be at most ${max}`)
           setSaving(false)
           return
         }
-        patch[field] = num
+        // Percent → store as 0-1 float on the backend.
+        patch[field] = type === 'percent' ? raw / 100 : raw
       } else {
         patch[field] = value
       }
@@ -256,7 +273,9 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
       ? `${value.slice(0, 5)}***${value.slice(-4)}`
       : type === 'model'
         ? models.find((m) => m.id === value)?.name ?? value
-        : value
+        : type === 'percent'
+          ? `${value}%`
+          : value
 
   return (
     <div className="glass-sm flex flex-col" style={{ borderRadius: 16, padding: '12px 14px' }}>
@@ -307,16 +326,16 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
               type={
                 type === 'password'
                   ? 'password'
-                  : type === 'number' || type === 'float'
+                  : isNumeric
                     ? 'number'
                     : 'text'
               }
-              step={type === 'float' ? 0.05 : undefined}
+              step={type === 'float' ? 0.05 : type === 'percent' ? 1 : undefined}
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder={label}
-              min={type === 'number' || type === 'float' ? min : undefined}
-              max={type === 'number' || type === 'float' ? max : undefined}
+              min={isNumeric ? min : undefined}
+              max={isNumeric ? max : undefined}
               style={{
                 padding: '8px 10px',
                 borderRadius: 8,

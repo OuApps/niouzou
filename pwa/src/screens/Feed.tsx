@@ -375,7 +375,7 @@ export const Feed = () => {
             cursor: 'pointer',
           }}
         >
-          Score ≥ {formatScore(minScore)} · réinitialiser
+          Score ≥ {formatScore(minScore)} · reset
         </button>
       )}
 
@@ -424,12 +424,12 @@ const EmptyDeck = ({ currentFloor, onLower, onReset }: EmptyDeckProps) => {
   return (
     <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
       <p style={{ fontSize: 28, marginBottom: 8, color: 'var(--text-primary)' }}>
-        Vous avez tout lu !
+        You&apos;re all caught up!
       </p>
       {atZero ? (
         <>
           <p style={{ marginBottom: 16 }}>
-            Revenez plus tard pour de nouveaux articles.
+            Come back later for new articles.
           </p>
           {onReset && (
             <button
@@ -445,14 +445,14 @@ const EmptyDeck = ({ currentFloor, onLower, onReset }: EmptyDeckProps) => {
                 cursor: 'pointer',
               }}
             >
-              Réinitialiser le filtre
+              Reset filter
             </button>
           )}
         </>
       ) : (
         <>
           <p style={{ marginBottom: 16 }}>
-            Pas envie d&apos;attendre ? Élargissez le filtre.
+            Don&apos;t want to wait? Widen the filter.
           </p>
           <button
             onClick={() => onLower(nextOffer)}
@@ -468,8 +468,8 @@ const EmptyDeck = ({ currentFloor, onLower, onReset }: EmptyDeckProps) => {
             }}
           >
             {showAllOffer
-              ? 'Voir tous les articles (score ≥ 0)'
-              : `Voir les articles avec score ≥ ${formatScore(nextOffer)}`}
+              ? 'Show all articles (score ≥ 0)'
+              : `Show articles with score ≥ ${formatScore(nextOffer)}`}
           </button>
         </>
       )}

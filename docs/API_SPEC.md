@@ -744,7 +744,7 @@ the next cron run.
 > `openrouter_api_key` accepts the full secret key (or empty string to disable AI).
 > `cron_fetch_interval` is in minutes (1–1440).
 > `cron_refresh_weights_hour` is 0–23 (UTC hour).
-> `score_threshold` is a float in `[0.0, 1.0]`; takes effect on the very next `GET /feed` request (no worker restart needed).
+> `score_threshold` is a float in `[0.0, 1.0]`; takes effect on the very next `GET /feed` request (no worker restart needed). The PWA admin screen edits it as a percentage (0–100 %) for parity with the score badge; the wire format stays float.
 
 **Response `200`** — same shape as `GET /admin/config`.
 

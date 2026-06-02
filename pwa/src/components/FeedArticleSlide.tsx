@@ -109,6 +109,17 @@ export const FeedArticleSlide = ({
     window.open(article.url, '_blank', 'noopener,noreferrer')
   }
 
+  // Snap to the next slide in the feed-snap container. Triggered by tapping
+  // the boundary hint at the bottom of the slide. ``scrollIntoView`` plays
+  // well with ``scroll-snap-type`` on the parent (the snap engine picks up
+  // the new position and aligns it). No-op on the last slide.
+  const goToNext = () => {
+    const sibling = slideEl.current?.nextElementSibling
+    if (sibling instanceof HTMLElement && sibling.classList.contains('feed-slide')) {
+      sibling.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
   const liked = state.reaction === 'like'
   const disliked = state.reaction === 'dislike'
 
@@ -180,7 +191,7 @@ export const FeedArticleSlide = ({
             title={article.source.name}
           >
             {article.is_premium && (
-              <Lock size={12} aria-label="Contenu premium" />
+              <Lock size={12} aria-label="Premium content" />
             )}
             {article.source.name}
           </span>
@@ -355,22 +366,24 @@ export const FeedArticleSlide = ({
             {article.is_premium ? (
               <>
                 <Lock size={14} />
-                Voir sur le site (contenu limité)
+                View on site (limited content)
               </>
             ) : (
               <>
                 <ExternalLink size={14} />
-                Lire l&apos;article complet
+                Read full article
               </>
             )}
           </button>
         </div>
 
-        {/* ── Scroll boundary hint ───────────────────────────────────────── */}
-        <ScrollBoundaryHint bouncing={!nextVisible} />
+        {/* ── Scroll boundary hint ─────────────────────────────────────────
+            Tappable: chevron + label together act as a single button that
+            snaps to the next slide. The action bar sits ~140px below; that
+            spacer is intentionally a bit larger than the action-bar gradient
+            so the hint isn't hidden under it. */}
+        <ScrollBoundaryHint bouncing={!nextVisible} onActivate={goToNext} />
 
-        {/* Spacer so the action bar (≈ 84px) + BottomNav (≈ 76px) don't
-            hide the hint at the bottom of the scrollable region. */}
         <div
           style={{
             height: 'calc(env(safe-area-inset-bottom, 0px) + 180px)',
@@ -390,19 +403,25 @@ export const FeedArticleSlide = ({
         />
       </div>
 
-      {/* ── Action bar (sticky) ─────────────────────────────────────────── */}
+      {/* ── Action bar (sticky) ─────────────────────────────────────────────
+          BottomNav is ``62px + safe-area`` tall (8 padding + 38 button +
+          16 + safe-area). Setting ``bottom`` to that same value snaps the
+          action bar gradient onto the top edge of the nav with no gap.
+          The previous 76px left a ~14px light strip where the blurred
+          background image showed through between the gradient and the nav
+          surface (E10 follow-up). */}
       <div
         className="flex items-center justify-center"
         style={{
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: 'calc(env(safe-area-inset-bottom, 0px) + 76px)',
+          bottom: 'calc(env(safe-area-inset-bottom, 0px) + 60px)',
           zIndex: 6,
           gap: 48,
-          padding: '14px 0',
+          padding: '14px 0 18px',
           background:
-            'linear-gradient(to top, rgba(12,16,24,0.92), rgba(12,16,24,0))',
+            'linear-gradient(to top, rgba(12,16,24,0.95) 0%, rgba(12,16,24,0.85) 60%, rgba(12,16,24,0) 100%)',
         }}
       >
         <ActionButton
