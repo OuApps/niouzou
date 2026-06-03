@@ -1,12 +1,12 @@
 import { useState } from 'react'
-import { ArrowLeft, Trash2, Plus, Rss } from 'lucide-react'
+import { ArrowLeft, Trash2, Plus, Rss, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
-import { addSource, deleteSource, getSources, ApiError } from '../api'
+import { addSource, deleteSource, getSources, updateSource, ApiError } from '../api'
 import type { SourceFull } from '../types/api'
 
 export const Sources = () => {
@@ -16,6 +16,7 @@ export const Sources = () => {
   const [urlError, setUrlError] = useState('')
   const [adding, setAdding] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
   // Optimistic overlays over the fetched list (no effect copying into state).
   const [added, setAdded] = useState<SourceFull[]>([])
   const [removed, setRemoved] = useState<Set<string>>(new Set())
@@ -74,6 +75,22 @@ export const Sources = () => {
         next.delete(id)
         return next
       }) // restore on failure
+    }
+  }
+
+  const handleToggleFullContent = async (source: SourceFull) => {
+    setTogglingId(source.id)
+    try {
+      await updateSource(source.id, { fetch_full_content: !source.fetch_full_content })
+      // Optimistically update the sources list
+      const updateList = (list: SourceFull[]) =>
+        list.map((s) => (s.id === source.id ? { ...s, fetch_full_content: !s.fetch_full_content } : s))
+      setAdded((prev) => updateList(prev))
+      // The server data will be refreshed on next mount; we just keep UI in sync.
+    } catch {
+      // Silently fail — toggling can be retried without page reload
+    } finally {
+      setTogglingId(null)
     }
   }
 
