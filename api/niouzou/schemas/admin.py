@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AdminConfig(BaseModel):
@@ -84,3 +84,15 @@ class CompactionPreview(BaseModel):
 
 class CompactionApplyRequest(BaseModel):
     id: str
+
+
+class LlmPromptOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    body: str
+    updated_at: datetime
+
+
+class LlmPromptUpdate(BaseModel):
+    body: str

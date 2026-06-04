@@ -36,16 +36,14 @@ logger = logging.getLogger("niouzou.compaction")
 # token cost grows fastest. 500 covers the heads we care about.
 COMPACTION_TOP_N = 500
 
-_COMPACTION_SYSTEM = (
-    "You are a knowledge-base curator. Given a list of keyword terms used to "
-    "tag news articles, group the terms that refer to the same concept. "
-    "Return ONLY a JSON object of the form "
-    '{"groups": [{"canonical": "<preferred form>", "aliases": ["<other 1>", "<other 2>"]}]}. '
-    "Rules: canonical is the cleanest, most widely recognised form. aliases "
-    "must NOT contain canonical. Only include groups with at least 2 members. "
-    "Be conservative — when in doubt, do not merge. Skip groups whose members "
-    "are merely topically related (e.g. 'climate' and 'pollution'). "
-    "All terms are lowercased; preserve case. No preamble."
+# E13-S2 — Fallback prompt used when ``llm_prompts.compaction.system`` is
+# unavailable (early bootstrap, tests that don't run migrations). The DB
+# value loaded by ``CompactionService.preview`` overrides it in normal use.
+_COMPACTION_SYSTEM_FALLBACK = (
+    "You are a knowledge-base curator. Group keyword terms that refer to the "
+    "same concept. Return ONLY "
+    '{"groups": [{"canonical": "<preferred>", "aliases": ["<other>"]}]}. '
+    "Be conservative. No preamble."
 )
 
 
@@ -114,6 +112,12 @@ class CompactionService:
     def ai_enabled(self) -> bool:
         return self._client is not None
 
+    async def _load_system_prompt(self) -> str:
+        from niouzou.models import LlmPrompt
+
+        row = await self.session.get(LlmPrompt, "compaction.system")
+        return row.body if row is not None else _COMPACTION_SYSTEM_FALLBACK
+
     async def preview(
         self, *, top_n: int = COMPACTION_TOP_N
     ) -> CompactionRun:
@@ -133,7 +137,8 @@ class CompactionService:
             return run
 
         prompt = "Terms (one per line):\n" + "\n".join(terms)
-        groups = await _call_llm(self._client, prompt)
+        system = await self._load_system_prompt()
+        groups = await _call_llm(self._client, system, prompt)
         # Drop groups whose canonical / aliases reference terms outside the
         # vocab we sent — those would be model hallucinations and a silent
         # UPDATE on them could rename rows we never intended to touch.
@@ -219,14 +224,14 @@ class CompactionService:
 
 
 async def _call_llm(
-    client: OpenRouterClient, prompt: str
+    client: OpenRouterClient, system: str, prompt: str
 ) -> list[CompactionGroup]:
     """Run the grouping prompt off the event loop (the SDK is blocking)."""
     import asyncio
 
     def _go() -> list[CompactionGroup]:
         return client.complete_json(
-            system=_COMPACTION_SYSTEM,
+            system=system,
             user=prompt,
             parse=_parse_groups,
             retries=1,

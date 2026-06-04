@@ -36,7 +36,10 @@ from niouzou.schemas.admin import (
     AdminUser,
     CompactionApplyRequest,
     CompactionPreview,
+    LlmPromptOut,
+    LlmPromptUpdate,
 )
+from niouzou.services.llm_prompts_service import LlmPromptsServiceDep
 from niouzou.security import hash_password
 from niouzou.services.admin_models_service import fetch_models
 from niouzou.services.settings_service import (
@@ -261,6 +264,25 @@ async def reset_password(
     if user is None:
         raise not_found("User not found")
     user.password_hash = hash_password(body.new_password)
+
+
+@router.get("/prompts", response_model=list[LlmPromptOut])
+async def list_prompts(
+    _: CurrentAdmin, service: LlmPromptsServiceDep
+) -> list[LlmPromptOut]:
+    rows = await service.list_all()
+    return [LlmPromptOut.model_validate(r) for r in rows]
+
+
+@router.patch("/prompts/{name}", response_model=LlmPromptOut)
+async def update_prompt(
+    name: str,
+    body: LlmPromptUpdate,
+    _: CurrentAdmin,
+    service: LlmPromptsServiceDep,
+) -> LlmPromptOut:
+    row = await service.update(name, body.body)
+    return LlmPromptOut.model_validate(row)
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

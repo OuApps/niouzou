@@ -18,7 +18,10 @@ from niouzou.services.openrouter_client import OpenRouterClient, OpenRouterError
 # free-tier context windows / costs reward brevity.
 _MAX_CHARS = 6000
 
-_SYSTEM = (
+# E13-S2 — Fallback prompt used when ``set_system_prompt`` was never
+# called. The DB-backed value loaded once per cron run from
+# ``llm_prompts.scoring.ai_keywords`` overrides it in normal use.
+_SYSTEM_FALLBACK = (
     "You extract the key topics from a news article. "
     "Return ONLY a JSON object of the form "
     '{"keywords": [{"term": "<lowercase topic>", "salience": <0.0-1.0>}]}. '
@@ -43,6 +46,11 @@ class AIKeywordScorer(BaseScorer):
         self._client = client
         self._max_keywords = max_keywords
         self._retries = retries
+        # E13-S2 — replaced once per run by ``set_system_prompt``.
+        self._system_prompt = _SYSTEM_FALLBACK
+
+    def set_system_prompt(self, body: str) -> None:
+        self._system_prompt = body
 
     def _get_client(self) -> OpenRouterClient:
         if self._client is None:
@@ -67,7 +75,7 @@ class AIKeywordScorer(BaseScorer):
             return []
 
         return self._get_client().complete_json(
-            system=_SYSTEM,
+            system=self._system_prompt,
             user=text[:_MAX_CHARS],
             parse=self._parse,
             retries=self._retries,

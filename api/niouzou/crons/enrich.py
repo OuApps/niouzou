@@ -48,6 +48,7 @@ from niouzou.models import Article, ArticleKeyword, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
 from niouzou.services.enrichment_service import EnrichmentService
+from niouzou.services.llm_prompts_service import load_all_into_dict
 from niouzou.services.openrouter_client import OpenRouterClient
 from niouzou.services.scoring_service import ScoringService
 from niouzou.services.settings_service import SettingsService
@@ -113,12 +114,18 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
     async with session_scope() as cfg_session:
         effective = await SettingsService(cfg_session).get_effective()
         vocab = await _load_top_keywords(cfg_session, _VOCAB_INJECTION_TOP_N)
+        # E13-S2 — snapshot the DB-backed prompts once per run. Admin
+        # edits apply on the next pipeline tick rather than mid-flight,
+        # so a long enrichment loop sees a consistent prompt.
+        prompts = await load_all_into_dict(cfg_session)
 
     client = OpenRouterClient.from_overrides(
         effective.openrouter_api_key, effective.openrouter_model
     )
     enrichment = EnrichmentService(client)
     enrichment.set_vocab(vocab)
+    if "enrichment.combined" in prompts:
+        enrichment.set_system_prompt(prompts["enrichment.combined"])
     tfidf_scoring = ScoringService(
         ScoringPipeline(TFIDFScorer()),
         max_keywords_per_article=effective.max_keywords_per_article,
@@ -128,8 +135,11 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
     else:
         from niouzou.scoring.ai_keyword import AIKeywordScorer
 
+        ai_scorer = AIKeywordScorer(client)
+        if "scoring.ai_keywords" in prompts:
+            ai_scorer.set_system_prompt(prompts["scoring.ai_keywords"])
         ai_scoring = ScoringService(
-            ScoringPipeline(AIKeywordScorer(client)),
+            ScoringPipeline(ai_scorer),
             max_keywords_per_article=effective.max_keywords_per_article,
         )
 

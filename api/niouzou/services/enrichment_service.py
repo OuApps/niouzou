@@ -51,20 +51,17 @@ _MAX_VOCAB_CHARS = 800
 # Keyword cap negotiated in the prompt — persistence still applies its own cap.
 _MAX_KEYWORDS = 10
 
-_ENRICHMENT_SYSTEM = (
+# E13-S2 — Fallback prompt used only when ``set_system_prompt`` was never
+# called (tests, scripts that build ``EnrichmentService`` directly without
+# going through ``enrichment_resources``). The DB-backed value loaded once
+# per cron run is the authoritative one in production.
+_ENRICHMENT_SYSTEM_FALLBACK = (
     "You enrich news articles for a feed. Return ONLY a JSON object of the form "
-    '{"summary_short": "<2 engaging sentences that make the reader want to click>", '
-    '"summary_executive": "<3-5 markdown bullet points, one per line starting with \'- \'>", '
-    '"keywords": [{"term": "<lowercase 1-3 word topic>", "salience": <0.0-1.0>}]}. '
-    "At most 10 keywords. Aim for: 3-4 broad categories (e.g., Science, Sports, Politics, "
-    "Technology) and 3-4 specific/entity keywords (e.g., person names, company names, places). "
-    "salience = how central the topic is (1.0 = main subject). "
-    "Keywords should be stable reusable concepts — prefer named entities (clubs, "
-    "countries, people, companies), domains (football, AI, finance) and topics "
-    "(climate, elections) over ephemeral events or actions ('defeat', 'final', "
-    "'Argentine midfielder'). Normalise names consistently. "
-    "Respond in the language specified in the 'Language:' field, or in the "
-    "article's language if unspecified. No preamble, no commentary."
+    '{"summary_short": "<3 to 4 engaging sentences (around 60-100 words) that '
+    "give the reader a real preview of the article>\", "
+    '"summary_executive": "<3-5 markdown bullet points>", '
+    '"keywords": [{"term": "<lowercase topic>", "salience": <0.0-1.0>}]}. '
+    "No preamble."
 )
 
 
@@ -164,6 +161,13 @@ class EnrichmentService:
         # toward terms the system already knows. Empty list = no injection,
         # which is the default and also the path tests follow.
         self._vocab: list[str] = []
+        # E13-S2 — DB-backed system prompt; replaced once at run start by
+        # ``set_system_prompt``. Stays sync-readable so ``generate_enrichment``
+        # (called inside ``asyncio.to_thread``) doesn't need to await.
+        self._system_prompt = _ENRICHMENT_SYSTEM_FALLBACK
+
+    def set_system_prompt(self, body: str) -> None:
+        self._system_prompt = body
 
     def set_vocab(self, vocab: list[str]) -> None:
         """Snapshot the top-N existing keywords for prompt injection.
@@ -278,7 +282,7 @@ class EnrichmentService:
                 time.sleep(backoff)
             try:
                 return self._client.complete_json(
-                    system=_ENRICHMENT_SYSTEM,
+                    system=self._system_prompt,
                     user=body,
                     parse=_parse_enrichment,
                     retries=0,

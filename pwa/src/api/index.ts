@@ -430,3 +430,22 @@ export function resetUserPassword(
 export function deleteAdminUser(userId: string): Promise<void> {
   return request<void>(`/admin/users/${userId}`, { method: 'DELETE' })
 }
+
+// ── Admin LLM prompts (E13-S2) ───────────────────────────────────────────────
+
+export interface LlmPrompt {
+  name: string
+  body: string
+  updated_at: string
+}
+
+export function getAdminPrompts(): Promise<LlmPrompt[]> {
+  return request<LlmPrompt[]>('/admin/prompts')
+}
+
+export function updateAdminPrompt(name: string, body: string): Promise<LlmPrompt> {
+  return request<LlmPrompt>(`/admin/prompts/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    body: { body },
+  })
+}

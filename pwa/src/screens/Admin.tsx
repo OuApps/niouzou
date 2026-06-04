@@ -11,9 +11,11 @@ import {
   patchAdminConfig,
   getAdminModels,
   getAdminUsers,
+  getAdminPrompts,
   getStats,
   resetUserPassword,
   deleteAdminUser,
+  updateAdminPrompt,
   compactKeywordsPreview,
   compactKeywordsGet,
   compactKeywordsApply,
@@ -24,6 +26,7 @@ import {
   type AdminUser,
   type CompactionGroup,
   type CompactionPreview,
+  type LlmPrompt,
 } from '../api'
 import { useAuthStore } from '../store/auth'
 
@@ -203,6 +206,11 @@ export const Admin = () => {
               ) : null}
             </>
           )}
+        </div>
+
+        {/* E13-S2 — LLM prompts editor */}
+        <div style={{ marginTop: 28 }}>
+          <PromptsSection />
         </div>
       </div>
     </div>
@@ -734,6 +742,166 @@ const DeleteUserModal = ({
             {deleting ? 'Deleting…' : 'Delete forever'}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ── E13-S2 — LLM prompts editor ────────────────────────────────────────────
+
+const PromptsSection = () => {
+  const [open, setOpen] = useState(false)
+  const { data: prompts, loading, error, reload } = useApiData(getAdminPrompts, [])
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          fontSize: 14,
+          fontWeight: 600,
+          color: 'var(--text-secondary)',
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '0 0 12px 0',
+          marginBottom: 12,
+        }}
+        aria-expanded={open}
+      >
+        <span>LLM Prompts</span>
+        {open ? (
+          <ChevronUp size={16} style={{ color: 'var(--text-tertiary)' }} />
+        ) : (
+          <ChevronDown size={16} style={{ color: 'var(--text-tertiary)' }} />
+        )}
+      </button>
+
+      {open && (
+        <>
+          {loading ? (
+            <div className="flex justify-center" style={{ paddingTop: 20 }}>
+              <Spinner size={24} />
+            </div>
+          ) : error ? (
+            <ErrorState message={error} onRetry={reload} />
+          ) : prompts && prompts.length > 0 ? (
+            <div className="flex flex-col gap-3">
+              {prompts.map((p) => (
+                <PromptCard key={p.name} prompt={p} onSaved={reload} />
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  )
+}
+
+interface PromptCardProps {
+  prompt: LlmPrompt
+  onSaved: () => void
+}
+
+const PromptCard = ({ prompt, onSaved }: PromptCardProps) => {
+  const [draft, setDraft] = useState(prompt.body)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const dirty = draft !== prompt.body
+
+  const handleSave = async () => {
+    setError(null)
+    setSaving(true)
+    try {
+      await updateAdminPrompt(prompt.name, draft)
+      onSaved()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(draft)
+    } catch {
+      // Clipboard API not available — silent no-op.
+    }
+  }
+
+  return (
+    <div className="glass-sm" style={{ borderRadius: 16, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="flex items-center justify-between">
+        <code style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>{prompt.name}</code>
+        <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+          {formatTimeAgo(new Date(prompt.updated_at))}
+        </span>
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={12}
+        spellCheck={false}
+        style={{
+          width: '100%',
+          padding: '10px 12px',
+          borderRadius: 10,
+          border: '1px solid rgba(255,255,255,0.10)',
+          background: 'rgba(0,0,0,0.20)',
+          color: 'var(--text-primary)',
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: 11,
+          lineHeight: 1.5,
+          resize: 'vertical',
+          outline: 'none',
+        }}
+      />
+      {error && (
+        <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={handleSave}
+          disabled={!dirty || saving}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 8,
+            background: dirty ? 'var(--accent)' : 'rgba(255,255,255,0.08)',
+            color: dirty ? '#0c1018' : 'var(--text-tertiary)',
+            border: 'none',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: !dirty || saving ? 'default' : 'pointer',
+            opacity: saving ? 0.6 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          {saving && <Spinner size={10} />}
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          onClick={handleCopy}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 8,
+            background: 'rgba(255,255,255,0.08)',
+            color: 'var(--text-primary)',
+            border: '1px solid rgba(255,255,255,0.10)',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        >
+          Copy
+        </button>
       </div>
     </div>
   )

@@ -452,7 +452,11 @@ async def test_run_closes_openrouter_client(monkeypatch):
     async def _no_vocab(session, limit):
         return []
 
+    async def _no_prompts(session):
+        return {}
+
     monkeypatch.setattr(enrich_mod, "_load_top_keywords", _no_vocab)
+    monkeypatch.setattr(enrich_mod, "load_all_into_dict", _no_prompts)
 
     assert await enrich_mod.run() == 0
     assert client.closed is True
