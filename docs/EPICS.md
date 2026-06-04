@@ -2764,3 +2764,124 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 **Interaction avec keyword compaction** (E10-S3) : la compaction continue de fonctionner sur tous les kinds. Elle est particulièrement utile pour les entités (ex: `"stade toulousain"` → `"toulouse"`). Les entités `kind='entity'` bénéficient donc de la compaction sans changement.
 
 **`keyword_weights` inchangée** : même table, même formule de poids. Les deux kinds y contribuent à égalité.
+
+---
+
+## EPIC 13 — Polish admin & sources (juin 2026)
+
+**Objectif** : nettoyer quelques rugosités UX (placement badge AI, toggle peu utile sur Sources) et donner à l'admin de vrais leviers (édition des prompts LLM, suppression d'un user, gestion des sources via toggle ON/OFF).
+
+### Stories
+
+- [ ] **E13-S1** — Badge "AI Summary" dans le cadre du résumé IA
+- [ ] **E13-S2** — Prompts LLM stockés en DB et éditables depuis l'admin
+- [ ] **E13-S3** — Suppression hard d'un user (cascade)
+- [ ] **E13-S4** — Retirer le toggle "Fetch full content" de Sources UI
+- [ ] **E13-S5** — Toggle ON/OFF par source + hard delete caché
+
+---
+
+#### [ ] E13-S1 — Badge "AI Summary" dans le cadre du résumé IA
+
+**Contexte.** `pwa/src/components/FeedArticleSlide.tsx:323-364` affiche deux blocs : (a) l'**executive summary** (bullets, le vrai résumé IA, encadré) et (b) le **short summary** (fallback, sans cadre). Le sparkles ✨ est actuellement collé au label "Summary" du short summary — visuellement détaché et associé au mauvais bloc.
+
+**Acceptance.**
+- Le cadre de l'executive summary affiche en haut à gauche un badge `✨ AI Summary` (sparkles + label, couleur accent du design system).
+- Le sparkles est retiré du label "Summary" du short summary, qui redevient un label neutre.
+- Pas de cadre ajouté au short summary — il reste un paragraphe simple sous le bloc IA.
+
+**Files.** `pwa/src/components/FeedArticleSlide.tsx`.
+
+---
+
+#### [ ] E13-S2 — Prompts LLM stockés en DB et éditables depuis l'admin
+
+**Contexte.** Les prompts (summary court, executive summary, keywords) sont hardcodés dans `api/niouzou/services/enrichment_service.py` et `openrouter_client.py`. Pour itérer dessus sans redéploiement, on les déplace en DB. **La DB devient la seule source de vérité** — pas de fallback hardcodé après migration.
+
+**Modèle** — nouvelle table `llm_prompts` :
+- `name` (PK, ex. `enrichment.summary_short`, `enrichment.summary_executive`, `enrichment.keywords`)
+- `body` (Text, le prompt brut avec placeholders type `{title}`, `{content}`)
+- `updated_at`
+
+**Migration Alembic.** Crée la table + INSERT des prompts actuellement hardcodés (un row par prompt). **Le prompt `enrichment.summary_short` est remplacé par une version plus longue** (~3–4 phrases vs 1–2 actuellement) à valider à la rédaction de la migration.
+
+**Backend.**
+- `services/llm_prompts_service.py` : `get(name) -> str`, `list() -> [(name, body, updated_at)]`, `update(name, body)`. Cache en mémoire avec TTL court (~30s) pour éviter un hit DB par enrichissement.
+- `enrichment_service.py` et `openrouter_client.py` : remplacement des f-strings hardcodés par `await prompts.get("…")` + `.format(...)` pour les placeholders.
+- Suppression des constantes Python de prompts (DB = source de vérité).
+
+**API.**
+- `GET /admin/prompts` → `[{name, body, updated_at}]`
+- `PATCH /admin/prompts/{name}` body `{body: str}` → renvoie la row mise à jour. Guard `CurrentAdmin`.
+
+**UI (`pwa/src/screens/Admin.tsx`).** Nouvelle section "LLM Prompts" :
+- Une carte par prompt avec : `name` en titre, `<textarea>` monospace pleine largeur (~12 lignes, redimensionnable), bouton "Save" + bouton "Copy". Pas de formatage Markdown, pas de syntax highlight — texte brut.
+- Save désactivé tant qu'aucune modif n'est en attente.
+
+**Files.** `api/niouzou/models/llm_prompt.py` (new), `api/niouzou/migrations/versions/XXXX_llm_prompts.py` (new), `api/niouzou/services/llm_prompts_service.py` (new), `api/niouzou/routers/admin.py`, `api/niouzou/schemas/admin.py`, `api/niouzou/services/enrichment_service.py`, `api/niouzou/services/openrouter_client.py`, `pwa/src/api/admin.ts`, `pwa/src/screens/Admin.tsx`.
+
+---
+
+#### [ ] E13-S3 — Suppression hard d'un user (cascade)
+
+**Contexte.** Aucun moyen actuel de supprimer un user pour de vrai. Demande RGPD + ménage souhaités.
+
+**Backend.**
+- Vérifier/ajouter `ondelete="CASCADE"` sur toutes les FK pointant vers `users.id` : `sources.user_id`, `article_feedback.user_id`, `article_impressions.user_id`, `article_relevance_scores.user_id`, `keyword_weights.user_id`, `saved_articles.user_id`. Migration Alembic pour les FK qui n'ont pas déjà le cascade.
+- **Articles** : pendent de `Source` → cascade automatique via `sources` quand on cascade `users`. Les `article_keywords` doivent aussi cascader depuis `articles` (à vérifier).
+- `DELETE /admin/users/{id}` (guard `CurrentAdmin`) :
+  - 400 si `id == current_user.id` (un admin ne se supprime pas lui-même)
+  - 404 si user inconnu
+  - Sinon `session.delete(user)` + commit → FastAPI 204.
+- **Pas de coupure côté Miniflux** : les feeds Miniflux ne sont pas par-user (ils sont globaux côté Miniflux). On laisse les feeds Miniflux en place.
+
+**UI (`pwa/src/screens/Admin.tsx`).** Sur chaque ligne user, bouton "Delete" (rouge) → modale "Tape l'email du user pour confirmer" → input texte qui doit matcher exactement → bouton "Delete forever" activé seulement si match.
+
+**Files.** `api/niouzou/migrations/versions/XXXX_cascade_user_delete.py` (new), `api/niouzou/routers/admin.py`, `api/niouzou/schemas/admin.py`, `pwa/src/api/admin.ts`, `pwa/src/screens/Admin.tsx`.
+
+---
+
+#### [ ] E13-S4 — Retirer le toggle "Fetch full content" de Sources
+
+**Contexte.** `pwa/src/screens/Sources.tsx:287` expose un toggle "fetch_full_content" qui n'apporte plus de valeur côté UX (et complexifie l'écran).
+
+**Acceptance.**
+- Retrait du toggle et de tout le markup associé dans `Sources.tsx`.
+- Retrait du handler `handleToggleFullContent`.
+- **Backend conservé** : champ `fetch_full_content` reste en DB, l'appel `miniflux.update_feed(crawler=True)` reste dans `sources_service.add_source` avec la valeur par défaut actuelle. Endpoint `PATCH /sources/{id}` reste capable de toggle ce champ pour usage admin futur, mais l'UI ne l'expose plus.
+
+**Files.** `pwa/src/screens/Sources.tsx`.
+
+---
+
+#### [ ] E13-S5 — Toggle ON/OFF par source + hard delete caché
+
+**Contexte.** La poubelle actuelle déclenche un soft delete (`sources_service.delete_source`) — le user pense supprimer pour de vrai alors que le flux et les articles restent vivants. UX trompeuse.
+
+**Sémantique.**
+- **ON (actif)** : comportement actuel — fetch des nouveaux articles, articles visibles dans Feed/Explore.
+- **OFF (en pause)** : plus de fetch (cron skip déjà sur `deleted_at IS NOT NULL`), articles existants **masqués** du Feed et de l'Explore (filtre déjà en place sur `Source.deleted_at.is_(None)`).
+- Toggler ON → OFF : `deleted_at = now()`. OFF → ON : `deleted_at = NULL`.
+- **Hard delete caché** : voie séparée pour réellement supprimer la source + ses articles + ses dépendances (feedback, impressions, scores, article_keywords). Pas exposé dans l'UI standard — disponible via API (et éventuellement un menu caché plus tard).
+
+**Backend.**
+- `services/sources_service.py` : nouvelle méthode `set_source_active(user_id, source_id, active: bool)`. La méthode `delete_source` actuelle est renommée `hard_delete_source` et fait un vrai `session.delete(source)` (cascade vers articles & dépendances via FK CASCADE).
+- Migration Alembic : ajouter `ondelete="CASCADE"` sur `articles.source_id`, `article_feedback.article_id`, `article_impressions.article_id`, `article_relevance_scores.article_id`, `article_keywords.article_id` si pas déjà en place.
+- Routes :
+  - `PATCH /sources/{id}` : accepter `{active: bool}` en plus de l'existant. Active = mappé sur `deleted_at`.
+  - `DELETE /sources/{id}` : passe en mode toggle off par défaut. Query param `?hard=true` → hard delete réel.
+
+**UI (`pwa/src/screens/Sources.tsx`).**
+- Remplacement de l'icône poubelle par un `Switch` "Active" (style proche du toggle full-content actuel — réutilisable au moment du retrait en S4).
+- Sources OFF : opacité réduite (0.5) sur la ligne pour signaler la pause.
+- Pas de bouton "Delete forever" dans l'UI (caché).
+
+**Files.** `api/niouzou/services/sources_service.py`, `api/niouzou/schemas/sources.py`, `api/niouzou/routers/sources.py`, `api/niouzou/migrations/versions/XXXX_cascade_source_delete.py` (new si nécessaire), `pwa/src/api/sources.ts`, `pwa/src/screens/Sources.tsx`.
+
+---
+
+### Notes E13
+
+**Ordre d'attaque** : S4 (UI trim) → S1 (UI pure) → S5 (toggle sources + cascade) → S3 (delete user, réutilise les patterns cascade de S5) → S2 (prompts en DB, le plus gros).
+
+**Tests** : pas de gros besoin de tests automatisés pour S1/S4 (UI cosmétique). S2/S3/S5 doivent tester le chemin DB (cascade effective + endpoints admin).
