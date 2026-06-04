@@ -1,4 +1,4 @@
-"""Sources tests (E3-S3): Miniflux feed creation, dedup, soft delete.
+"""Sources tests: Miniflux feed creation, dedup, pause / hard-delete (E13-S5).
 
 Miniflux HTTP is mocked with respx; the DB is the real local Postgres.
 """
@@ -70,21 +70,56 @@ async def test_duplicate_url_conflicts(db_session):
 
 
 @respx.mock
-async def test_delete_keeps_articles_and_hides_source(db_session):
+async def test_deactivate_keeps_articles_and_marks_source_inactive(db_session):
+    # Empty feed list — list_sources still calls Miniflux for crawler state.
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
     user = await make_user(db_session)
     source = await make_source(db_session, user, feed_id=7)
     await make_article(db_session, source, title="kept")
     await db_session.commit()
 
     svc = SourcesService(db_session)
-    await svc.delete_source(user.id, source.id)
+    await svc.deactivate_source(user.id, source.id)
     await db_session.commit()
 
-    # Article survives the source removal.
+    # Article survives a pause.
     assert await db_session.scalar(select(func.count()).select_from(Article)) == 1
-    # Source no longer listed.
+    # Source is still listed, marked inactive.
     listed = await svc.list_sources(user.id)
-    assert listed.sources == []
+    assert len(listed.sources) == 1
+    assert listed.sources[0].active is False
+
+
+@respx.mock
+async def test_hard_delete_cascades_to_articles(db_session):
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=8)
+    await make_article(db_session, source, title="will-be-gone")
+    await db_session.commit()
+
+    await SourcesService(db_session).hard_delete_source(user.id, source.id)
+    await db_session.commit()
+
+    assert await db_session.scalar(select(func.count()).select_from(Source)) == 0
+    # FK ON DELETE CASCADE wipes the article too.
+    assert await db_session.scalar(select(func.count()).select_from(Article)) == 0
+
+
+@respx.mock
+async def test_reactivating_paused_source_via_update(db_session):
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=9)
+    await db_session.commit()
+
+    svc = SourcesService(db_session)
+    await svc.deactivate_source(user.id, source.id)
+    await db_session.commit()
+
+    out = await svc.update_source(user.id, source.id, active=True)
+    await db_session.commit()
+
+    assert out.active is True
 
 
 @respx.mock
@@ -96,7 +131,7 @@ async def test_readding_removed_source_revives_it(db_session):
     svc = SourcesService(db_session)
     created = await svc.create_source(user.id, FEED_URL)
     await db_session.commit()
-    await svc.delete_source(user.id, created.id)
+    await svc.deactivate_source(user.id, created.id)
     await db_session.commit()
 
     # Re-adding should revive the same row without hitting Miniflux again.

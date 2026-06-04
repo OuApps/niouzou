@@ -43,12 +43,24 @@ async def update_source(
     service: SourcesServiceDep,
 ) -> SourceOut:
     return await service.update_source(
-        user.id, source_id, fetch_full_content=body.fetch_full_content
+        user.id,
+        source_id,
+        fetch_full_content=body.fetch_full_content,
+        active=body.active,
     )
 
 
 @router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_source(
-    source_id: uuid.UUID, user: CurrentUser, service: SourcesServiceDep
+    source_id: uuid.UUID,
+    user: CurrentUser,
+    service: SourcesServiceDep,
+    hard: bool = False,
 ) -> None:
-    await service.delete_source(user.id, source_id)
+    # E13-S5: default path = pause (UI-facing). ``?hard=true`` is the hidden
+    # escape hatch that wipes the source and every dependent row via FK
+    # CASCADE — not exposed in the PWA, available via API for cleanup.
+    if hard:
+        await service.hard_delete_source(user.id, source_id)
+    else:
+        await service.deactivate_source(user.id, source_id)

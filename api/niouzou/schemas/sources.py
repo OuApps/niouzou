@@ -22,7 +22,11 @@ class SourceCreate(BaseModel):
 
 
 class SourceUpdate(BaseModel):
-    fetch_full_content: bool
+    fetch_full_content: bool | None = None
+    # E13-S5: toggle the source between running (True) and paused (False).
+    # Paused sources stay listed in /sources but their articles are hidden
+    # from Feed/Explore until reactivated.
+    active: bool | None = None
 
 
 class SourceOut(BaseModel):
@@ -35,6 +39,8 @@ class SourceOut(BaseModel):
     # State lives on the shared Miniflux feed, not on the Niouzou row —
     # populated by SourcesService rather than read from the ORM.
     fetch_full_content: bool = False
+    # E13-S5: derived from ``Source.deleted_at`` (None → active).
+    active: bool = True
 
 
 class SourcesListResponse(BaseModel):

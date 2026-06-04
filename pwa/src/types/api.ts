@@ -18,6 +18,7 @@ export interface SourceFull {
   url: string
   created_at: string
   fetch_full_content: boolean
+  active: boolean
 }
 
 export type Scorer = 'tfidf' | 'ai_keyword'

@@ -16,10 +16,10 @@ class ArticleRelevanceScore(Base):
     )
 
     article_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("articles.id"), primary_key=True
+        ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), primary_key=True
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     relevance_score: Mapped[float] = mapped_column(Float, nullable=False)
     scorer: Mapped[str | None] = mapped_column(String, nullable=True)

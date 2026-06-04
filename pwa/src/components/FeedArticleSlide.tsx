@@ -320,7 +320,8 @@ export const FeedArticleSlide = ({
             </div>
           )}
 
-          {/* Executive summary — bullets when AI ran, otherwise hidden. */}
+          {/* Executive summary — bullets when AI ran, otherwise hidden. The
+              top-left badge clearly labels the card as AI-generated. */}
           {article.summary_executive && (
             <div
               style={{
@@ -331,6 +332,22 @@ export const FeedArticleSlide = ({
                 border: '1px solid rgba(255,255,255,0.06)',
               }}
             >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  marginBottom: 10,
+                  color: 'var(--accent)',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: 0.2,
+                }}
+                aria-label="AI-generated summary"
+              >
+                <Sparkles size={12} style={{ flexShrink: 0 }} />
+                <span>AI Summary</span>
+              </div>
               <ExecutiveSummary text={article.summary_executive} />
             </div>
           )}
@@ -338,17 +355,10 @@ export const FeedArticleSlide = ({
           {/* Short summary */}
           {article.summary_short && (
             <div style={{ marginBottom: 20 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <div style={{ marginBottom: 8 }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)' }}>
                   Summary
                 </span>
-                {article.scorer === 'ai_keyword' && (
-                  <Sparkles
-                    size={12}
-                    style={{ color: 'var(--accent)', flexShrink: 0 }}
-                    aria-label="AI-generated summary"
-                  />
-                )}
               </div>
               <p
                 style={{

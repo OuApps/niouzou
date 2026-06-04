@@ -29,7 +29,7 @@ class Article(Base):
         primary_key=True, server_default=text("gen_random_uuid()")
     )
     source_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("sources.id"), nullable=False
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
     )
     miniflux_entry_id: Mapped[int] = mapped_column(nullable=False)
     url: Mapped[str] = mapped_column(String, nullable=False)

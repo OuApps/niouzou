@@ -1,12 +1,12 @@
 import { useState } from 'react'
-import { ArrowLeft, Trash2, Plus, Rss, FileText } from 'lucide-react'
+import { ArrowLeft, Plus, Rss } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
-import { addSource, deleteSource, getSources, updateSource, ApiError } from '../api'
+import { addSource, getSources, updateSource, ApiError } from '../api'
 import type { SourceFull } from '../types/api'
 
 export const Sources = () => {
@@ -15,16 +15,18 @@ export const Sources = () => {
   const [newUrl, setNewUrl] = useState('')
   const [urlError, setUrlError] = useState('')
   const [adding, setAdding] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
   // Optimistic overlays over the fetched list (no effect copying into state).
   const [added, setAdded] = useState<SourceFull[]>([])
-  const [removed, setRemoved] = useState<Set<string>>(new Set())
+  // Per-id active override so a toggle reflects immediately without waiting
+  // on a list reload. `undefined` → fall back to server value.
+  const [activeOverride, setActiveOverride] = useState<Record<string, boolean>>({})
 
-  const sources: SourceFull[] = [
-    ...(data?.sources ?? []).filter((s) => !removed.has(s.id)),
-    ...added.filter((s) => !removed.has(s.id)),
-  ]
+  const sources: SourceFull[] = [...(data?.sources ?? []), ...added].map((s) =>
+    activeOverride[s.id] === undefined
+      ? s
+      : { ...s, active: activeOverride[s.id] },
+  )
 
   const handleAdd = async () => {
     setUrlError('')
@@ -57,38 +59,14 @@ export const Sources = () => {
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (confirmDelete !== id) {
-      setConfirmDelete(id)
-      return
-    }
-    setConfirmDelete(null)
-    setRemoved((prev) => new Set(prev).add(id)) // optimistic
-    try {
-      await deleteSource(id)
-      // Also purge from `added` so a source created-then-deleted this session
-      // doesn't reappear after a reload (removed keeps filtering server data).
-      setAdded((prev) => prev.filter((s) => s.id !== id))
-    } catch {
-      setRemoved((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      }) // restore on failure
-    }
-  }
-
-  const handleToggleFullContent = async (source: SourceFull) => {
+  const handleToggleActive = async (source: SourceFull) => {
+    const next = !source.active
     setTogglingId(source.id)
+    setActiveOverride((prev) => ({ ...prev, [source.id]: next }))
     try {
-      await updateSource(source.id, { fetch_full_content: !source.fetch_full_content })
-      // Optimistically update the sources list
-      const updateList = (list: SourceFull[]) =>
-        list.map((s) => (s.id === source.id ? { ...s, fetch_full_content: !s.fetch_full_content } : s))
-      setAdded((prev) => updateList(prev))
-      // The server data will be refreshed on next mount; we just keep UI in sync.
+      await updateSource(source.id, { active: next })
     } catch {
-      // Silently fail — toggling can be retried without page reload
+      setActiveOverride((prev) => ({ ...prev, [source.id]: source.active }))
     } finally {
       setTogglingId(null)
     }
@@ -194,8 +172,13 @@ export const Sources = () => {
             {sources.map((source) => (
               <div
                 key={source.id}
-                className="glass-sm flex flex-col gap-2"
-                style={{ borderRadius: 16, padding: '12px 14px' }}
+                className="glass-sm"
+                style={{
+                  borderRadius: 16,
+                  padding: '12px 14px',
+                  opacity: source.active ? 1 : 0.5,
+                  transition: 'opacity 150ms ease',
+                }}
               >
                 <div className="flex items-center gap-3">
                   <div
@@ -227,26 +210,23 @@ export const Sources = () => {
                       {source.url}
                     </p>
                   </div>
-                  <button
-                    onClick={() => handleDelete(source.id)}
-                    aria-label={confirmDelete === source.id ? 'Confirm delete' : `Delete ${source.name}`}
+                  <label
+                    className="flex items-center"
                     style={{
-                      background: 'none',
-                      border: 'none',
-                      padding: 6,
-                      cursor: 'pointer',
-                      color: confirmDelete === source.id ? '#f87171' : 'var(--text-tertiary)',
+                      cursor: togglingId === source.id ? 'default' : 'pointer',
                       flexShrink: 0,
                     }}
+                    aria-label={source.active ? `Pause ${source.name}` : `Resume ${source.name}`}
                   >
-                    <Trash2 size={16} />
-                  </button>
+                    <input
+                      type="checkbox"
+                      checked={source.active}
+                      disabled={togglingId === source.id}
+                      onChange={() => handleToggleActive(source)}
+                      style={{ accentColor: 'var(--accent)', width: 16, height: 16 }}
+                    />
+                  </label>
                 </div>
-                <FullContentToggle
-                  source={source}
-                  busy={togglingId === source.id}
-                  onToggle={() => handleToggleFullContent(source)}
-                />
               </div>
             ))}
           </div>
@@ -255,51 +235,3 @@ export const Sources = () => {
     </div>
   )
 }
-
-interface FullContentToggleProps {
-  source: SourceFull
-  busy: boolean
-  onToggle: () => void
-}
-
-const FullContentToggle = ({ source, busy, onToggle }: FullContentToggleProps) => (
-  <div
-    className="flex items-start gap-2"
-    style={{
-      paddingTop: 8,
-      borderTop: '1px solid var(--divider)',
-    }}
-  >
-    <FileText
-      size={12}
-      style={{ color: 'var(--text-tertiary)', flexShrink: 0, marginTop: 3 }}
-    />
-    <div className="flex-1 min-w-0">
-      <label
-        className="flex items-center justify-between gap-3"
-        style={{ cursor: busy ? 'default' : 'pointer', fontSize: 12 }}
-      >
-        <span style={{ color: 'var(--text-secondary)' }}>
-          Récupérer l'article complet
-        </span>
-        <input
-          type="checkbox"
-          checked={source.fetch_full_content}
-          disabled={busy}
-          onChange={onToggle}
-          style={{ accentColor: 'var(--accent)' }}
-        />
-      </label>
-      <p
-        style={{
-          fontSize: 10,
-          color: 'var(--text-tertiary)',
-          marginTop: 2,
-          lineHeight: 1.4,
-        }}
-      >
-        Ce réglage s'applique à tous les utilisateurs abonnés à cette source.
-      </p>
-    </div>
-  </div>
-)

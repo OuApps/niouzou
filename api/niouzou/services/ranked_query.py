@@ -117,6 +117,7 @@ def build_ranked_query(
                 {RANKED_COLUMNS}
             {FROM_JOINS}
             WHERE s.user_id = :user_id
+                AND s.deleted_at IS NULL
                 AND a.status = '{STATUS_ENRICHED}'
                 {impression_exclusion}
                 {score_filter}

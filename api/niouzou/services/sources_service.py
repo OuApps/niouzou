@@ -1,4 +1,4 @@
-"""Sources business logic: list, add (via Miniflux), update, soft-delete."""
+"""Sources business logic: list, add (via Miniflux), update, pause/hard-delete."""
 
 import logging
 import uuid
@@ -29,10 +29,14 @@ class SourcesService:
         return MinifluxClient(settings.miniflux_url, token)
 
     async def list_sources(self, user_id: uuid.UUID) -> SourcesListResponse:
+        # E13-S5: paused sources (deleted_at NOT NULL) are returned too — the
+        # Sources screen shows them dimmed with an OFF switch so the user can
+        # re-enable them. Feed/Explore still filter them out via the SQL
+        # ``s.deleted_at IS NULL`` predicate added to ranked_query.
         rows = (
             await self.session.scalars(
                 select(Source)
-                .where(Source.user_id == user_id, Source.deleted_at.is_(None))
+                .where(Source.user_id == user_id)
                 .order_by(Source.created_at.desc())
             )
         ).all()
@@ -47,6 +51,7 @@ class SourcesService:
         for s in rows:
             out = SourceOut.model_validate(s)
             out.fetch_full_content = crawler_by_feed.get(s.miniflux_feed_id, False)
+            out.active = s.deleted_at is None
             sources.append(out)
         return SourcesListResponse(sources=sources)
 
@@ -110,21 +115,43 @@ class SourcesService:
         user_id: uuid.UUID,
         source_id: uuid.UUID,
         *,
-        fetch_full_content: bool,
+        fetch_full_content: bool | None = None,
+        active: bool | None = None,
     ) -> SourceOut:
+        # ``active`` toggles the soft state (paused vs running) and is allowed
+        # on rows currently inactive too; ``fetch_full_content`` only applies
+        # to active rows since it round-trips to Miniflux on the shared feed.
+        require_active = active is None and fetch_full_content is not None
         source = await self.session.scalar(
             select(Source).where(
                 Source.id == source_id,
                 Source.user_id == user_id,
-                Source.deleted_at.is_(None),
+                *(
+                    (Source.deleted_at.is_(None),)
+                    if require_active
+                    else ()
+                ),
             )
         )
         if source is None:
             raise not_found("Source not found")
 
-        await self._set_crawler(source.miniflux_feed_id, fetch_full_content)
+        if active is not None:
+            source.deleted_at = None if active else datetime.now(timezone.utc)
+
+        if fetch_full_content is not None:
+            await self._set_crawler(source.miniflux_feed_id, fetch_full_content)
+
+        # Derive the response: fetch_full_content from the request when set,
+        # otherwise fall back to whatever Miniflux currently reports.
+        crawler = fetch_full_content
+        if crawler is None:
+            crawler_by_feed = await self._crawler_state_map()
+            crawler = crawler_by_feed.get(source.miniflux_feed_id, False)
+
         out = SourceOut.model_validate(source)
-        out.fetch_full_content = fetch_full_content
+        out.fetch_full_content = crawler
+        out.active = source.deleted_at is None
         return out
 
     async def _set_crawler(self, feed_id: int, crawler: bool) -> None:
@@ -174,7 +201,10 @@ class SourcesService:
             feed = await miniflux.get_feed(feed_id)
         return feed.id, feed.title
 
-    async def delete_source(self, user_id: uuid.UUID, source_id: uuid.UUID) -> None:
+    async def deactivate_source(
+        self, user_id: uuid.UUID, source_id: uuid.UUID
+    ) -> None:
+        """Soft pause: keeps articles in DB but hides them from Feed/Explore."""
         source = await self.session.scalar(
             select(Source).where(
                 Source.id == source_id,
@@ -184,5 +214,18 @@ class SourcesService:
         )
         if source is None:
             raise not_found("Source not found")
-        # Soft delete: keep the row so existing articles keep a valid FK.
         source.deleted_at = datetime.now(timezone.utc)
+
+    async def hard_delete_source(
+        self, user_id: uuid.UUID, source_id: uuid.UUID
+    ) -> None:
+        """Wipe the source and every dependent row via FK CASCADE (E13-S5)."""
+        source = await self.session.scalar(
+            select(Source).where(
+                Source.id == source_id,
+                Source.user_id == user_id,
+            )
+        )
+        if source is None:
+            raise not_found("Source not found")
+        await self.session.delete(source)

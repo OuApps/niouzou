@@ -197,13 +197,14 @@ export function addSource(
 
 export function updateSource(
   id: string,
-  body: { fetch_full_content: boolean },
+  body: { fetch_full_content?: boolean; active?: boolean },
 ): Promise<SourceFull> {
   return request<SourceFull>(`/sources/${id}`, { method: 'PATCH', body })
 }
 
-export function deleteSource(id: string): Promise<void> {
-  return request<void>(`/sources/${id}`, { method: 'DELETE' })
+export function deleteSource(id: string, { hard = false } = {}): Promise<void> {
+  const qs = hard ? '?hard=true' : ''
+  return request<void>(`/sources/${id}${qs}`, { method: 'DELETE' })
 }
 
 // ── Me ───────────────────────────────────────────────────────────────────────

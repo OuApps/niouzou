@@ -16,7 +16,7 @@ class ArticleKeyword(Base):
     )
 
     article_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("articles.id"), primary_key=True
+        ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True
     )
     term: Mapped[str] = mapped_column(Text, primary_key=True)
     salience: Mapped[float] = mapped_column(Float, nullable=False)
