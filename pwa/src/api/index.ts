@@ -426,3 +426,7 @@ export function resetUserPassword(
     body: { new_password: newPassword },
   })
 }
+
+export function deleteAdminUser(userId: string): Promise<void> {
+  return request<void>(`/admin/users/${userId}`, { method: 'DELETE' })
+}

@@ -87,6 +87,49 @@ async def test_first_registered_user_is_admin(db_session):
     assert bob.is_admin is False
 
 
+async def test_delete_user_cascades_to_dependent_rows(db_session):
+    """E13-S3 — ``session.delete(user)`` wipes sources, articles and per-row state."""
+    from sqlalchemy import func, select
+
+    from niouzou.models import (
+        Article,
+        ArticleFeedback,
+        ArticleRelevanceScore,
+        KeywordWeight,
+        Source,
+        User,
+    )
+    from tests.factories import make_article, make_source, make_user, set_relevance
+
+    user = await make_user(db_session, email="doomed@test.dev")
+    source = await make_source(db_session, user, feed_id=51)
+    article = await make_article(db_session, source)
+    await set_relevance(db_session, article, user, 0.7)
+    db_session.add(
+        ArticleFeedback(article_id=article.id, user_id=user.id, reaction="like")
+    )
+    db_session.add(KeywordWeight(user_id=user.id, term="python", weight=0.8))
+    await db_session.commit()
+
+    await db_session.delete(user)
+    await db_session.commit()
+
+    assert await db_session.scalar(select(func.count()).select_from(User)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(Source)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(Article)) == 0
+    assert (
+        await db_session.scalar(select(func.count()).select_from(ArticleFeedback))
+        == 0
+    )
+    assert (
+        await db_session.scalar(select(func.count()).select_from(ArticleRelevanceScore))
+        == 0
+    )
+    assert (
+        await db_session.scalar(select(func.count()).select_from(KeywordWeight)) == 0
+    )
+
+
 async def test_require_admin_blocks_non_admin():
     """get_current_admin raises 403 for non-admin users."""
     import uuid

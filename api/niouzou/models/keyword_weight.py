@@ -11,7 +11,7 @@ class KeywordWeight(Base):
     __tablename__ = "keyword_weights"
 
     user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), primary_key=True
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     term: Mapped[str] = mapped_column(Text, primary_key=True)
     weight: Mapped[float] = mapped_column(

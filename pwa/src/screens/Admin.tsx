@@ -13,6 +13,7 @@ import {
   getAdminUsers,
   getStats,
   resetUserPassword,
+  deleteAdminUser,
   compactKeywordsPreview,
   compactKeywordsGet,
   compactKeywordsApply,
@@ -24,6 +25,7 @@ import {
   type CompactionGroup,
   type CompactionPreview,
 } from '../api'
+import { useAuthStore } from '../store/auth'
 
 export const Admin = () => {
   const navigate = useNavigate()
@@ -190,7 +192,12 @@ export const Admin = () => {
               ) : users && users.length > 0 ? (
                 <div className="flex flex-col gap-2">
                   {users.map((user) => (
-                    <UserRow key={user.id} user={user} onPasswordReset={reloadUsers} />
+                    <UserRow
+                      key={user.id}
+                      user={user}
+                      onPasswordReset={reloadUsers}
+                      onDelete={reloadUsers}
+                    />
                   ))}
                 </div>
               ) : null}
@@ -405,13 +412,20 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
 interface UserRowProps {
   user: AdminUser
   onPasswordReset: () => void
+  onDelete: () => void
 }
 
-const UserRow = ({ user, onPasswordReset }: UserRowProps) => {
+const UserRow = ({ user, onPasswordReset, onDelete }: UserRowProps) => {
+  const currentEmail = useAuthStore((s) => s.email)
+  const isSelf = currentEmail === user.email
   const [resettingPassword, setResettingPassword] = useState(false)
   const [showPasswordForm, setShowPasswordForm] = useState(false)
   const [newPassword, setNewPassword] = useState('')
   const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [confirmEmail, setConfirmEmail] = useState<string | null>(null) // null = modal closed
+  const [confirmInput, setConfirmInput] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const handleResetPassword = async () => {
     setPasswordError(null)
@@ -429,6 +443,20 @@ const UserRow = ({ user, onPasswordReset }: UserRowProps) => {
       setPasswordError(err instanceof ApiError ? err.message : 'Reset failed')
     } finally {
       setResettingPassword(false)
+    }
+  }
+
+  const handleConfirmDelete = async () => {
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      await deleteAdminUser(user.id)
+      setConfirmEmail(null)
+      onDelete()
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Delete failed')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -460,24 +488,58 @@ const UserRow = ({ user, onPasswordReset }: UserRowProps) => {
           </div>
         </div>
         {!showPasswordForm && (
-          <button
-            onClick={() => setShowPasswordForm(true)}
-            style={{
-              fontSize: 11,
-              color: 'var(--accent-text)',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              padding: 0,
-              fontWeight: 600,
-            }}
-          >
-            Reset Password
-          </button>
+          <div className="flex items-center gap-3" style={{ flexShrink: 0 }}>
+            <button
+              onClick={() => setShowPasswordForm(true)}
+              style={{
+                fontSize: 11,
+                color: 'var(--accent-text)',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                fontWeight: 600,
+              }}
+            >
+              Reset Password
+            </button>
+            {!isSelf && (
+              <button
+                onClick={() => {
+                  setConfirmInput('')
+                  setDeleteError(null)
+                  setConfirmEmail(user.email)
+                }}
+                style={{
+                  fontSize: 11,
+                  color: 'var(--action-dislike)',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                  fontWeight: 600,
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </div>
         )}
       </div>
 
-      {showPasswordForm && (
+      {confirmEmail !== null && (
+        <DeleteUserModal
+          email={confirmEmail}
+          confirmInput={confirmInput}
+          setConfirmInput={setConfirmInput}
+          deleting={deleting}
+          error={deleteError}
+          onCancel={() => setConfirmEmail(null)}
+          onConfirm={handleConfirmDelete}
+        />
+      )}
+
+      {showPasswordForm && !confirmEmail && (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <input
             type="password"
@@ -548,6 +610,131 @@ const UserRow = ({ user, onPasswordReset }: UserRowProps) => {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+interface DeleteUserModalProps {
+  email: string
+  confirmInput: string
+  setConfirmInput: (v: string) => void
+  deleting: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}
+
+const DeleteUserModal = ({
+  email,
+  confirmInput,
+  setConfirmInput,
+  deleting,
+  error,
+  onCancel,
+  onConfirm,
+}: DeleteUserModalProps) => {
+  const matches = confirmInput === email
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        backdropFilter: 'blur(4px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        zIndex: 50,
+      }}
+      onClick={onCancel}
+    >
+      <div
+        className="glass-sm"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          borderRadius: 16,
+          padding: 18,
+          width: '100%',
+          maxWidth: 360,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} style={{ color: 'var(--action-dislike)' }} />
+          <h3 style={{ fontSize: 14, fontWeight: 700 }}>Delete user</h3>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          This wipes <strong>{email}</strong> and every related row (sources,
+          articles seen, feedback, weights). It cannot be undone.
+        </p>
+        <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+          Type the email to confirm:
+        </p>
+        <input
+          type="text"
+          value={confirmInput}
+          onChange={(e) => setConfirmInput(e.target.value)}
+          autoFocus
+          style={{
+            padding: '8px 10px',
+            borderRadius: 8,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background: 'rgba(255,255,255,0.04)',
+            color: 'var(--text-primary)',
+            fontSize: 12,
+          }}
+        />
+        {error && (
+          <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={deleting}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              borderRadius: 8,
+              background: 'rgba(255,255,255,0.08)',
+              color: 'var(--text-primary)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: deleting ? 'default' : 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!matches || deleting}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              borderRadius: 8,
+              background: matches ? 'var(--action-dislike)' : 'rgba(255,255,255,0.08)',
+              color: matches ? '#fff' : 'var(--text-tertiary)',
+              border: 'none',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: !matches || deleting ? 'default' : 'pointer',
+              opacity: deleting ? 0.6 : 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+            }}
+          >
+            {deleting && <Spinner size={11} />}
+            {deleting ? 'Deleting…' : 'Delete forever'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

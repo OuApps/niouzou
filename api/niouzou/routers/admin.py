@@ -261,3 +261,22 @@ async def reset_password(
     if user is None:
         raise not_found("User not found")
     user.password_hash = hash_password(body.new_password)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: uuid.UUID,
+    admin: CurrentAdmin,
+    session: SessionDep,
+) -> None:
+    """Hard-delete a user and every dependent row via FK CASCADE (E13-S3).
+
+    Refuses self-deletion to avoid an admin locking themselves out — they
+    have to ask another admin (or unbrick via direct DB access).
+    """
+    if user_id == admin.id:
+        raise APIError(400, "bad_request", "Cannot delete your own account")
+    user = await session.get(User, user_id)
+    if user is None:
+        raise not_found("User not found")
+    await session.delete(user)
