@@ -126,6 +126,11 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
     enrichment.set_vocab(vocab)
     if "enrichment.combined" in prompts:
         enrichment.set_system_prompt(prompts["enrichment.combined"])
+    else:
+        logger.warning(
+            "cron_enrich: 'enrichment.combined' prompt missing from DB — "
+            "falling back to the trimmed in-code constant"
+        )
     tfidf_scoring = ScoringService(
         ScoringPipeline(TFIDFScorer()),
         max_keywords_per_article=effective.max_keywords_per_article,
@@ -138,6 +143,11 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
         ai_scorer = AIKeywordScorer(client)
         if "scoring.ai_keywords" in prompts:
             ai_scorer.set_system_prompt(prompts["scoring.ai_keywords"])
+        else:
+            logger.warning(
+                "cron_enrich: 'scoring.ai_keywords' prompt missing from DB — "
+                "falling back to the trimmed in-code constant"
+            )
         ai_scoring = ScoringService(
             ScoringPipeline(ai_scorer),
             max_keywords_per_article=effective.max_keywords_per_article,

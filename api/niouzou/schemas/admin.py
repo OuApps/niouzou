@@ -95,4 +95,4 @@ class LlmPromptOut(BaseModel):
 
 
 class LlmPromptUpdate(BaseModel):
-    body: str
+    body: str = Field(..., min_length=1)

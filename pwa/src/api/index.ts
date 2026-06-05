@@ -202,11 +202,6 @@ export function updateSource(
   return request<SourceFull>(`/sources/${id}`, { method: 'PATCH', body })
 }
 
-export function deleteSource(id: string, { hard = false } = {}): Promise<void> {
-  const qs = hard ? '?hard=true' : ''
-  return request<void>(`/sources/${id}${qs}`, { method: 'DELETE' })
-}
-
 // ── Me ───────────────────────────────────────────────────────────────────────
 
 export interface Me {

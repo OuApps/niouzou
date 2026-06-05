@@ -116,7 +116,13 @@ class CompactionService:
         from niouzou.models import LlmPrompt
 
         row = await self.session.get(LlmPrompt, "compaction.system")
-        return row.body if row is not None else _COMPACTION_SYSTEM_FALLBACK
+        if row is None:
+            logger.warning(
+                "compaction: 'compaction.system' prompt missing from DB — "
+                "falling back to the trimmed in-code constant"
+            )
+            return _COMPACTION_SYSTEM_FALLBACK
+        return row.body
 
     async def preview(
         self, *, top_n: int = COMPACTION_TOP_N

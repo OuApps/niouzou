@@ -425,7 +425,7 @@ interface UserRowProps {
 
 const UserRow = ({ user, onPasswordReset, onDelete }: UserRowProps) => {
   const currentEmail = useAuthStore((s) => s.email)
-  const isSelf = currentEmail === user.email
+  const isSelf = currentEmail?.toLowerCase() === user.email.toLowerCase()
   const [resettingPassword, setResettingPassword] = useState(false)
   const [showPasswordForm, setShowPasswordForm] = useState(false)
   const [newPassword, setNewPassword] = useState('')
@@ -840,7 +840,7 @@ const PromptCard = ({ prompt, onSaved }: PromptCardProps) => {
       <div className="flex items-center justify-between">
         <code style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>{prompt.name}</code>
         <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
-          {formatTimeAgo(new Date(prompt.updated_at))}
+          {formatTimeAgo(prompt.updated_at)}
         </span>
       </div>
       <textarea

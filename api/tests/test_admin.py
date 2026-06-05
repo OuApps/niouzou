@@ -130,6 +130,73 @@ async def test_delete_user_cascades_to_dependent_rows(db_session):
     )
 
 
+async def test_delete_user_refuses_self_deletion(db_session):
+    """E13-S3 — admin can't delete their own account (would lock themselves out)."""
+    from niouzou.routers.admin import delete_user
+    from tests.factories import make_user
+
+    admin = await make_user(db_session, email="admin@test.dev")
+    admin.is_admin = True
+    await db_session.commit()
+
+    with pytest.raises(APIError) as exc:
+        await delete_user(user_id=admin.id, admin=admin, session=db_session)
+    assert exc.value.status_code == 400
+
+
+async def test_delete_user_returns_404_on_unknown(db_session):
+    import uuid
+
+    from niouzou.routers.admin import delete_user
+    from tests.factories import make_user
+
+    admin = await make_user(db_session, email="admin@test.dev")
+    admin.is_admin = True
+    await db_session.commit()
+
+    with pytest.raises(APIError) as exc:
+        await delete_user(user_id=uuid.uuid4(), admin=admin, session=db_session)
+    assert exc.value.status_code == 404
+
+
+async def test_llm_prompts_service_list_get_update(db_session):
+    """E13-S2 — list returns rows alphabetically; update mutates body in place."""
+    from sqlalchemy import delete
+
+    from niouzou.models import LlmPrompt
+    from niouzou.services.llm_prompts_service import LlmPromptsService
+
+    # conftest truncates most tables but llm_prompts is seeded by the migration
+    # and shared across tests — wipe it to a known state here.
+    await db_session.execute(delete(LlmPrompt))
+    db_session.add_all(
+        [
+            LlmPrompt(name="b.prompt", body="b-body"),
+            LlmPrompt(name="a.prompt", body="a-body"),
+        ]
+    )
+    await db_session.commit()
+
+    svc = LlmPromptsService(db_session)
+    rows = await svc.list_all()
+    assert [r.name for r in rows] == ["a.prompt", "b.prompt"]
+
+    updated = await svc.update("a.prompt", "a-body-v2")
+    assert updated.body == "a-body-v2"
+    # Round-trip via get.
+    assert (await svc.get("a.prompt")).body == "a-body-v2"
+
+
+async def test_llm_prompts_service_get_unknown_raises_404(db_session):
+    from niouzou.errors import APIError as _APIError
+    from niouzou.services.llm_prompts_service import LlmPromptsService
+
+    svc = LlmPromptsService(db_session)
+    with pytest.raises(_APIError) as exc:
+        await svc.get("does.not.exist")
+    assert exc.value.status_code == 404
+
+
 async def test_require_admin_blocks_non_admin():
     """get_current_admin raises 403 for non-admin users."""
     import uuid

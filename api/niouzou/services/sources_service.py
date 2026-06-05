@@ -118,6 +118,8 @@ class SourcesService:
         fetch_full_content: bool | None = None,
         active: bool | None = None,
     ) -> SourceOut:
+        if fetch_full_content is None and active is None:
+            raise bad_request("No fields to update")
         # ``active`` toggles the soft state (paused vs running) and is allowed
         # on rows currently inactive too; ``fetch_full_content`` only applies
         # to active rows since it round-trips to Miniflux on the shared feed.

@@ -122,6 +122,32 @@ async def test_reactivating_paused_source_via_update(db_session):
     assert out.active is True
 
 
+async def test_update_source_rejects_empty_body(db_session):
+    """E13-S5 — PATCH with no fields is a no-op request; reject as 400."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=10)
+    await db_session.commit()
+
+    with pytest.raises(APIError) as exc:
+        await SourcesService(db_session).update_source(user.id, source.id)
+    assert exc.value.status_code == 400
+
+
+async def test_update_source_full_content_on_paused_source_404s(db_session):
+    """E13-S5 — fetch_full_content updates must not hit Miniflux on a paused row."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=11)
+    await db_session.commit()
+
+    svc = SourcesService(db_session)
+    await svc.deactivate_source(user.id, source.id)
+    await db_session.commit()
+
+    with pytest.raises(APIError) as exc:
+        await svc.update_source(user.id, source.id, fetch_full_content=True)
+    assert exc.value.status_code == 404
+
+
 @respx.mock
 async def test_readding_removed_source_revives_it(db_session):
     user = await make_user(db_session)
