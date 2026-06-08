@@ -2773,15 +2773,15 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 
 ### Stories
 
-- [ ] **E13-S1** — Badge "AI Summary" dans le cadre du résumé IA
-- [ ] **E13-S2** — Prompts LLM stockés en DB et éditables depuis l'admin
-- [ ] **E13-S3** — Suppression hard d'un user (cascade)
-- [ ] **E13-S4** — Retirer le toggle "Fetch full content" de Sources UI
-- [ ] **E13-S5** — Toggle ON/OFF par source + hard delete caché
+- [x] **E13-S1** — Badge "AI Summary" dans le cadre du résumé IA
+- [x] **E13-S2** — Prompts LLM stockés en DB et éditables depuis l'admin
+- [x] **E13-S3** — Suppression hard d'un user (cascade)
+- [x] **E13-S4** — Retirer le toggle "Fetch full content" de Sources UI
+- [x] **E13-S5** — Toggle ON/OFF par source + hard delete caché
 
 ---
 
-#### [ ] E13-S1 — Badge "AI Summary" dans le cadre du résumé IA
+#### [x] E13-S1 — Badge "AI Summary" dans le cadre du résumé IA
 
 **Contexte.** `pwa/src/components/FeedArticleSlide.tsx:323-364` affiche deux blocs : (a) l'**executive summary** (bullets, le vrai résumé IA, encadré) et (b) le **short summary** (fallback, sans cadre). Le sparkles ✨ est actuellement collé au label "Summary" du short summary — visuellement détaché et associé au mauvais bloc.
 
@@ -2794,7 +2794,7 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 
 ---
 
-#### [ ] E13-S2 — Prompts LLM stockés en DB et éditables depuis l'admin
+#### [x] E13-S2 — Prompts LLM stockés en DB et éditables depuis l'admin
 
 **Contexte.** Les prompts (summary court, executive summary, keywords) sont hardcodés dans `api/niouzou/services/enrichment_service.py` et `openrouter_client.py`. Pour itérer dessus sans redéploiement, on les déplace en DB. **La DB devient la seule source de vérité** — pas de fallback hardcodé après migration.
 
@@ -2822,7 +2822,7 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 
 ---
 
-#### [ ] E13-S3 — Suppression hard d'un user (cascade)
+#### [x] E13-S3 — Suppression hard d'un user (cascade)
 
 **Contexte.** Aucun moyen actuel de supprimer un user pour de vrai. Demande RGPD + ménage souhaités.
 
@@ -2841,7 +2841,7 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 
 ---
 
-#### [ ] E13-S4 — Retirer le toggle "Fetch full content" de Sources
+#### [x] E13-S4 — Retirer le toggle "Fetch full content" de Sources
 
 **Contexte.** `pwa/src/screens/Sources.tsx:287` expose un toggle "fetch_full_content" qui n'apporte plus de valeur côté UX (et complexifie l'écran).
 
@@ -2854,7 +2854,7 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 
 ---
 
-#### [ ] E13-S5 — Toggle ON/OFF par source + hard delete caché
+#### [x] E13-S5 — Toggle ON/OFF par source + hard delete caché
 
 **Contexte.** La poubelle actuelle déclenche un soft delete (`sources_service.delete_source`) — le user pense supprimer pour de vrai alors que le flux et les articles restent vivants. UX trompeuse.
 
@@ -2903,12 +2903,12 @@ La couche 2 est un garde-fou : elle protège du cas où Miniflux est manipulé h
 
 ### Stories
 
-- [ ] **E14-S1** — `cron_fetch` marque les unmatched comme lues (garde-fou)
-- [ ] **E14-S2** — Pause/resume/hard-delete d'une source propage à Miniflux
+- [x] **E14-S1** — `cron_fetch` marque les unmatched comme lues (garde-fou)
+- [x] **E14-S2** — Pause/resume/hard-delete d'une source propage à Miniflux
 
 ---
 
-#### [ ] E14-S1 — `cron_fetch` marque les unmatched comme lues (garde-fou)
+#### [x] E14-S1 — `cron_fetch` marque les unmatched comme lues (garde-fou)
 
 **Contexte.** `api/niouzou/crons/fetch.py:121` ne marque comme lu que `handled_ids` (les entrées qui ont matché une source active). Une entrée venant d'un feed orphelin (feed Miniflux référencé par aucune source active Niouzou) reste donc unread indéfiniment et revient à chaque tick puisque l'API Miniflux est appelée avec `offset=0&order=asc`. Au bout d'un certain nombre d'unread orphelines, les 100 plus anciennes sont toutes orphelines → fetch bloqué.
 
@@ -2935,7 +2935,7 @@ La couche 2 est un garde-fou : elle protège du cas où Miniflux est manipulé h
 
 ---
 
-#### [ ] E14-S2 — Pause/resume/hard-delete d'une source propage à Miniflux
+#### [x] E14-S2 — Pause/resume/hard-delete d'une source propage à Miniflux
 
 **Contexte.** `sources_service.deactivate_source` / `update_source(active=False)` / `hard_delete_source` modifient l'état Niouzou sans toucher Miniflux. Un feed Miniflux pouvant être partagé entre plusieurs users (cas multi-user, cf. `_register_in_miniflux` qui réutilise un feed existant), on ne peut pas désactiver/supprimer aveuglément côté Miniflux : il faut compter les sources actives restantes.
 
@@ -3005,11 +3005,11 @@ La couche 2 est un garde-fou : elle protège du cas où Miniflux est manipulé h
 
 ### Stories
 
-- [ ] **E15-S1** — `cron_fetch` skip d'une URL déjà ingérée pour ce user
+- [x] **E15-S1** — `cron_fetch` skip d'une URL déjà ingérée pour ce user
 
 ---
 
-#### [ ] E15-S1 — `cron_fetch` skip d'une URL déjà ingérée pour ce user
+#### [x] E15-S1 — `cron_fetch` skip d'une URL déjà ingérée pour ce user
 
 **Contexte.** Aujourd'hui `_insert_articles` (`api/niouzou/crons/fetch.py:51`) déduplique uniquement sur `(source_id, miniflux_entry_id)`. Pour un même user, deux sources distinctes peuvent ingérer le même `url` parce qu'elles ont des `miniflux_entry_id` différents. On veut un *deuxième* niveau de dédup au point d'insertion : par `(sources.user_id, articles.url)`.
 
