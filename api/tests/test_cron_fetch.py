@@ -193,3 +193,106 @@ async def test_no_unread_entries_is_a_noop(db_session):
     assert marked == 0
     assert await _article_count(db_session) == 0
     assert not put_route.called
+
+
+@respx.mock
+async def test_dedup_skips_url_already_present_via_another_source_of_same_user(
+    db_session,
+):
+    # E15-S1 — Le Monde + Le Monde Sciences publish the same URL with
+    # different Miniflux entry_ids. The user has both flux subscribed; the
+    # second one to arrive must NOT create a second article row, and the
+    # entry must still be marked read in Miniflux.
+    user = User(email="dup@test.dev", password_hash="x")
+    db_session.add(user)
+    await db_session.flush()
+    s1 = Source(user_id=user.id, miniflux_feed_id=1, url="https://lemonde", name="LM")
+    s2 = Source(
+        user_id=user.id, miniflux_feed_id=5, url="https://lemonde-sciences", name="LMS"
+    )
+    db_session.add_all([s1, s2])
+    await db_session.flush()  # populate s1.id before referencing it below
+    # Pre-existing article ingested through s1 — the duplicate guard target.
+    db_session.add(
+        Article(
+            source_id=s1.id,
+            miniflux_entry_id=42,
+            url="https://shared.example/article",
+            title="Already here",
+            status="pending",
+        )
+    )
+    await db_session.commit()
+
+    # New entry arrives via feed_id=5 (s2), same URL, different entry_id.
+    new_entry = _entry(43, feed_id=5)
+    new_entry["url"] = "https://shared.example/article"
+    put_route = _mock_miniflux([new_entry])
+
+    marked = await fetch.run()
+
+    # No new row, but the entry was still marked read (so it can't loop forever).
+    assert await _article_count(db_session) == 1
+    assert marked == 1  # the entry was matched + handled (skipped is still handled)
+    assert json.loads(put_route.calls[0].request.content)["entry_ids"] == [43]
+
+
+@respx.mock
+async def test_dedup_within_same_batch_when_two_sources_of_same_user_match(
+    db_session,
+):
+    # E15-S1 — fan-out edge case. No pre-existing row, but a single Miniflux
+    # entry would land via two sources of the same user (e.g. the user is
+    # subscribed to two flux that both republish the same URL, and the same
+    # batch carries one entry per flux). The first fan-out target wins; the
+    # second is skipped intra-batch.
+    user = User(email="batch-dup@test.dev", password_hash="x")
+    db_session.add(user)
+    await db_session.flush()
+    s1 = Source(user_id=user.id, miniflux_feed_id=1, url="https://a", name="A")
+    s2 = Source(user_id=user.id, miniflux_feed_id=5, url="https://b", name="B")
+    db_session.add_all([s1, s2])
+    await db_session.commit()
+
+    # Same URL on both feeds, different entry_ids.
+    e1 = _entry(100, feed_id=1)
+    e2 = _entry(101, feed_id=5)
+    e1["url"] = e2["url"] = "https://shared.example/x"
+    put_route = _mock_miniflux([e1, e2])
+
+    marked = await fetch.run()
+
+    # Exactly one row, both entries marked read.
+    assert await _article_count(db_session) == 1
+    assert marked == 2
+    assert sorted(
+        json.loads(put_route.calls[0].request.content)["entry_ids"]
+    ) == [100, 101]
+
+
+@respx.mock
+async def test_dedup_is_per_user_not_global(db_session):
+    # E15-S1 — two distinct users each subscribed to a source matching the
+    # same URL must each get their own article row. Dedup must NOT collapse
+    # rows across users.
+    user_a = User(email="a@test.dev", password_hash="x")
+    user_b = User(email="b@test.dev", password_hash="x")
+    db_session.add_all([user_a, user_b])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Source(user_id=user_a.id, miniflux_feed_id=1, url="https://a", name="A"),
+            Source(user_id=user_b.id, miniflux_feed_id=1, url="https://b", name="B"),
+        ]
+    )
+    await db_session.commit()
+
+    entry = _entry(100, feed_id=1)
+    entry["url"] = "https://shared.example/cross-user"
+    put_route = _mock_miniflux([entry])
+
+    marked = await fetch.run()
+
+    assert await _article_count(db_session) == 2
+    assert marked == 1
+    assert json.loads(put_route.calls[0].request.content)["entry_ids"] == [100]
