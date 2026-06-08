@@ -7,11 +7,15 @@ Flow:
   2. Map each entry to a Niouzou source via its Miniflux feed id.
   3. Insert new articles with status='pending', deduplicating on
      miniflux_entry_id (ON CONFLICT DO NOTHING — running twice is a no-op).
-  4. Mark the handled entries as read in Miniflux so they aren't re-fetched.
+  4. Mark **both** matched (ingested) AND unmatched (orphan-feed) entries as
+     read in Miniflux so neither category re-surfaces on the next tick.
 
-Entries whose feed has no registered Niouzou source are left untouched
-(not ingested, not marked read) and logged — they belong to a feed nobody
-subscribed to through Niouzou.
+Entries whose feed has no active registered Niouzou source (E14-S1) are
+noise: never inserted in DB, never enriched, no LLM tokens spent. They are
+marked read defensively so they can't saturate the oldest-first fetch
+window and block the pipeline when a source is paused/deleted without the
+Miniflux side being synced (e.g., manual changes via Miniflux UI, or a
+transient failure in the source-lifecycle propagation).
 """
 
 import asyncio
@@ -101,34 +105,42 @@ async def run() -> int:
         async with session_scope() as session:
             feed_to_sources = await _source_ids_by_feed(session)
             matched = [e for e in entries if e.feed_id in feed_to_sources]
-            unmatched = len(entries) - len(matched)
+            unmatched = [e for e in entries if e.feed_id not in feed_to_sources]
             logger.info(
                 "cron_fetch: %d entries match a Niouzou source (%d unmatched)",
                 len(matched),
-                unmatched,
+                len(unmatched),
             )
             inserted = await _insert_articles(session, matched, feed_to_sources)
             logger.info("cron_fetch: inserted %d article rows (post-fanout)", inserted)
 
         if unmatched:
             logger.warning(
-                "cron_fetch: %d entries skipped (no Niouzou source for their feed)",
-                unmatched,
+                "cron_fetch: %d entries skipped (no active Niouzou source for "
+                "their feed) — marking read so they can't saturate the fetch "
+                "window",
+                len(unmatched),
             )
 
-        # Only mark read the entries we ingested. Done after the DB commit so a
-        # crash mid-insert leaves them unread for the next run.
-        handled_ids = [e.id for e in matched]
-        await miniflux.mark_entries_read(handled_ids)
+        # E14-S1 — Mark BOTH matched (ingested) and unmatched (orphan) entries
+        # as read. Done after the DB commit above so a crash during insertion
+        # raises before we reach this line, leaving everything unread for the
+        # next run (crash-safe). Unmatched are never inserted in DB and never
+        # enriched, so no LLM tokens are spent on them.
+        matched_ids = [e.id for e in matched]
+        unmatched_ids = [e.id for e in unmatched]
+        await miniflux.mark_entries_read(matched_ids + unmatched_ids)
         logger.info(
-            "cron_fetch: marked %d entries as read in Miniflux", len(handled_ids)
+            "cron_fetch: marked %d matched + %d unmatched as read in Miniflux",
+            len(matched_ids),
+            len(unmatched_ids),
         )
         logger.info(
             "cron_fetch: done — ingested %d entries (%d total fetched)",
-            len(handled_ids),
+            len(matched_ids),
             len(entries),
         )
-        return len(handled_ids)
+        return len(matched_ids)
 
 
 def main() -> None:

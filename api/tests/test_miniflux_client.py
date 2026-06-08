@@ -126,6 +126,51 @@ async def test_update_feed_sends_crawler():
 
 
 @respx.mock
+async def test_update_feed_sends_disabled():
+    # E14-S2 — the disabled kwarg goes through without dragging crawler along.
+    route = respx.put(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 42, "title": "X", "feed_url": "u", "crawler": False},
+        )
+    )
+    async with MinifluxClient(BASE, "k") as client:
+        await client.update_feed(42, disabled=True)
+    import json
+
+    assert json.loads(route.calls[0].request.content) == {"disabled": True}
+
+
+async def test_update_feed_requires_at_least_one_flag():
+    # E14-S2 — accidental no-op calls would silently no-op the API; surface
+    # them as programmer errors instead.
+    import pytest
+
+    async with MinifluxClient(BASE, "k") as client:
+        with pytest.raises(ValueError):
+            await client.update_feed(42)
+
+
+@respx.mock
+async def test_delete_feed_calls_endpoint():
+    # E14-S2 — DELETE /v1/feeds/:id returns 204 on success.
+    route = respx.delete(f"{BASE}/v1/feeds/42").mock(
+        return_value=httpx.Response(204)
+    )
+    async with MinifluxClient(BASE, "k") as client:
+        await client.delete_feed(42)
+    assert route.called
+
+
+@respx.mock
+async def test_delete_feed_treats_404_as_noop():
+    # E14-S2 — feed already gone is a fine end state, not an error.
+    respx.delete(f"{BASE}/v1/feeds/42").mock(return_value=httpx.Response(404))
+    async with MinifluxClient(BASE, "k") as client:
+        await client.delete_feed(42)  # should not raise
+
+
+@respx.mock
 async def test_list_feeds_returns_crawler_state():
     respx.get(f"{BASE}/v1/feeds").mock(
         return_value=httpx.Response(

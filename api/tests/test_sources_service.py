@@ -73,6 +73,13 @@ async def test_duplicate_url_conflicts(db_session):
 async def test_deactivate_keeps_articles_and_marks_source_inactive(db_session):
     # Empty feed list — list_sources still calls Miniflux for crawler state.
     respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    # E14-S2 — sole subscriber pause triggers PUT /v1/feeds/7 disabled:true.
+    put_disabled = respx.put(f"{BASE}/v1/feeds/7").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 7, "title": "x", "feed_url": "u", "crawler": False},
+        )
+    )
     user = await make_user(db_session)
     source = await make_source(db_session, user, feed_id=7)
     await make_article(db_session, source, title="kept")
@@ -88,10 +95,19 @@ async def test_deactivate_keeps_articles_and_marks_source_inactive(db_session):
     listed = await svc.list_sources(user.id)
     assert len(listed.sources) == 1
     assert listed.sources[0].active is False
+    # Miniflux feed disabled because no other subscriber remained active.
+    assert put_disabled.called
+    import json
+
+    assert json.loads(put_disabled.calls[0].request.content) == {"disabled": True}
 
 
 @respx.mock
 async def test_hard_delete_cascades_to_articles(db_session):
+    # E14-S2 — sole subscriber hard delete also unsubscribes Miniflux.
+    delete_route = respx.delete(f"{BASE}/v1/feeds/8").mock(
+        return_value=httpx.Response(204)
+    )
     user = await make_user(db_session)
     source = await make_source(db_session, user, feed_id=8)
     await make_article(db_session, source, title="will-be-gone")
@@ -103,11 +119,21 @@ async def test_hard_delete_cascades_to_articles(db_session):
     assert await db_session.scalar(select(func.count()).select_from(Source)) == 0
     # FK ON DELETE CASCADE wipes the article too.
     assert await db_session.scalar(select(func.count()).select_from(Article)) == 0
+    assert delete_route.called
 
 
 @respx.mock
 async def test_reactivating_paused_source_via_update(db_session):
     respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    # E14-S2 — accept both the pause (disabled:true) and the resume
+    # (disabled:false) on the same feed via a single mock that records
+    # every call.
+    put_route = respx.put(f"{BASE}/v1/feeds/9").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 9, "title": "x", "feed_url": "u", "crawler": False},
+        )
+    )
     user = await make_user(db_session)
     source = await make_source(db_session, user, feed_id=9)
     await db_session.commit()
@@ -120,6 +146,11 @@ async def test_reactivating_paused_source_via_update(db_session):
     await db_session.commit()
 
     assert out.active is True
+    import json
+
+    # Both transitions reached Miniflux, with the right payloads.
+    payloads = [json.loads(c.request.content) for c in put_route.calls]
+    assert payloads == [{"disabled": True}, {"disabled": False}]
 
 
 async def test_update_source_rejects_empty_body(db_session):
@@ -390,6 +421,112 @@ async def test_list_sources_falls_back_when_miniflux_down(db_session):
     # Service degrades gracefully: still returns the rows, crawler defaults false.
     assert len(listed.sources) == 1
     assert listed.sources[0].fetch_full_content is False
+
+
+@respx.mock
+async def test_deactivate_does_not_disable_feed_when_other_user_still_active(db_session):
+    # E14-S2 — when another active source still references the feed, pausing
+    # one source must leave the Miniflux feed enabled (the other user still
+    # wants its entries).
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    # If a PUT slips through, this raises a respx unmatched-route error and
+    # fails the test (no fallback mock for PUT on this feed).
+    user_a = await make_user(db_session, email="a@test.dev")
+    user_b = await make_user(db_session, email="b@test.dev")
+    source_a = await make_source(db_session, user_a, feed_id=12)
+    await make_source(db_session, user_b, feed_id=12)
+    await db_session.commit()
+
+    await SourcesService(db_session).deactivate_source(user_a.id, source_a.id)
+    await db_session.commit()
+    # Reaching here without an unmatched-route error proves no PUT was sent.
+
+
+@respx.mock
+async def test_resuming_keeps_feed_disabled_call_off_when_other_user_active(db_session):
+    # E14-S2 — when another active subscriber kept the feed enabled in
+    # Miniflux all along, resuming a paused source must NOT re-PUT.
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    user_a = await make_user(db_session, email="a@test.dev")
+    user_b = await make_user(db_session, email="b@test.dev")
+    source_a = await make_source(db_session, user_a, feed_id=13)
+    await make_source(db_session, user_b, feed_id=13)
+    # Pause user A first — guarded by a real mock so we know the only call
+    # accounted for is the pause one. Then user B will be the only active.
+    pause_put = respx.put(f"{BASE}/v1/feeds/13").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 13, "title": "x", "feed_url": "u", "crawler": False},
+        )
+    )
+    await db_session.commit()
+
+    svc = SourcesService(db_session)
+    await svc.deactivate_source(user_a.id, source_a.id)
+    await db_session.commit()
+    # Pause didn't disable the feed (user B still active).
+    assert not pause_put.called
+
+    # Resume — feed was never disabled, so no PUT either.
+    await svc.update_source(user_a.id, source_a.id, active=True)
+    await db_session.commit()
+    assert not pause_put.called
+
+
+@respx.mock
+async def test_hard_delete_shared_feed_does_not_unsubscribe_miniflux(db_session):
+    # E14-S2 — when another (active or paused) source references the feed,
+    # hard-deleting one must not remove the shared feed from Miniflux.
+    user_a = await make_user(db_session, email="a@test.dev")
+    user_b = await make_user(db_session, email="b@test.dev")
+    source_a = await make_source(db_session, user_a, feed_id=14)
+    await make_source(db_session, user_b, feed_id=14)
+    await db_session.commit()
+
+    # No DELETE mock → respx would raise on an unmatched call.
+    await SourcesService(db_session).hard_delete_source(user_a.id, source_a.id)
+    await db_session.commit()
+
+    remaining = await db_session.scalar(
+        select(func.count()).select_from(Source).where(Source.miniflux_feed_id == 14)
+    )
+    assert remaining == 1
+
+
+@respx.mock
+async def test_pause_swallows_miniflux_failure(db_session):
+    # E14-S2 — Niouzou state of truth wins. A Miniflux PUT failure logs but
+    # doesn't roll back the soft delete; cron_fetch (E14-S1) handles the
+    # backlog defensively.
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    respx.put(f"{BASE}/v1/feeds/15").mock(return_value=httpx.Response(500))
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=15)
+    await db_session.commit()
+
+    await SourcesService(db_session).deactivate_source(user.id, source.id)
+    await db_session.commit()
+
+    # Soft delete went through despite the 500.
+    refreshed = await db_session.scalar(select(Source).where(Source.id == source.id))
+    assert refreshed.deleted_at is not None
+
+
+@respx.mock
+async def test_hard_delete_swallows_miniflux_404(db_session):
+    # E14-S2 — Miniflux returning 404 on DELETE is treated as a no-op (the
+    # feed already gone is fine). The Niouzou hard delete still cascades.
+    respx.delete(f"{BASE}/v1/feeds/16").mock(return_value=httpx.Response(404))
+    user = await make_user(db_session)
+    source = await make_source(db_session, user, feed_id=16)
+    await make_article(db_session, source, title="x")
+    await db_session.commit()
+
+    await SourcesService(db_session).hard_delete_source(user.id, source.id)
+    await db_session.commit()
+
+    assert await db_session.scalar(select(func.count()).select_from(Source)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(Article)) == 0
 
 
 @respx.mock

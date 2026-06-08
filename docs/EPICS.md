@@ -2885,3 +2885,175 @@ La valeur est dérivée des `article_keywords` associés : si le keyword a au mo
 **Ordre d'attaque** : S4 (UI trim) → S1 (UI pure) → S5 (toggle sources + cascade) → S3 (delete user, réutilise les patterns cascade de S5) → S2 (prompts en DB, le plus gros).
 
 **Tests** : pas de gros besoin de tests automatisés pour S1/S4 (UI cosmétique). S2/S3/S5 doivent tester le chemin DB (cascade effective + endpoints admin).
+
+---
+
+## EPIC 14 — Synchronisation Niouzou ↔ Miniflux sur le cycle de vie des sources (juin 2026)
+
+**Objectif** : rendre la feature pause/hard-delete des sources (E13-S5) *réellement* utilisable en bout de chaîne. Aujourd'hui, mettre une source OFF côté Niouzou ne touche pas Miniflux : le flux continue d'être pollé, ses entrées non lues s'empilent, et comme `cron_fetch` ne marque comme lues que les entrées **matched**, les orphelines saturent oldest-first le fenêtre de fetch (`limit=100, order=asc`) jusqu'à bloquer complètement le pipeline d'ingestion.
+
+**Régression observée en prod (2026-06-07)** : la source "Rugby" pausée le 2026-05-30 a accumulé 119 unread côté Miniflux. À partir du 2026-06-07 22:00 UTC, les 100 plus anciennes unread retournées par Miniflux étaient toutes du feed orphelin → 0 match → 0 entrée nouvellement ingérée pendant >24 h, alors que les autres flux continuaient à publier.
+
+**Principe.** Deux couches indépendantes, chacune utile sans l'autre :
+
+1. **Couche métier** — la transition d'état d'une source (`pause`, `resume`, `hard-delete`) propage sa conséquence à Miniflux quand plus aucun user actif ne référence le feed.
+2. **Couche défensive** — `cron_fetch` traite *toujours* les entrées venant d'un feed orphelin (matched aucun source actif) comme du bruit à marquer lu, sans jamais les insérer en DB ni déclencher d'enrichment.
+
+La couche 2 est un garde-fou : elle protège du cas où Miniflux est manipulé hors-Niouzou (UI Miniflux, panne réseau pendant la sync, divergence historique). C'est elle qui débloquera la prod naturellement au prochain tick après déploiement — pas de script manuel.
+
+### Stories
+
+- [ ] **E14-S1** — `cron_fetch` marque les unmatched comme lues (garde-fou)
+- [ ] **E14-S2** — Pause/resume/hard-delete d'une source propage à Miniflux
+
+---
+
+#### [ ] E14-S1 — `cron_fetch` marque les unmatched comme lues (garde-fou)
+
+**Contexte.** `api/niouzou/crons/fetch.py:121` ne marque comme lu que `handled_ids` (les entrées qui ont matché une source active). Une entrée venant d'un feed orphelin (feed Miniflux référencé par aucune source active Niouzou) reste donc unread indéfiniment et revient à chaque tick puisque l'API Miniflux est appelée avec `offset=0&order=asc`. Au bout d'un certain nombre d'unread orphelines, les 100 plus anciennes sont toutes orphelines → fetch bloqué.
+
+**Sémantique.** Toute entrée Miniflux qui n'a pas de source active correspondante (qu'elle soit pausée ou jamais créée côté Niouzou) est du bruit du point de vue Niouzou. Elle ne doit jamais entrer en DB, jamais être enrichie (pas de tokens LLM gâchés), et doit être marquée lue côté Miniflux pour ne plus polluer la fenêtre de fetch.
+
+**Acceptance.**
+- Après un fetch, les entrées **matched** ET **unmatched** sont marquées lues dans Miniflux par un seul `PUT /v1/entries` qui réunit les deux listes.
+- Le `mark_entries_read` reste appelé **après** le commit DB des matched (préservation du comportement crash-safe actuel).
+- `articles_fetched` retourné par `cron_fetch.run()` continue de refléter uniquement les entrées **ingérées** (matched), pas les unmatched. La métrique `pipeline_runs.articles_fetched` garde sa sémantique actuelle.
+- Logging : compter et logger séparément `marked_matched` et `marked_unmatched` pour pouvoir détecter une dérive Niouzou/Miniflux dans les logs (`cron_fetch: marked X matched + Y unmatched as read in Miniflux`).
+- Aucun enrichment n'est déclenché pour une unmatched (par construction : elles ne sont jamais insérées comme `Article`).
+
+**Edge cases.**
+- Si la couche métier E14-S2 manque une étape de sync (ex. exception Miniflux pendant un pause), E14-S1 nettoie au tick suivant : pas de pile d'unread qui se reforme.
+- Si un admin remet ON une source pausée pendant que des entrées sont encore en fly côté Miniflux, certaines auront été marquées lues par E14-S1 et seront perdues pour Niouzou. Tradeoff accepté : la pause est censée vouloir dire "je ne veux plus rien de ce flux pour le moment".
+
+**Files.** `api/niouzou/crons/fetch.py`, `api/tests/test_cron_fetch.py`.
+
+**Tests.**
+- `cron_fetch` ingère N matched et 0 unmatched : `mark_entries_read` est appelé avec N ids, comportement identique à aujourd'hui.
+- `cron_fetch` reçoit M unmatched seulement (aucune source ne matche) : aucune insertion dans `articles`, `mark_entries_read` appelé avec M ids, retour `0`.
+- Cas mixte : N matched + M unmatched → `mark_entries_read` reçoit N+M ids, `articles` gagne N rows.
+- Régression : si le commit DB des matched échoue, on **ne** marque PAS les unmatched non plus (sinon on perdrait du contenu valide en cas de crash partiel). Ordre : commit DB matched → mark_read(matched ∪ unmatched).
+
+---
+
+#### [ ] E14-S2 — Pause/resume/hard-delete d'une source propage à Miniflux
+
+**Contexte.** `sources_service.deactivate_source` / `update_source(active=False)` / `hard_delete_source` modifient l'état Niouzou sans toucher Miniflux. Un feed Miniflux pouvant être partagé entre plusieurs users (cas multi-user, cf. `_register_in_miniflux` qui réutilise un feed existant), on ne peut pas désactiver/supprimer aveuglément côté Miniflux : il faut compter les sources actives restantes.
+
+**Sémantique.**
+
+| Transition Niouzou | Côté Miniflux si plus aucune source active ne référence le feed | Sinon |
+|---|---|---|
+| Pause (`active=true → false`) | `PUT /v1/feeds/{id}` avec `disabled: true` | aucun changement |
+| Resume (`active=false → true`) | `PUT /v1/feeds/{id}` avec `disabled: false` (idempotent : déjà enabled = no-op) | aucun changement |
+| Hard delete | `DELETE /v1/feeds/{id}` (purge le feed + ses entrées Miniflux) | aucun changement |
+
+"Source active" = `sources.deleted_at IS NULL` (cohérent avec le filtre `cron_fetch` et `ranked_query`).
+
+**Pourquoi `disabled` plutôt que `DELETE` pour la pause ?** Le user peut vouloir reprendre. `disabled` arrête le polling Miniflux sans perdre l'historique des unread déjà fetched (ils seront balayés par E14-S1) ni l'identifiant `feed_id`. La reprise est un simple `disabled: false`.
+
+**Backend.**
+
+- `MinifluxClient` (`api/niouzou/services/miniflux_client.py`) : étendre `update_feed` pour accepter `disabled: bool | None` (kwarg optionnel, ne change rien si non passé). Ajouter `delete_feed(feed_id: int) -> None` qui fait `DELETE /v1/feeds/{id}` (Miniflux renvoie 204).
+- `SourcesService` (`api/niouzou/services/sources_service.py`) :
+  - Nouvelle méthode privée `_count_active_subscribers(feed_id: int, exclude_source_id: uuid.UUID | None) -> int` qui compte les `sources` actives référençant `miniflux_feed_id`, avec exclusion optionnelle de la source en cours de transition.
+  - `deactivate_source` et `update_source(active=False)` : après avoir mis `deleted_at`, si `_count_active_subscribers(feed_id, exclude=source.id) == 0` → `miniflux.update_feed(feed_id, disabled=True)`. Échec Miniflux → log WARNING, **on ne fail pas la transition Niouzou** (le state Niouzou est la source de vérité ; E14-S1 nettoie le reste).
+  - `update_source(active=True)` : si la source était auparavant pausée et est la **première** à redevenir active sur ce feed → `miniflux.update_feed(feed_id, disabled=False)`. Idem : log WARNING en cas d'échec, pas de fail.
+  - `hard_delete_source` : après le `session.delete(source)` (mais dans la même transaction, donc la source est déjà "removed" du count), si `_count_active_subscribers(feed_id, exclude=None) == 0` ET `_count_inactive_subscribers(feed_id) == 0` → `miniflux.delete_feed(feed_id)`. Sinon on laisse le feed Miniflux en place pour les autres users.
+- Pas de changement de schéma DB, pas de migration.
+
+**API.** Aucun changement de contrat. Les routes `PATCH /sources/{id}`, `DELETE /sources/{id}` gardent leur signature ; seul leur effet de bord côté Miniflux change.
+
+**Note importante** : si le compteur revient `> 0` (un autre user actif partage le feed), aucun appel Miniflux n'est fait. C'est ce qui rend la feature safe en multi-user.
+
+**Files.** `api/niouzou/services/miniflux_client.py`, `api/niouzou/services/sources_service.py`, `api/tests/test_sources_service.py`.
+
+**Tests** (avec mock Miniflux via respx, pattern existant) :
+- Pause d'une source qui était la seule active sur son feed → `PUT /v1/feeds/{id}` avec `disabled: true` est appelé.
+- Pause d'une source partagée avec un autre user actif → aucun appel Miniflux.
+- Resume d'une source quand elle était la seule pausée (toutes les autres étaient déjà actives) → aucun appel Miniflux (idempotent côté state Niouzou, le feed Miniflux était déjà enabled).
+- Resume d'une source quand elle était la seule sur son feed et que le feed est disabled → `PUT /v1/feeds/{id}` avec `disabled: false`.
+- Hard delete d'une source qui était la seule (active ou pausée) sur son feed → `DELETE /v1/feeds/{id}`.
+- Hard delete d'une source partagée → aucun appel Miniflux.
+- Échec Miniflux pendant la propagation (HTTP 500 mocké) → la transition Niouzou aboutit quand même, un WARNING est loggé.
+
+---
+
+### Notes E14
+
+**Ordre d'attaque** : S1 d'abord (débloque la prod au prochain tick après déploiement, sans manipuler Miniflux à la main). Puis S2 (évite que ça se reproduise et économise des ressources Miniflux/réseau pour les flux pausés).
+
+**Débug naturel de la prod** : une fois E14-S1 mergé et déployé, le prochain tick `cron_fetch` mark-as-read les ~100 entrées rugby orphelines. Le tick suivant nettoie les ~19 restantes. Au troisième tick (~45 min après deploy), Miniflux retourne des entrées matched des autres flux → ingestion + enrichment reprennent. Aucune intervention humaine requise — c'est ce qui rend E14-S1 testable de bout en bout en prod.
+
+**E14-S2 sans E14-S1** serait insuffisant : il y a déjà ~119 unread rugby orphelines en prod ; sans S1, elles resteraient bloquantes même si on patche le code de pause. À l'inverse, E14-S1 sans E14-S2 fonctionne mais gaspille du polling Miniflux sur les flux pausés ad vitam.
+
+**Pas de changement à `/admin` ni à `Stats`** dans cette epic. Le panneau distinct_keyword_count (global) reste tel quel — sujet séparé.
+
+---
+
+## EPIC 15 — Dédup des articles à l'ingestion (juin 2026)
+
+**Objectif** : éviter qu'un user abonné à deux flux RSS qui republient le même article (typiquement "Le Monde" et "Le Monde Sciences", ou un agrégateur thématique qui réutilise les URLs d'un flux principal) se retrouve avec le même article ingéré N fois dans Niouzou.
+
+**Constat prod (2026-06-08)** : le user `9f8ca23f-…` abonné à "Le Monde.fr" (feed_id=1) ET "Sciences : Toute l'actualité sur Le Monde.fr." (feed_id=5) accumule des doublons exacts d'URL pour chaque article publié sur les deux flux — environ une quinzaine identifiés. Côté Miniflux, chaque flux a son propre `entry_id` pour la même URL, donc la contrainte unique actuelle `(source_id, miniflux_entry_id)` ne déclenche pas. Conséquences :
+
+- Le feed affiche deux cartes pour le même contenu.
+- Le filtre d'impression (`ai.article_id IS NULL`) joue par `article_id` et non par URL : swipe une copie, la jumelle reste candidate.
+- Les feedbacks sont par `article_id` aussi : liker une copie ne désactive pas l'autre, et un like sur la jumelle compte une deuxième fois les poids des keywords.
+- L'enrichment tourne deux fois (deux LLM calls, deux extractions newspaper) pour un contenu identique — gaspillage direct de tokens.
+
+**Hors scope.** Les titres identiques avec URLs différentes (rubriques hebdo "Politics", "Business", "Economic data…" du flux Economist) sont du faux-positif visuel : ce sont des articles distincts qui réutilisent un libellé. Pas de dédup heuristique par titre dans cette epic.
+
+### Stories
+
+- [ ] **E15-S1** — `cron_fetch` skip d'une URL déjà ingérée pour ce user
+
+---
+
+#### [ ] E15-S1 — `cron_fetch` skip d'une URL déjà ingérée pour ce user
+
+**Contexte.** Aujourd'hui `_insert_articles` (`api/niouzou/crons/fetch.py:51`) déduplique uniquement sur `(source_id, miniflux_entry_id)`. Pour un même user, deux sources distinctes peuvent ingérer le même `url` parce qu'elles ont des `miniflux_entry_id` différents. On veut un *deuxième* niveau de dédup au point d'insertion : par `(sources.user_id, articles.url)`.
+
+**Sémantique.**
+- À l'insertion d'un batch fan-outé, pour chaque tuple `(source_id, url)` candidat : si une `articles` row existe déjà avec la même `url` ET appartenant à n'importe quelle `sources` row du même user, on **skip** l'insertion.
+- Le premier flux qui a apporté l'article gagne ; les flux suivants ne créent rien. Pas de notion de "meilleure source" — c'est first-come-first-served, simple et déterministe.
+- L'entrée Miniflux côté flux "perdant" est quand même marquée lue (E14-S1 s'en occupe au tick suivant — ou bien on l'ajoute au batch `handled_ids` ici, à confirmer dans le code, voir Acceptance).
+- Aucune des copies skippées ne déclenche d'enrichment (par construction : pas d'`article` row → pas de pending → pas de cycle d'enrich).
+
+**Acceptance.**
+- Quand un `MinifluxEntry` matche une source dont le user a déjà un article avec la même URL via une autre source, aucune row n'est ajoutée et aucun appel d'enrichment n'est déclenché.
+- Quand le même entry est matché par PLUSIEURS sources du même user dans le même batch (l'entry est récupéré une fois mais fan-outé), une seule row est insérée (la première du fan-out), les autres sont skippées.
+- Quand deux users distincts ont chacun un source qui ingérerait la même URL : chacun a sa row (la dédup est *par user*, pas globale — sinon on casserait la sémantique multi-user actuelle où chaque user a son propre cycle d'impressions/feedback).
+- L'entry Miniflux est marquée lue *même quand l'insertion est skippée* (sinon le pipeline rebascule dans le problème E14 : l'entry reviendrait à chaque tick).
+- Log INFO : `cron_fetch: skipped N duplicate URL(s) already present for the user via another source`.
+
+**Implémentation.**
+- Avant l'INSERT, charger en une seule requête l'ensemble des `(sources.user_id, articles.url)` déjà présents pour les URLs du batch :
+  ```sql
+  SELECT s.user_id, a.url FROM articles a
+  JOIN sources s ON s.id = a.source_id
+  WHERE a.url = ANY(:urls_batch)
+  ```
+- Construire un set `existing: set[tuple[uuid.UUID, str]]`.
+- Filtrer `values` : ne garder qu'une row si `(user_for_source[v.source_id], v.url) not in existing`. Au passage, tenir un *running set* sur les insertions de ce batch pour ne pas insérer deux copies issues du même batch (cas du fan-out d'un même entry sur deux sources du même user).
+- L'`ON CONFLICT DO NOTHING` existant sur `(source_id, miniflux_entry_id)` reste — il garde sa raison d'être (retry safety).
+- Les `MinifluxEntry.id` des "skippés" sont ajoutés à `handled_ids` (mark-as-read côté Miniflux) au même titre que les ingérées : du point de vue Miniflux, on a "traité" l'entry, on n'a juste pas créé d'`article` pour elle.
+
+**Pas de migration**, pas de unique INDEX DB. Une vraie contrainte unique `(user_id, url)` nécessiterait de dénormaliser `user_id` dans `articles` (Postgres n'autorise pas de subquery dans une expression d'index unique). On reste sur la dédup applicative — `cron_fetch` étant single-replica, le risque de race est nul.
+
+**Files.** `api/niouzou/crons/fetch.py`, `api/tests/test_cron_fetch.py`.
+
+**Tests.**
+- Pré-condition : un article (URL `U`) existe déjà via la source `S1` du user `A`. Un batch arrive avec un entry pointant sur `U` via la source `S2` du même user `A` → **0 nouvelle row**, l'entry est marqué lu côté Miniflux.
+- Le même batch fan-outé sur `S1` + `S2` du user `A` (entry seul, deux sources du même user, aucune row préexistante) → **1 row insérée** (la première), entry marqué lu.
+- Deux users distincts `A` et `B`, chacun a une source qui matche la même URL `U` → **2 rows** (une par user), l'entry est marqué lu une seule fois. La dédup ne se déclenche pas entre users.
+- Régression : cas standard (entry unique, une seule source qui matche) → comportement identique à aujourd'hui.
+
+---
+
+### Notes E15
+
+**Articles déjà en double en prod.** Cette story n'efface PAS les duplicates existants — elle empêche seulement les nouveaux. Les ~15 cartes en double dans le feed de Guillaume vont rester jusqu'à ce qu'elles sortent du fil naturellement (impressions au fur et à mesure des swipes) ou qu'on fasse un nettoyage explicite. À voir si on ouvre une story de cleanup séparée (script one-shot ou logique de read-time dedup dans `ranked_query`) — sujet pour une autre fois si l'utilisateur en ressent encore la gêne après E15-S1.
+
+**Coût LLM évité.** Chaque doublon évité = un cycle d'enrichment évité (≈ 1 appel OpenRouter + 1 extraction newspaper). Sur Le Monde / Le Monde Sciences (~5–10 doublons par jour observés), c'est non négligeable sur la facture.
+
+**Cohérence avec E14-S1.** Les deux fonctionnent ensemble : E14-S1 nettoie Miniflux des entries dont aucune source ne veut. E15-S1 dédup encore plus finement (deux sources la veulent mais on ne veut qu'une seule copie côté DB). Aucune interaction négative attendue.

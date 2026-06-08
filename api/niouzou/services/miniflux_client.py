@@ -162,13 +162,41 @@ class MinifluxClient:
         resp.raise_for_status()
         return resp.json()["feed_id"]
 
-    async def update_feed(self, feed_id: int, *, crawler: bool) -> MinifluxFeed:
-        """Toggle the ``crawler`` flag on an existing feed."""
-        resp = await self._client.put(
-            f"/v1/feeds/{feed_id}", json={"crawler": crawler}
-        )
+    async def update_feed(
+        self,
+        feed_id: int,
+        *,
+        crawler: bool | None = None,
+        disabled: bool | None = None,
+    ) -> MinifluxFeed:
+        """Patch feed flags. ``crawler`` toggles full-content fetching;
+        ``disabled`` pauses Miniflux's polling of the feed (E14-S2).
+
+        Both kwargs are optional — the payload only includes fields the
+        caller passed, so a partial update doesn't overwrite the other flag.
+        """
+        payload: dict = {}
+        if crawler is not None:
+            payload["crawler"] = crawler
+        if disabled is not None:
+            payload["disabled"] = disabled
+        if not payload:
+            raise ValueError("update_feed requires at least one of crawler/disabled")
+        resp = await self._client.put(f"/v1/feeds/{feed_id}", json=payload)
         resp.raise_for_status()
         return MinifluxFeed.from_api(resp.json())
+
+    async def delete_feed(self, feed_id: int) -> None:
+        """Unsubscribe Miniflux from a feed and purge its entries (E14-S2).
+
+        Used when no Niouzou source — active or paused — references the feed
+        anymore. Miniflux returns 204 on success. 404 (already gone) is
+        treated as a no-op so a retry after a partial failure is safe.
+        """
+        resp = await self._client.delete(f"/v1/feeds/{feed_id}")
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
 
     async def find_feed_by_url(self, feed_url: str) -> int | None:
         """Return the id of an existing feed whose ``feed_url`` matches, if any.

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from niouzou.config import get_settings
@@ -139,7 +139,16 @@ class SourcesService:
             raise not_found("Source not found")
 
         if active is not None:
+            was_active = source.deleted_at is None
             source.deleted_at = None if active else datetime.now(timezone.utc)
+            # E14-S2 — propagate the pause/resume to Miniflux only when no
+            # other active subscriber shares this feed. Failures are logged
+            # but don't roll back the Niouzou transition (cron_fetch will
+            # mark-read any leftover entries via E14-S1).
+            if active and not was_active:
+                await self._maybe_resume_feed(source)
+            elif not active and was_active:
+                await self._maybe_pause_feed(source)
 
         if fetch_full_content is not None:
             await self._set_crawler(source.miniflux_feed_id, fetch_full_content)
@@ -206,7 +215,12 @@ class SourcesService:
     async def deactivate_source(
         self, user_id: uuid.UUID, source_id: uuid.UUID
     ) -> None:
-        """Soft pause: keeps articles in DB but hides them from Feed/Explore."""
+        """Soft pause: keeps articles in DB but hides them from Feed/Explore.
+
+        E14-S2 — also tells Miniflux to stop polling the feed if no other
+        active source shares it, so its unread entries don't pile up and
+        eventually saturate ``cron_fetch``'s oldest-first window.
+        """
         source = await self.session.scalar(
             select(Source).where(
                 Source.id == source_id,
@@ -217,11 +231,17 @@ class SourcesService:
         if source is None:
             raise not_found("Source not found")
         source.deleted_at = datetime.now(timezone.utc)
+        await self._maybe_pause_feed(source)
 
     async def hard_delete_source(
         self, user_id: uuid.UUID, source_id: uuid.UUID
     ) -> None:
-        """Wipe the source and every dependent row via FK CASCADE (E13-S5)."""
+        """Wipe the source + dependents via FK CASCADE (E13-S5).
+
+        E14-S2 — also unsubscribes Miniflux from the feed if no other source
+        (active or paused) references it; otherwise leaves it alone so the
+        other subscribers keep receiving entries.
+        """
         source = await self.session.scalar(
             select(Source).where(
                 Source.id == source_id,
@@ -230,4 +250,87 @@ class SourcesService:
         )
         if source is None:
             raise not_found("Source not found")
+        feed_id = source.miniflux_feed_id
+        others = await self._count_other_subscribers(feed_id, source.id)
         await self.session.delete(source)
+        if others == 0:
+            await self._safe_delete_feed(feed_id)
+
+    # ── E14-S2 — Miniflux propagation helpers ─────────────────────────────
+
+    async def _count_other_active_subscribers(
+        self, feed_id: int, source_id: uuid.UUID
+    ) -> int:
+        return (
+            await self.session.scalar(
+                select(func.count())
+                .select_from(Source)
+                .where(
+                    Source.miniflux_feed_id == feed_id,
+                    Source.deleted_at.is_(None),
+                    Source.id != source_id,
+                )
+            )
+        ) or 0
+
+    async def _count_other_subscribers(
+        self, feed_id: int, source_id: uuid.UUID
+    ) -> int:
+        """Count any source (active or paused) referencing this feed, except
+        the one in transition. Used by ``hard_delete_source`` to decide
+        whether to delete the Miniflux feed itself."""
+        return (
+            await self.session.scalar(
+                select(func.count())
+                .select_from(Source)
+                .where(
+                    Source.miniflux_feed_id == feed_id,
+                    Source.id != source_id,
+                )
+            )
+        ) or 0
+
+    async def _maybe_pause_feed(self, source: Source) -> None:
+        """Disable polling in Miniflux iff this source was the last active
+        subscriber on the shared feed."""
+        if await self._count_other_active_subscribers(
+            source.miniflux_feed_id, source.id
+        ):
+            return
+        await self._safe_set_disabled(source.miniflux_feed_id, True)
+
+    async def _maybe_resume_feed(self, source: Source) -> None:
+        """Re-enable polling in Miniflux iff no other active subscriber
+        already kept the feed enabled."""
+        if await self._count_other_active_subscribers(
+            source.miniflux_feed_id, source.id
+        ):
+            return
+        await self._safe_set_disabled(source.miniflux_feed_id, False)
+
+    async def _safe_set_disabled(self, feed_id: int, disabled: bool) -> None:
+        """Best-effort ``PUT /v1/feeds/:id {disabled}``. WARN on failure but
+        do not propagate — Niouzou is the source of truth; ``cron_fetch``
+        (E14-S1) cleans up any unread that slip through."""
+        try:
+            async with await self._client() as miniflux:
+                await miniflux.update_feed(feed_id, disabled=disabled)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Miniflux update_feed(%s, disabled=%s) failed: %s",
+                feed_id,
+                disabled,
+                exc,
+            )
+
+    async def _safe_delete_feed(self, feed_id: int) -> None:
+        """Best-effort ``DELETE /v1/feeds/:id``. Same failure policy as
+        ``_safe_set_disabled`` — orphaned Miniflux feeds will be drained by
+        ``cron_fetch`` regardless."""
+        try:
+            async with await self._client() as miniflux:
+                await miniflux.delete_feed(feed_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Miniflux delete_feed(%s) failed: %s", feed_id, exc
+            )

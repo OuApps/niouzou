@@ -83,16 +83,61 @@ async def test_running_twice_does_not_duplicate(db_session):
 
 
 @respx.mock
-async def test_unmatched_feed_is_skipped_and_not_marked_read(db_session):
+async def test_unmatched_feed_is_skipped_but_marked_read(db_session):
+    # E14-S1 — unmatched (orphan-feed) entries are never inserted in DB but
+    # are marked read in Miniflux so they can't saturate the oldest-first
+    # fetch window and block the pipeline.
     await _seed_source(db_session)  # only feed 1 is registered
     put_route = _mock_miniflux([_entry(100, feed_id=1), _entry(200, feed_id=999)])
 
     marked = await fetch.run()
 
+    # Return value reflects ingested entries only.
     assert marked == 1
     assert await _article_count(db_session) == 1
-    # The orphan entry (feed 999) is left unread.
-    assert json.loads(put_route.calls[0].request.content)["entry_ids"] == [100]
+    # Both matched and unmatched marked read in a single Miniflux call.
+    assert json.loads(put_route.calls[0].request.content)["entry_ids"] == [100, 200]
+
+
+@respx.mock
+async def test_only_unmatched_entries_marks_all_read_no_insert(db_session):
+    # E14-S1 — when the whole batch is orphan-feed entries (the regression
+    # that blocked prod on 2026-06-07), they all get marked read in one PUT
+    # and nothing lands in articles.
+    await _seed_source(db_session)
+    put_route = _mock_miniflux(
+        [_entry(200, feed_id=999), _entry(201, feed_id=999), _entry(202, feed_id=888)]
+    )
+
+    marked = await fetch.run()
+
+    assert marked == 0
+    assert await _article_count(db_session) == 0
+    assert json.loads(put_route.calls[0].request.content)["entry_ids"] == [
+        200,
+        201,
+        202,
+    ]
+
+
+@respx.mock
+async def test_db_failure_skips_mark_read(db_session, monkeypatch):
+    # E14-S1 — if the DB insert raises, the session_scope rolls back and we
+    # must NOT mark anything read in Miniflux (matched OR unmatched), so a
+    # retry on the next tick can still pick up the matched entries.
+    await _seed_source(db_session)
+    put_route = _mock_miniflux([_entry(100, feed_id=1), _entry(200, feed_id=999)])
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(fetch, "_insert_articles", boom)
+
+    with pytest.raises(RuntimeError, match="simulated DB failure"):
+        await fetch.run()
+
+    assert not put_route.called
+    assert await _article_count(db_session) == 0
 
 
 @respx.mock
