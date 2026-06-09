@@ -103,16 +103,16 @@ cron_enrich picks articles with status = "pending"
 
   Summarization:
   if OPENROUTER_API_KEY is set:
-    → LLM generates summary_short
-      (3 sentences, engaging tone, makes user want to click)
     → LLM generates summary_executive
-      (bullet points, exhaustive, factual)
+      (4-6 markdown bullet points, ~15-25 words each — the only AI summary)
     → LLM extracts keywords with salience scores
       { "keywords": [{"term": "rust", "salience": 0.9}, ...] }
   else:
-    → summary_short = newspaper4k built-in summary
-    → summary_executive = null
+    → summary_executive = null (PWA renders the article body directly)
     → TF-IDF keyword extraction with salience scores
+
+  summary_short is a legacy column retained for backward compat with
+  already-enriched rows; new enrichments never populate it.
 
   Scoring (per user):
   → relevance_score = normalize(

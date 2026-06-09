@@ -36,10 +36,6 @@ logger = logging.getLogger("niouzou.enrichment")
 # healthy days. Three attempts total, 1s and 3s backoff between them.
 _LLM_BACKOFFS_S: tuple[float, ...] = (1.0, 3.0)
 
-# Sentence splitter for the no-AI summary fallback. Deliberately simple: a
-# self-hosted instance shouldn't need nltk corpora just to truncate text.
-_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
-
 # Input cap for the combined LLM call. The lede + first paragraphs carry the
 # topic; sending more just inflates latency and cost on slow models. Down from
 # the previous 8000/6000 split for summaries/keywords.
@@ -57,9 +53,9 @@ _MAX_KEYWORDS = 10
 # per cron run is the authoritative one in production.
 _ENRICHMENT_SYSTEM_FALLBACK = (
     "You enrich news articles for a feed. Return ONLY a JSON object of the form "
-    '{"summary_short": "<3 to 4 engaging sentences (around 60-100 words) that '
-    "give the reader a real preview of the article>\", "
-    '"summary_executive": "<3-5 markdown bullet points>", '
+    '{"summary_executive": "<4-6 markdown bullet points, one per line starting '
+    "with '- ', each bullet ~15-25 words covering one concrete fact or "
+    'angle from the article>", '
     '"keywords": [{"term": "<lowercase topic>", "salience": <0.0-1.0>}]}. '
     "No preamble."
 )
@@ -123,32 +119,25 @@ def _detect_language(title: str, content: str | None) -> str | None:
 class ExtractedContent:
     content: str | None
     og_image_url: str | None
-    # newspaper-derived fallback summary, used when AI is off or fails.
-    fallback_summary: str | None
 
 
 @dataclass(slots=True)
 class Enrichment:
-    """Combined output of the single LLM call: summaries + raw keywords.
+    """Combined output of the single LLM call: summary_executive + raw keywords.
 
     ``keywords`` is ``None`` when AI is disabled or the call failed — the cron
     then falls back to TF-IDF for keyword extraction. An empty list means the
     LLM ran but returned no usable keywords (kept distinct from ``None`` so
     the cron doesn't trigger fallback on a clean-but-empty reply).
+
+    ``summary_short`` is retained on the dataclass (and on the ``articles``
+    column) for backward compat with already-enriched rows — new enrichments
+    never populate it.
     """
 
     summary_short: str | None
     summary_executive: str | None
     keywords: list[ScoredKeyword] | None = None
-
-
-def _first_sentences(text: str, n: int = 3) -> str | None:
-    """First ``n`` sentences of ``text`` — the no-AI summary_short fallback."""
-    clean = " ".join(text.split())
-    if not clean:
-        return None
-    sentences = _SENTENCE_RE.split(clean)
-    return " ".join(sentences[:n]).strip() or None
 
 
 class EnrichmentService:
@@ -211,7 +200,6 @@ class EnrichmentService:
                 return ExtractedContent(
                     content=text,
                     og_image_url=image,
-                    fallback_summary=_first_sentences(text),
                 )
             logger.info("enrich: newspaper returned empty text for %s, using RSS", url)
         except Exception as exc:  # noqa: BLE001 — any fetch/parse failure → RSS
@@ -222,7 +210,6 @@ class EnrichmentService:
         return ExtractedContent(
             content=_strip_html(rss_fallback),
             og_image_url=_first_img_from_html(rss_fallback),
-            fallback_summary=_first_sentences(_strip_html(rss_fallback) or ""),
         )
 
     def generate_enrichment(self, title: str, content: str | None) -> Enrichment:
@@ -239,7 +226,7 @@ class EnrichmentService:
         2-retry envelope here (effective 6 attempts per article on bad days).
         """
         fallback = Enrichment(
-            summary_short=_first_sentences(content or ""),
+            summary_short=None,
             summary_executive=None,
             keywords=None,
         )
@@ -305,14 +292,12 @@ class EnrichmentService:
 def _parse_enrichment(data: object) -> Enrichment:
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object for enrichment")
-    short = data.get("summary_short")
-    short = str(short).strip() if short else None
-    if not short:
-        raise ValueError("LLM enrichment missing summary_short")
     executive = _parse_executive(data.get("summary_executive"))
+    if not executive:
+        raise ValueError("LLM enrichment missing summary_executive")
     keywords = _parse_keywords(data.get("keywords"))
     return Enrichment(
-        summary_short=short, summary_executive=executive, keywords=keywords
+        summary_short=None, summary_executive=executive, keywords=keywords
     )
 
 

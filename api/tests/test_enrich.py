@@ -17,7 +17,6 @@ from niouzou.scoring.ai_keyword import AIKeywordScorer
 from niouzou.services.enrichment_service import (
     EnrichmentService,
     _detect_language,
-    _first_sentences,
     _parse_enrichment,
 )
 from niouzou.services.scoring_service import ScoringService
@@ -71,7 +70,6 @@ def test_extract_content_uses_newspaper(fake_newspaper):
     result = svc.extract_content("https://x/a", rss_fallback="<p>rss body</p>")
     assert result.content == _ARTICLE_TEXT
     assert result.og_image_url == "https://img.example/cover.jpg"
-    assert result.fallback_summary.endswith("across industry.")
 
 
 def test_extract_content_falls_back_to_rss_on_fetch_failure(fake_newspaper):
@@ -92,11 +90,11 @@ def test_extract_content_falls_back_when_newspaper_text_empty(fake_newspaper):
 # ── EnrichmentService.generate_enrichment ────────────────────────────────────
 
 
-def test_generate_enrichment_without_ai_uses_first_sentences():
+def test_generate_enrichment_without_ai_returns_empty_fallback():
     svc = EnrichmentService(openrouter_client=None)
     result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
     assert result.summary_executive is None
-    assert result.summary_short == _first_sentences(_ARTICLE_TEXT)
+    assert result.summary_short is None
     # Signals "AI not run" so the cron knows to fall back to TF-IDF.
     assert result.keywords is None
 
@@ -104,14 +102,13 @@ def test_generate_enrichment_without_ai_uses_first_sentences():
 def test_generate_enrichment_with_ai_parses_json():
     client = FakeClient(
         [
-            '{"summary_short": "Punchy three liner.", '
-            '"summary_executive": "- a\\n- b", '
+            '{"summary_executive": "- a\\n- b", '
             '"keywords": [{"term": "rust", "salience": 0.9}]}'
         ]
     )
     svc = EnrichmentService(openrouter_client=client)
     result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
-    assert result.summary_short == "Punchy three liner."
+    assert result.summary_short is None
     assert result.summary_executive == "- a\n- b"
     assert result.keywords is not None
     assert [kw.term for kw in result.keywords] == ["rust"]
@@ -122,9 +119,9 @@ def test_generate_enrichment_degrades_to_fallback_on_llm_failure():
     client = FakeClient(["garbage", "still garbage"])  # never valid JSON
     svc = EnrichmentService(openrouter_client=client)
     result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
-    # Never raises — falls back to first sentences with keywords=None so the
-    # cron triggers its TF-IDF fallback path.
-    assert result.summary_short == _first_sentences(_ARTICLE_TEXT)
+    # Never raises — falls back to an empty Enrichment with keywords=None so
+    # the cron triggers its TF-IDF fallback path.
+    assert result.summary_short is None
     assert result.summary_executive is None
     assert result.keywords is None
 
@@ -132,7 +129,7 @@ def test_generate_enrichment_degrades_to_fallback_on_llm_failure():
 def test_generate_enrichment_drops_malformed_keywords():
     client = FakeClient(
         [
-            '{"summary_short": "S.", "summary_executive": null, '
+            '{"summary_executive": "- bullet", '
             '"keywords": [{"term": "rust", "salience": 0.8}, '
             '{"term": "", "salience": 0.5}, '
             '{"term": "the", "salience": 0.5}, '
@@ -159,38 +156,36 @@ def test_ai_enabled_flag():
 
 
 def test_parse_executive_string_passthrough():
-    result = _parse_enrichment(
-        {"summary_short": "S.", "summary_executive": "- a\n- b"}
-    )
+    result = _parse_enrichment({"summary_executive": "- a\n- b"})
     assert result.summary_executive == "- a\n- b"
 
 
 def test_parse_executive_list_joined_as_bullets():
     """LLM sometimes returns an array — flattened into newline bullets."""
     result = _parse_enrichment(
-        {
-            "summary_short": "S.",
-            "summary_executive": ["First point", "Second point"],
-        }
+        {"summary_executive": ["First point", "Second point"]}
     )
     assert result.summary_executive == "- First point\n- Second point"
 
 
 def test_parse_executive_list_strips_existing_bullets():
     result = _parse_enrichment(
-        {
-            "summary_short": "S.",
-            "summary_executive": ["- already bulleted", "* also bulleted"],
-        }
+        {"summary_executive": ["- already bulleted", "* also bulleted"]}
     )
     assert result.summary_executive == "- already bulleted\n- also bulleted"
 
 
-def test_parse_executive_empty_list_yields_none():
-    result = _parse_enrichment(
-        {"summary_short": "S.", "summary_executive": []}
-    )
-    assert result.summary_executive is None
+def test_parse_executive_empty_list_raises():
+    """Empty summary_executive is treated as a failed enrichment so the cron
+    retries / falls back, rather than persisting an article with no AI summary
+    at all."""
+    with pytest.raises(ValueError, match="summary_executive"):
+        _parse_enrichment({"summary_executive": []})
+
+
+def test_parse_executive_missing_raises():
+    with pytest.raises(ValueError, match="summary_executive"):
+        _parse_enrichment({"keywords": []})
 
 
 # ── Language detection (E10-S2) ──────────────────────────────────────────────
@@ -234,7 +229,7 @@ def test_generate_enrichment_includes_language_header():
             return super().complete(system=system, user=user, temperature=temperature)
 
     client = _RecordingClient(
-        ['{"summary_short": "Court.", "summary_executive": null, "keywords": []}']
+        ['{"summary_executive": "- court", "keywords": []}']
     )
     svc = EnrichmentService(openrouter_client=client)
     svc.generate_enrichment(
@@ -258,7 +253,7 @@ def test_generate_enrichment_injects_vocab():
             return super().complete(system=system, user=user, temperature=temperature)
 
     client = _RecordingClient(
-        ['{"summary_short": "X.", "summary_executive": null, "keywords": []}']
+        ['{"summary_executive": "- x", "keywords": []}']
     )
     svc = EnrichmentService(openrouter_client=client)
     svc.set_vocab(["football", "fc barcelone", "ligue des champions"])
@@ -287,7 +282,7 @@ def test_generate_enrichment_huge_vocab_preserves_article():
             return super().complete(system=system, user=user, temperature=temperature)
 
     client = _RecordingClient(
-        ['{"summary_short": "X.", "summary_executive": null, "keywords": []}']
+        ['{"summary_executive": "- x", "keywords": []}']
     )
     svc = EnrichmentService(openrouter_client=client)
     # 200 terms ~12 chars each → far past the prompt budget.
@@ -300,10 +295,7 @@ def test_generate_enrichment_huge_vocab_preserves_article():
 
 def test_parse_executive_nested_list_drops_inner_lists():
     result = _parse_enrichment(
-        {
-            "summary_short": "S.",
-            "summary_executive": ["valid", ["nested", "stuff"], "also valid"],
-        }
+        {"summary_executive": ["valid", ["nested", "stuff"], "also valid"]}
     )
     assert result.summary_executive == "- valid\n- also valid"
 
@@ -328,7 +320,7 @@ async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
     enrichment = EnrichmentService(
         FakeClient(
             [
-                '{"summary_short": "Short.", "summary_executive": "- bullet", '
+                '{"summary_executive": "- bullet", '
                 '"keywords": [{"term": "rust", "salience": 0.9}]}'
             ]
         )
@@ -351,7 +343,7 @@ async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
     assert article.status == STATUS_ENRICHED
     assert article.enriched_at is not None
     assert article.content == _ARTICLE_TEXT
-    assert article.summary_short == "Short."
+    assert article.summary_short is None  # no longer generated
     assert article.summary_executive == "- bullet"
     # E7-S15: successful AI path records the method, no error.
     assert article.enrichment_method == "ai"
@@ -478,7 +470,7 @@ async def test_enrich_article_no_ai_path(fake_newspaper, db_session):
 
     assert article.status == STATUS_ENRICHED
     assert article.summary_executive is None  # no AI → no executive summary
-    assert article.summary_short  # newspaper-derived
+    assert article.summary_short is None  # no longer generated, even off-AI
     # E7-S15: pure TF-IDF (AI off) records the method without an error.
     assert article.enrichment_method == "tfidf"
     assert article.enrichment_error is None

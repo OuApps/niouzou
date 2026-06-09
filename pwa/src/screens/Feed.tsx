@@ -15,6 +15,11 @@ const PREFETCH_AHEAD = 5
 // Impression threshold (E9-S2): slide must be ≥ 70% visible for ≥ 500 ms.
 const IMPRESSION_VISIBILITY = 0.7
 const IMPRESSION_DELAY_MS = 500
+// When the user returns from the background after at least this long, refetch
+// the feed so already-impressed articles drop out instead of re-appearing in
+// the in-memory deck. 30 s is short enough to feel "I left and came back" and
+// long enough to skip quick app-switches that don't warrant a hard reset.
+const VISIBILITY_REFETCH_AFTER_MS = 30_000
 
 // E7-S8 — empty-state threshold relaxation (preserved from the swipe deck).
 const SCORE_STEP = 0.1
@@ -110,6 +115,27 @@ export const Feed = () => {
     setErrorMsg('')
     setReloadKey((k) => k + 1)
   }, [])
+
+  // Refetch when the user returns from the background. Impressions are
+  // recorded server-side as the user scrolls, but the in-memory deck doesn't
+  // know that — without this, switching to another app and back keeps showing
+  // the same already-read articles at the top of the list.
+  useEffect(() => {
+    let hiddenAt: number | null =
+      document.visibilityState === 'hidden' ? Date.now() : null
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now()
+        return
+      }
+      if (hiddenAt === null) return
+      const elapsed = Date.now() - hiddenAt
+      hiddenAt = null
+      if (elapsed >= VISIBILITY_REFETCH_AFTER_MS) refresh()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [refresh])
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMore || !cursor) return

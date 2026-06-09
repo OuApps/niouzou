@@ -79,8 +79,8 @@ CREATE TABLE articles (
   url                  TEXT NOT NULL,
   title                TEXT NOT NULL,
   content              TEXT,                     -- full extracted content (newspaper4k or RSS fallback)
-  summary_short        TEXT,                     -- 3 engaging sentences (LLM) or newspaper4k built-in
-  summary_executive    TEXT,                     -- bullet-point summary (LLM only, null without AI)
+  summary_short        TEXT,                     -- legacy: kept for already-enriched rows, never populated by new enrichments
+  summary_executive    TEXT,                     -- 4-6 markdown bullet points (LLM only, null without AI)
   og_image_url         TEXT,                     -- scraped from article page
   published_at         TIMESTAMPTZ,
   status               TEXT NOT NULL DEFAULT 'pending',

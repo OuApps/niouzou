@@ -124,7 +124,8 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
     {
       "id": "uuid",
       "title": "Why Rust is eating C++",
-      "summary_short": "Rust's memory safety guarantees...",
+      "summary_short": null,
+      "summary_executive": "- Rust adoption up 40% in systems programming\n- ...",
       "og_image_url": "https://example.com/image.jpg",
       "url": "https://example.com/article",
       "source": {
@@ -227,7 +228,7 @@ Returns full article details. Called when user taps to expand an article before 
   "id": "uuid",
   "title": "Why Rust is eating C++",
   "url": "https://example.com/article",
-  "summary_short": "Rust's memory safety guarantees...",
+  "summary_short": null,
   "summary_executive": "- Rust adoption up 40% in systems programming\n- ...",
   "og_image_url": "https://example.com/image.jpg",
   "source": {
@@ -247,7 +248,10 @@ Returns full article details. Called when user taps to expand an article before 
 }
 ```
 
-> `summary_executive` is null when AI enrichment is disabled.
+> `summary_executive` is null when AI enrichment is disabled. It is the
+> only AI-generated summary; `summary_short` is a legacy column that stays
+> on already-enriched rows but is `null` on anything enriched after
+> migration `bbc2d4e5f6a7`.
 > `keywords` is sorted by salience desc; empty array when the article has none.
 > **E9-S1** — `reaction`, `is_saved`, `read_full_article` are top-level fields
 > (previously nested under a `feedback` object). Defaults (`"none"`, `false`,
@@ -307,7 +311,8 @@ Returns articles the user has saved (Watch Later). Ordered by feedback `updated_
     {
       "id": "uuid",
       "title": "Why Rust is eating C++",
-      "summary_short": "Rust's memory safety guarantees...",
+      "summary_short": null,
+      "summary_executive": "- Rust adoption up 40% in systems programming\n- ...",
       "og_image_url": "https://example.com/image.jpg",
       "url": "https://example.com/article",
       "source": {
@@ -362,8 +367,8 @@ the user can scan the queue without consuming articles from their feed.
     {
       "id": "uuid",
       "title": "Why Rust is eating C++",
-      "summary_short": "...",
-      "summary_executive": "...",
+      "summary_short": null,
+      "summary_executive": "- ...",
       "content": null,
       "og_image_url": "https://example.com/image.jpg",
       "url": "https://example.com/article",

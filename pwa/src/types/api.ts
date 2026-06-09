@@ -26,7 +26,10 @@ export type Scorer = 'tfidf' | 'ai_keyword'
 export interface FeedArticle extends FeedbackState {
   id: string
   title: string
-  summary_short: string
+  // Legacy 3-4 sentence brief. New articles never populate this — the bullet
+  // ``summary_executive`` is the only AI summary going forward. Kept for
+  // backward compat with already-enriched rows.
+  summary_short?: string | null
   // Full crawled content (E9-S2 renders it inline when present).
   content?: string | null
   // Bullet-point exec summary, AI-only (null without OpenRouter).

@@ -352,27 +352,6 @@ export const FeedArticleSlide = ({
             </div>
           )}
 
-          {/* Short summary */}
-          {article.summary_short && (
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ marginBottom: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)' }}>
-                  Summary
-                </span>
-              </div>
-              <p
-                style={{
-                  fontSize: 15,
-                  lineHeight: 1.6,
-                  color: 'var(--text-secondary)',
-                  margin: 0,
-                }}
-              >
-                {article.summary_short}
-              </p>
-            </div>
-          )}
-
           {/* Full crawled content — paragraphs, not raw HTML. The
               backend stores plain text from newspaper4k. Long bodies render
               collapsed so a disinterested user reaches the next-card affordance

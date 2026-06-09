@@ -4,8 +4,8 @@ Run with: ``uv run python -m niouzou.crons.enrich`` (or via the cron container).
 
 Per pending article:
   1. Extract clean content with newspaper4k, falling back to the RSS body.
-  2. Summarise — LLM (summary_short + summary_executive) when AI is on, else a
-     newspaper-derived summary_short.
+  2. Summarise — LLM ``summary_executive`` bullets when AI is on; no summary
+     when AI is off (the body is rendered directly by the PWA).
   3. Extract + store keywords via ScoringService (the AI scorer when a key is
      set; on LLM failure, retry twice then fall back to TF-IDF — E10-S1).
   4. Score the article for its source's owner and freeze the relevance_score.
@@ -221,16 +221,12 @@ async def enrich_article(
         enrichment.generate_enrichment, article.title, article.content
     )
     logger.info(
-        "enrich[%s]: enrichment generated in %.2fs (short=%d, exec=%d, keywords=%s)",
+        "enrich[%s]: enrichment generated in %.2fs (exec=%d, keywords=%s)",
         article.id,
         time.perf_counter() - t0,
-        len(enriched.summary_short or ""),
         len(enriched.summary_executive or ""),
         len(enriched.keywords) if enriched.keywords is not None else "n/a",
     )
-    if not enriched.summary_short:
-        enriched.summary_short = extracted.fallback_summary
-    article.summary_short = enriched.summary_short
     article.summary_executive = enriched.summary_executive
 
     # 3. Keyword persistence — AI keywords when the combined call returned

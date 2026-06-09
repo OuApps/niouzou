@@ -51,14 +51,14 @@ def test_generate_enrichment_succeeds_on_second_attempt(monkeypatch):
     client = FakeClient(
         [
             OpenRouterError("transient blip"),
-            '{"summary_short": "Punchy.", "summary_executive": "- a\\n- b", '
+            '{"summary_executive": "- a\\n- b", '
             '"keywords": [{"term": "rust", "salience": 0.9}]}',
         ]
     )
     svc = EnrichmentService(client)
     result = svc.generate_enrichment("Title", "Some real content here.")
     assert client.calls == 2
-    assert result.summary_short == "Punchy."
+    assert result.summary_executive == "- a\n- b"
     assert result.keywords is not None
     assert [k.term for k in result.keywords] == ["rust"]
 
@@ -71,7 +71,7 @@ def test_generate_enrichment_succeeds_first_try_no_retry(monkeypatch):
     )
     client = FakeClient(
         [
-            '{"summary_short": "Punchy.", "summary_executive": null, '
+            '{"summary_executive": "- a\\n- b", '
             '"keywords": [{"term": "rust", "salience": 0.9}]}',
         ]
     )
