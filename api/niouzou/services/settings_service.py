@@ -35,6 +35,13 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
         "cron_fetch_interval",
         "cron_refresh_weights_hour",
         "score_threshold",
+        # E16 — Smart Match engine + its tuning knobs.
+        "scoring_mode",
+        "smart_topk",
+        "smart_lambda",
+        "smart_beta",
+        "smart_decay_halflife_days",
+        "smart_rescore_window_days",
     }
 )
 
@@ -43,11 +50,20 @@ SENSITIVE_KEYS: Final[frozenset[str]] = frozenset({"openrouter_api_key"})
 
 # Keys parsed as integers (the ``app_settings.value`` column is TEXT).
 INT_KEYS: Final[frozenset[str]] = frozenset(
-    {"max_keywords_per_article", "cron_fetch_interval", "cron_refresh_weights_hour"}
+    {
+        "max_keywords_per_article",
+        "cron_fetch_interval",
+        "cron_refresh_weights_hour",
+        "smart_topk",
+        "smart_decay_halflife_days",
+        "smart_rescore_window_days",
+    }
 )
 
 # Keys parsed as floats — same TEXT column, different cast on read/write.
-FLOAT_KEYS: Final[frozenset[str]] = frozenset({"score_threshold"})
+FLOAT_KEYS: Final[frozenset[str]] = frozenset(
+    {"score_threshold", "smart_lambda", "smart_beta"}
+)
 
 # Env-default lookups: SettingsService.get(key) falls back to these when no DB
 # override exists. Kept as a small registry so ``GET /admin/config`` can show
@@ -63,6 +79,12 @@ _DEFAULT_FROM_SETTINGS = {
         s, "cron_refresh_weights_hour", 3
     ),
     "score_threshold": lambda s: s.score_threshold,
+    "scoring_mode": lambda s: s.scoring_mode,
+    "smart_topk": lambda s: s.smart_topk,
+    "smart_lambda": lambda s: s.smart_lambda,
+    "smart_beta": lambda s: s.smart_beta,
+    "smart_decay_halflife_days": lambda s: s.smart_decay_halflife_days,
+    "smart_rescore_window_days": lambda s: s.smart_rescore_window_days,
 }
 
 
@@ -80,6 +102,14 @@ class EffectiveConfig:
     cron_fetch_interval: int
     cron_refresh_weights_hour: int
     score_threshold: float
+    # E16 — defaulted so existing call sites (and tests) that build the
+    # snapshot by hand keep working; get_effective() always fills them in.
+    scoring_mode: str = "classic"
+    smart_topk: int = 5
+    smart_lambda: float = 0.8
+    smart_beta: float = 0.5
+    smart_decay_halflife_days: int = 90
+    smart_rescore_window_days: int = 14
 
 
 def mask_api_key(value: str | None) -> str | None:
@@ -181,4 +211,10 @@ class SettingsService:
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
             cron_refresh_weights_hour=resolve("cron_refresh_weights_hour"),  # type: ignore[arg-type]
             score_threshold=resolve("score_threshold"),  # type: ignore[arg-type]
+            scoring_mode=resolve("scoring_mode"),  # type: ignore[arg-type]
+            smart_topk=resolve("smart_topk"),  # type: ignore[arg-type]
+            smart_lambda=resolve("smart_lambda"),  # type: ignore[arg-type]
+            smart_beta=resolve("smart_beta"),  # type: ignore[arg-type]
+            smart_decay_halflife_days=resolve("smart_decay_halflife_days"),  # type: ignore[arg-type]
+            smart_rescore_window_days=resolve("smart_rescore_window_days"),  # type: ignore[arg-type]
         )

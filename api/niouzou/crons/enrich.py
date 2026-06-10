@@ -47,6 +47,7 @@ from niouzou.db import session_scope
 from niouzou.models import Article, ArticleKeyword, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
+from niouzou.scoring.smart_match import SmartMatchParams
 from niouzou.services.embedding_service import (
     EmbeddingService,
     embedding_available,
@@ -140,9 +141,20 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
             "cron_enrich: 'enrichment.combined' prompt missing from DB — "
             "falling back to the trimmed in-code constant"
         )
+    # E16-S3 — engine + knobs snapshotted once per run, like everything else
+    # in EffectiveConfig. Both ScoringService instances get them: the smart
+    # branch lives in score_article_for_user, whichever keyword path ran.
+    smart_params = SmartMatchParams(
+        topk=effective.smart_topk,
+        lambda_=effective.smart_lambda,
+        beta=effective.smart_beta,
+        decay_halflife_days=effective.smart_decay_halflife_days,
+    )
     tfidf_scoring = ScoringService(
         ScoringPipeline(TFIDFScorer()),
         max_keywords_per_article=effective.max_keywords_per_article,
+        scoring_mode=effective.scoring_mode,
+        smart_params=smart_params,
     )
     if client is None:
         ai_scoring = tfidf_scoring
@@ -160,6 +172,8 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
         ai_scoring = ScoringService(
             ScoringPipeline(ai_scorer),
             max_keywords_per_article=effective.max_keywords_per_article,
+            scoring_mode=effective.scoring_mode,
+            smart_params=smart_params,
         )
 
     if embedding_available():

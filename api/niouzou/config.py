@@ -50,6 +50,22 @@ class Settings(BaseSettings):
     # the next restart.
     cron_refresh_weights_hour: int = 3
 
+    # --- Smart Match (E16) ---
+    # Scoring engine: 'classic' (keywords + weights, the default) or 'smart'
+    # (embedding k-NN). Admin-overridable via app_settings like the rest.
+    scoring_mode: str = "classic"
+    # k-NN neighbourhood size per polarity (liked / disliked).
+    smart_topk: int = 5
+    # Weight of the dislike term: raw = S+ − λ·S−.
+    smart_lambda: float = 0.8
+    # Sigmoid steepness on the raw k-NN signal.
+    smart_beta: float = 0.5
+    # Feedback decay half-life: a like this old counts half (0.5^(age/halflife)).
+    smart_decay_halflife_days: int = 90
+    # Nightly rescoring window — only articles ingested within the last N days
+    # get their relevance score recomputed in smart mode (E16-S3).
+    smart_rescore_window_days: int = 14
+
     # Max entries pulled from Miniflux per cron_fetch run.
     miniflux_fetch_batch_size: int = 100
     # Max pending articles enriched per cron_enrich run.

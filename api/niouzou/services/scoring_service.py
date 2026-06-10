@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from niouzou.config import get_settings
 from niouzou.models import Article, ArticleKeyword, ArticleRelevanceScore, KeywordWeight
 from niouzou.scoring import ScoredKeyword, ScoringPipeline
+from niouzou.scoring.smart_match import SCORER_NAME, SmartMatchParams, smart_score
 
 
 class ScoringService:
@@ -26,8 +27,16 @@ class ScoringService:
         pipeline: ScoringPipeline | None = None,
         *,
         max_keywords_per_article: int | None = None,
+        scoring_mode: str = "classic",
+        smart_params: SmartMatchParams | None = None,
     ) -> None:
         self.pipeline = pipeline or ScoringPipeline()
+        # E16 — engine selector, snapshotted from app_settings once per cron
+        # run (like the rest of EffectiveConfig). 'classic' keeps the keyword
+        # pipeline below; 'smart' routes scoring through smart_match with a
+        # transparent per-article fallback when the embedding is missing.
+        self.scoring_mode = scoring_mode
+        self.smart_params = smart_params
         # Cap applied at the persistence boundary so it covers both TF-IDF and
         # AI extractors uniformly (E7-S5). Defaults to the env-driven setting;
         # tests override via the kwarg.
@@ -93,9 +102,24 @@ class ScoringService:
     ) -> float:
         """Compute and persist this user's relevance_score for the article.
 
-        Reads the article's stored saliences and the user's keyword weights,
-        runs the pipeline, and upserts ``article_relevance_scores``.
+        In smart mode (E16-S3), the score comes from the embedding k-NN; an
+        article without an embedding falls through to the Classic path below
+        (and is stamped with the classic scorer's name) so no article is ever
+        left unscored. In classic mode, reads the article's stored saliences
+        and the user's keyword weights, runs the pipeline, and upserts
+        ``article_relevance_scores``.
         """
+        if self.scoring_mode == "smart":
+            result = await smart_score(
+                session, article_id, user_id, params=self.smart_params
+            )
+            if result is not None:
+                score, is_cold_start = result
+                await self._upsert_score(
+                    session, article_id, user_id, score, SCORER_NAME, is_cold_start
+                )
+                return score
+
         keywords = [
             ScoredKeyword(term=term, salience=salience)
             for term, salience in (
@@ -126,7 +150,20 @@ class ScoringService:
         # requête supplémentaire dans le hot path d'enrichissement.
         is_cold_start = not any(kw.term in user_weights for kw in keywords)
 
-        scorer_name = self.pipeline.scorer_name
+        await self._upsert_score(
+            session, article_id, user_id, score, self.pipeline.scorer_name, is_cold_start
+        )
+        return score
+
+    @staticmethod
+    async def _upsert_score(
+        session: AsyncSession,
+        article_id: uuid.UUID,
+        user_id: uuid.UUID,
+        score: float,
+        scorer_name: str,
+        is_cold_start: bool,
+    ) -> None:
         await session.execute(
             pg_insert(ArticleRelevanceScore)
             .values(
@@ -145,4 +182,3 @@ class ScoringService:
                 },
             )
         )
-        return score
