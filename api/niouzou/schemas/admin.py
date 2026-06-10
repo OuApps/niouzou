@@ -18,6 +18,12 @@ class AdminConfig(BaseModel):
     cron_fetch_interval: int
     cron_refresh_weights_hour: int
     score_threshold: float
+    # E16-S4 — scoring engine ('classic' | 'smart') + instance-wide embedding
+    # coverage so the admin can judge whether a backfill is worth running
+    # before switching to Smart Match.
+    scoring_mode: str
+    embeddings_done: int
+    articles_total: int
 
 
 class AdminConfigPatch(BaseModel):
@@ -34,6 +40,9 @@ class AdminConfigPatch(BaseModel):
     cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
     cron_refresh_weights_hour: int | None = Field(default=None, ge=0, le=23)
     score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Value-validated in SettingsService.validate (422 when 'smart' is not
+    # runnable on this instance), not by the schema.
+    scoring_mode: str | None = None
 
 
 class AdminModel(BaseModel):

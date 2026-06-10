@@ -368,6 +368,10 @@ export interface AdminConfig {
   cron_fetch_interval: number
   cron_refresh_weights_hour: number
   score_threshold: number
+  // E16-S4 — scoring engine + instance-wide embedding coverage.
+  scoring_mode: 'classic' | 'smart'
+  embeddings_done: number
+  articles_total: number
 }
 
 export interface AdminConfigPatch {
@@ -377,6 +381,7 @@ export interface AdminConfigPatch {
   cron_fetch_interval?: number
   cron_refresh_weights_hour?: number
   score_threshold?: number
+  scoring_mode?: 'classic' | 'smart'
 }
 
 export interface AdminModel {

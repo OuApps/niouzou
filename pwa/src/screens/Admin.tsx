@@ -141,6 +141,23 @@ export const Admin = () => {
           ) : null}
         </div>
 
+        {/* Scoring engine section (E16-S4) */}
+        {config ? (
+          <div style={{ marginBottom: 24 }}>
+            <h2
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                color: 'var(--text-secondary)',
+                marginBottom: 12,
+              }}
+            >
+              Scoring engine
+            </h2>
+            <ScoringEngineSection config={config} onChange={reloadConfig} />
+          </div>
+        ) : null}
+
         {/* Keywords section (E10-S3) */}
         <div style={{ marginBottom: 24 }}>
           <h2
@@ -412,6 +429,99 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
         </div>
       ) : (
         <p style={{ fontSize: 12, color: 'var(--text-primary)', marginTop: 4 }}>{displayValue || '—'}</p>
+      )}
+    </div>
+  )
+}
+
+// ── E16-S4 — Scoring engine toggle ────────────────────────────────────────────
+
+interface ScoringEngineSectionProps {
+  config: AdminConfig
+  onChange: () => void
+}
+
+const SCORING_ENGINES = [
+  {
+    id: 'classic' as const,
+    label: 'Classic',
+    subtitle: 'Keyword weights (current behavior)',
+  },
+  {
+    id: 'smart' as const,
+    label: 'Smart Match',
+    subtitle: 'Semantic similarity to your liked articles (beta)',
+  },
+]
+
+const ScoringEngineSection = ({ config, onChange }: ScoringEngineSectionProps) => {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const select = async (mode: 'classic' | 'smart') => {
+    if (mode === config.scoring_mode || saving) return
+    setError(null)
+    setSaving(true)
+    try {
+      await patchAdminConfig({ scoring_mode: mode })
+      onChange()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const pct =
+    config.articles_total > 0
+      ? Math.round((config.embeddings_done / config.articles_total) * 100)
+      : 0
+
+  return (
+    <div
+      className="glass-sm flex flex-col"
+      style={{ borderRadius: 16, padding: '12px 14px', gap: 10 }}
+    >
+      {SCORING_ENGINES.map((engine) => (
+        <label
+          key={engine.id}
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+            cursor: saving ? 'default' : 'pointer',
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          <input
+            type="radio"
+            name="scoring_mode"
+            checked={config.scoring_mode === engine.id}
+            onChange={() => select(engine.id)}
+            disabled={saving}
+            style={{ marginTop: 3, accentColor: 'var(--accent-text)' }}
+          />
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+              {engine.label}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              {engine.subtitle}
+            </span>
+          </span>
+        </label>
+      ))}
+
+      <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+        Embeddings: {config.embeddings_done.toLocaleString()} /{' '}
+        {config.articles_total.toLocaleString()} articles ({pct}%)
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+        Switching engines affects future scoring (enrichment and nightly
+        rescoring). Existing scores are not recomputed.
+      </div>
+      {error && (
+        <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>
       )}
     </div>
   )

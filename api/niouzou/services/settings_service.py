@@ -19,12 +19,13 @@ on the next worker restart (APScheduler triggers are not rebuilt live).
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.models import AppSetting
+from niouzou.services.embedding_service import embedding_available
 
 # Public registry of keys an admin may override at runtime.
 OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
@@ -125,6 +126,10 @@ class UnknownSettingError(KeyError):
     """Raised when a caller asks for a key not in ``OVERRIDABLE_KEYS``."""
 
 
+class InvalidSettingError(ValueError):
+    """Raised when a value fails admin-facing validation; maps to 422."""
+
+
 class SettingsService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
@@ -155,6 +160,40 @@ class SettingsService:
         if key in FLOAT_KEYS:
             return float(override)
         return override
+
+    async def validate(self, key: str, value: str | int | float | None) -> None:
+        """Admin-facing validation, called by ``PATCH /admin/config`` before
+        ``set`` (E16-S4). Kept separate from ``set`` so internal callers
+        (tests, scripts) aren't blocked by environment checks.
+
+        ``scoring_mode = 'smart'`` is refused unless the optional
+        sentence-transformers dependency is installed AND the pgvector
+        extension exists in the database — flipping the switch on an
+        instance that can't embed would silently freeze all scoring at the
+        Classic fallback.
+        """
+        if key != "scoring_mode" or value is None or value == "":
+            return
+        if value not in ("classic", "smart"):
+            raise InvalidSettingError(
+                "scoring_mode must be 'classic' or 'smart'"
+            )
+        if value == "smart":
+            if not embedding_available():
+                raise InvalidSettingError(
+                    "Smart Match requires the embedding model: install the "
+                    "'embeddings' extra (uv sync --extra embeddings) on the "
+                    "API/worker image"
+                )
+            ext = await self.session.scalar(
+                text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            )
+            if ext is None:
+                raise InvalidSettingError(
+                    "Smart Match requires the pgvector extension — run the "
+                    "database migrations on a pgvector-enabled Postgres "
+                    "(pgvector/pgvector:pg17)"
+                )
 
     async def set(self, key: str, value: str | int | float | None) -> None:
         """Upsert an override. ``None`` or empty string deletes the override

@@ -766,9 +766,18 @@ Sensitive fields (API keys) are masked.
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
   "cron_refresh_weights_hour": 3,
-  "score_threshold": 0.0
+  "score_threshold": 0.0,
+  "scoring_mode": "classic",
+  "embeddings_done": 1240,
+  "articles_total": 1312
 }
 ```
+
+> `scoring_mode` (E16-S4): `"classic"` (keyword weights, the default) or
+> `"smart"` (Smart Match — embedding k-NN). `embeddings_done` /
+> `articles_total` are instance-wide counts so the admin can judge whether
+> an embedding backfill (`python -m niouzou.tools.backfill_embeddings`)
+> is worth running before switching.
 
 ---
 
@@ -787,7 +796,8 @@ the next cron run.
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
   "cron_refresh_weights_hour": 3,
-  "score_threshold": 0.6
+  "score_threshold": 0.6,
+  "scoring_mode": "smart"
 }
 ```
 
@@ -795,6 +805,12 @@ the next cron run.
 > `cron_fetch_interval` is in minutes (1–1440).
 > `cron_refresh_weights_hour` is 0–23 (UTC hour).
 > `score_threshold` is a float in `[0.0, 1.0]`; takes effect on the very next `GET /feed` request (no worker restart needed). The PWA admin screen edits it as a percentage (0–100 %) for parity with the score badge; the wire format stays float.
+> `scoring_mode` (E16-S4) accepts `"classic"` or `"smart"`. `"smart"` is
+> refused with **`422 validation_error`** (explicit message) when the
+> optional `embeddings` extra (sentence-transformers) is not installed or
+> the `vector` Postgres extension is missing. Switching affects *future*
+> scorings only (enrichment + nightly rescoring); existing scores are not
+> recomputed and the response returns in < 1 s.
 
 **Response `200`** — same shape as `GET /admin/config`.
 

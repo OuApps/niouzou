@@ -46,6 +46,23 @@ _PIPELINE_WINDOWS: dict[str, str] = {
 }
 
 
+async def embedding_counts(session) -> tuple[int, int]:
+    """(articles with an embedding, articles total) — instance-wide.
+
+    Surfaced in ``GET /admin/config`` (E16-S4) so the admin can judge
+    whether a backfill is worth running before switching to Smart Match.
+    """
+    done, total = (
+        await session.execute(
+            select(
+                func.count(Article.embedding),
+                func.count(),
+            ).select_from(Article)
+        )
+    ).one()
+    return done, total
+
+
 class StatsService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session

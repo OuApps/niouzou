@@ -44,9 +44,11 @@ from niouzou.security import hash_password
 from niouzou.services.admin_models_service import fetch_models
 from niouzou.services.settings_service import (
     OVERRIDABLE_KEYS,
+    InvalidSettingError,
     SettingsService,
     mask_api_key,
 )
+from niouzou.services.stats_service import embedding_counts
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger("niouzou.admin")
@@ -60,7 +62,9 @@ _WORKER_URL = os.environ.get(
 SettingsServiceDep = Annotated[SettingsService, Depends()]
 
 
-def _config_response(effective) -> AdminConfig:  # type: ignore[no-untyped-def]
+def _config_response(  # type: ignore[no-untyped-def]
+    effective, embeddings_done: int, articles_total: int
+) -> AdminConfig:
     return AdminConfig(
         openrouter_model=effective.openrouter_model,
         openrouter_api_key=mask_api_key(effective.openrouter_api_key),
@@ -68,6 +72,9 @@ def _config_response(effective) -> AdminConfig:  # type: ignore[no-untyped-def]
         cron_fetch_interval=effective.cron_fetch_interval,
         cron_refresh_weights_hour=effective.cron_refresh_weights_hour,
         score_threshold=effective.score_threshold,
+        scoring_mode=effective.scoring_mode,
+        embeddings_done=embeddings_done,
+        articles_total=articles_total,
     )
 
 
@@ -98,7 +105,8 @@ async def get_config(
     _: CurrentAdmin, service: SettingsServiceDep
 ) -> AdminConfig:
     effective = await service.get_effective()
-    return _config_response(effective)
+    done, total = await embedding_counts(service.session)
+    return _config_response(effective, done, total)
 
 
 @router.patch("/config", response_model=AdminConfig)
@@ -113,9 +121,14 @@ async def patch_config(
     for key, value in payload.items():
         if key not in OVERRIDABLE_KEYS:
             raise APIError(400, "bad_request", f"Unknown setting: {key}")
+        try:
+            await service.validate(key, value)
+        except InvalidSettingError as exc:
+            raise APIError(422, "validation_error", str(exc))
         await service.set(key, value)
     effective = await service.get_effective()
-    return _config_response(effective)
+    done, total = await embedding_counts(service.session)
+    return _config_response(effective, done, total)
 
 
 @router.get("/models", response_model=list[AdminModel])

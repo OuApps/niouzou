@@ -217,3 +217,75 @@ async def test_require_admin_blocks_non_admin():
     user.is_admin = True
     # Admin path returns the same user unchanged.
     assert (await get_current_admin(user)) is user
+
+
+# ── E16-S4 — scoring_mode toggle ──────────────────────────────────────────────
+
+
+async def test_scoring_mode_defaults_to_classic(db_session):
+    svc = SettingsService(db_session)
+    assert await svc.get("scoring_mode") == "classic"
+    cfg = await svc.get_effective()
+    assert cfg.scoring_mode == "classic"
+    # Smart knobs resolve to their documented defaults.
+    assert cfg.smart_topk == 5
+    assert cfg.smart_lambda == 0.8
+    assert cfg.smart_beta == 0.5
+    assert cfg.smart_decay_halflife_days == 90
+    assert cfg.smart_rescore_window_days == 14
+
+
+async def test_validate_rejects_unknown_scoring_mode_value(db_session):
+    from niouzou.services.settings_service import InvalidSettingError
+
+    svc = SettingsService(db_session)
+    with pytest.raises(InvalidSettingError, match="classic"):
+        await svc.validate("scoring_mode", "bogus")
+
+
+async def test_validate_smart_refused_without_embedding_lib(db_session, monkeypatch):
+    from niouzou.services import settings_service as ss
+    from niouzou.services.settings_service import InvalidSettingError
+
+    monkeypatch.setattr(ss, "embedding_available", lambda: False)
+    svc = SettingsService(db_session)
+    with pytest.raises(InvalidSettingError, match="embeddings"):
+        await svc.validate("scoring_mode", "smart")
+    # classic is always accepted, lib or not.
+    await svc.validate("scoring_mode", "classic")
+
+
+async def test_validate_smart_ok_with_lib_and_pgvector(db_session, monkeypatch):
+    from niouzou.services import settings_service as ss
+
+    # The test DB runs pgvector/pgvector:pg17 with the extension installed,
+    # so faking the lib presence is enough for the happy path.
+    monkeypatch.setattr(ss, "embedding_available", lambda: True)
+    svc = SettingsService(db_session)
+    await svc.validate("scoring_mode", "smart")  # must not raise
+
+    await svc.set("scoring_mode", "smart")
+    await db_session.commit()
+    assert await svc.get("scoring_mode") == "smart"
+
+
+async def test_validate_ignores_other_keys(db_session):
+    svc = SettingsService(db_session)
+    # No environment checks for non-scoring_mode keys.
+    await svc.validate("openrouter_model", "openai/gpt-4o")
+    await svc.validate("smart_topk", 7)
+
+
+async def test_embedding_counts(db_session):
+    from niouzou.services.stats_service import embedding_counts
+    from tests.factories import make_article, make_source, make_user
+    from tests.fake_embeddings import axis_vector
+
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    embedded = await make_article(db_session, source, title="with")
+    embedded.embedding = axis_vector(0)
+    await make_article(db_session, source, title="without")
+    await db_session.flush()
+
+    assert await embedding_counts(db_session) == (1, 2)
