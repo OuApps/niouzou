@@ -46,7 +46,9 @@ External:
 |---|---|---|
 | `keyword.salience` | article × keyword | How central a keyword is to the article (0.0→1.0). Set at enrichment time by LLM or TF-IDF. Never changes. |
 | `keyword_weight` | user × keyword | How much a keyword positively or negatively influences this user's feed. Learned from feedback history. |
-| `article.relevance_score` | user × article | Probability (0.0→1.0) that the user will enjoy the article. Computed at enrichment time, never recomputed. Surfaced in the feed UI. |
+| `article.relevance_score` | user × article | Probability (0.0→1.0) that the user will enjoy the article. Computed at enrichment time. In **classic** mode it is never recomputed; in **smart** mode (E16) articles ingested within the last `SMART_RESCORE_WINDOW_DAYS` are re-scored nightly. Surfaced in the feed UI. |
+| `article.embedding` | article | 1024-dim semantic vector of `title + summary_executive` (Qwen3-Embedding-0.6B, local, L2-normalised). Set at enrichment regardless of mode; NULL until computed. Powers Smart Match (E16). |
+| `scoring_mode` | instance | Active scoring engine: `classic` (keywords × weights, the default) or `smart` (embedding k-NN over the user's feedback history). Admin toggle, `app_settings`-backed. |
 
 ---
 
@@ -80,6 +82,11 @@ External:
   - `python -m niouzou.crons.fetch`
   - `python -m niouzou.crons.enrich`
   - `python -m niouzou.crons.refresh_weights`
+- E16 — the enrichment path also computes the article embedding. The model
+  (~1.2 GB in fp16) loads lazily in the worker process on the first embed;
+  budget ~1.5 GB extra RAM for the worker. The web API process never loads it.
+- One-shot ops CLI: `python -m niouzou.tools.backfill_embeddings` embeds
+  legacy articles (batch 50, newest first, idempotent/resumable).
 
 ---
 
@@ -115,11 +122,23 @@ cron_enrich picks articles with status = "pending"
   already-enriched rows; new enrichments never populate it.
 
   Scoring (per user):
-  → relevance_score = normalize(
-      Σ keyword.salience * keyword_weight(keyword, user)
-    )
-  → unknown keywords → keyword_weight = 0 (neutral, never penalizes)
-  → relevance_score stored as float 0.0→1.0, never recomputed after this
+  if scoring_mode = "classic" (default):
+    → relevance_score = normalize(
+        Σ keyword.salience * keyword_weight(keyword, user)
+      )
+    → unknown keywords → keyword_weight = 0 (neutral, never penalizes)
+    → stored as float 0.0→1.0, never recomputed after this
+  if scoring_mode = "smart" (E16):
+    → relevance_score = smart_score(article, user)  — embedding k-NN over
+      the user's feedbacked articles (see "Scoring Pipeline" below)
+    → article without embedding → transparent fallback to the classic
+      formula above (scorer column stamped accordingly)
+
+  Embedding (E16-S2, always on, both modes):
+  → embedding = embed(title + " " + summary_executive)   [content[:1000] fallback]
+  → local model (Qwen3-Embedding-0.6B via sentence-transformers), lazy-loaded
+    in the worker process only — the web API never loads it
+  → skipped with a warning if the optional `embeddings` extra isn't installed
 
   → article status set to "enriched"
   → article surfaced in feed if relevance_score > SCORE_THRESHOLD
@@ -145,8 +164,13 @@ User swipes in PWA
 ```
 cron_refresh_weights runs once per day
   → full recompute of all keyword_weights from all feedbacks
-  → does NOT touch article.relevance_score (scores are frozen)
-  → safety net for drift or inconsistency in keyword_weights only
+    (runs in both modes — keyword_weights stay alive under smart so the
+     Keywords screen keeps working and the return to classic is lossless)
+  → classic mode: does NOT touch article.relevance_score (scores are frozen)
+  → smart mode (E16-S3): re-scores article_relevance_scores rows whose
+    article was ingested within SMART_RESCORE_WINDOW_DAYS — the feed
+    benefits retroactively from new feedback; older rows stay frozen
+    (gravity already pushed them out of the feed)
 ```
 
 ---
@@ -171,11 +195,44 @@ raw = sum(scorer.score(article, user) for scorer in active_scorers)
 article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 ```
 
+### Smart Match (E16, `scoring_mode = 'smart'`)
+
+Unlike the scorers above (pure, no I/O), Smart Match needs the database (the
+user's feedback neighbours), so it lives outside the `BaseScorer` hierarchy:
+`ScoringService.score_article_for_user` branches on `scoring_mode` and calls
+`scoring/smart_match.py` directly.
+
+```
+S+ = Σ_{i ∈ topK(liked)}    sim(a, e_i) · value_i · decay(t_i)
+S− = Σ_{j ∈ topK(disliked)} sim(a, e_j) · |value_j| · decay(t_j)
+
+raw   = S+ − λ·S−
+score = sigmoid(β·raw + Σ_{pinned kw ∩ keywords(a)} weight·salience)
+```
+
+- `sim` = pgvector cosine similarity; `value` = E9-S1 feedback signal
+  ((±1 reaction) + 0.5·saved + 0.5·read); `decay(t) = 0.5^(age_days/halflife)`.
+- **No user-profile centroid** — instance-based k-NN per polarity, so a user
+  with several interest clusters (rugby + tech) is multi-modal by construction.
+- Pinned keywords (`manually_overridden`) remain hard levers inside the
+  sigmoid; learned weights become indicative only.
+- `raw = 0` (no feedback / orthogonal candidate) → score 0.5: same neutral
+  semantics as classic. `is_cold_start` (smart) = user has no positive feedback.
+- Article without embedding → transparent fallback to the active classic
+  scorer. The `article_relevance_scores.scorer` column traces provenance:
+  `'tfidf' | 'ai_keyword' | 'smart_match'`.
+- No ANN index needed: the k-NN runs over the user's feedbacked articles
+  (hundreds of rows), not the whole corpus.
+
 **Key rules:**
 - AI or TF-IDF, never both — no noise mixing
 - Unknown keyword → weight = 0, never penalizes
 - New users see everything (all weights = 0 → all scores neutral → all pass threshold)
-- `relevance_score` is frozen at enrichment time, even as keyword_weights evolve
+- `relevance_score` is frozen at enrichment time in classic mode; in smart
+  mode only the nightly rescore window is recomputed
+- The embedding is computed in both modes (cheap, local) so switching
+  classic → smart is instant for recent articles; switching back is lossless
+  (keyword_weights never stopped updating)
 
 ---
 
@@ -271,6 +328,12 @@ article.relevance_score = normalize(raw)  # sigmoid or min-max over known range
 | `MAX_KEYWORDS_PER_ARTICLE` | ❌ | Cap on keywords stored per article — applied after extraction (default: `6`) |
 | `CRON_FETCH_INTERVAL` | ❌ | Fetch + enrich chain interval in minutes (1–1440, default: `15`) — overridable via `PATCH /admin/config` (E8-S3) |
 | `CRON_REFRESH_WEIGHTS_HOUR` | ❌ | Hour (0–23 UTC) when daily keyword-weight recompute runs (default: `3`) — overridable via `PATCH /admin/config` (E8-S3) |
+| `SCORING_MODE` | ❌ | Scoring engine: `classic` (default) or `smart` (E16). Overridable via `PATCH /admin/config`; `smart` requires the `embeddings` extra + pgvector |
+| `SMART_TOPK` | ❌ | Smart Match: k-NN neighbourhood size per polarity (default: `5`) |
+| `SMART_LAMBDA` | ❌ | Smart Match: weight of the dislike term, `raw = S+ − λ·S−` (default: `0.8`) |
+| `SMART_BETA` | ❌ | Smart Match: sigmoid steepness on the raw k-NN signal (default: `0.5`) |
+| `SMART_DECAY_HALFLIFE_DAYS` | ❌ | Smart Match: feedback decay half-life in days (default: `90`) |
+| `SMART_RESCORE_WINDOW_DAYS` | ❌ | Smart Match: nightly rescoring window on `articles.created_at` (default: `14`) |
 | `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`) |
 
 ---
@@ -283,8 +346,11 @@ Miniflux is AGPL-licensed. Using it only via REST API keeps Niouzou under Apache
 **Three distinct concepts, never conflated**
 `keyword.salience` (article-level, set once) × `keyword_weight` (user-level, learned) = `relevance_score` (frozen at enrichment). Each has a single owner and a single moment of mutation.
 
-**Scores frozen at enrichment**
-`relevance_score` is computed once when an article is enriched, using keyword_weights as they are at that moment. It is never recomputed. This keeps the feed stable and the system simple.
+**Scores frozen at enrichment (classic) / windowed rescore (smart)**
+In classic mode, `relevance_score` is computed once when an article is enriched, using keyword_weights as they are at that moment, and never recomputed — feed stability, system simplicity. Smart Match (E16) deliberately relaxes this for *recent* articles only: the nightly rescore recomputes the last `SMART_RESCORE_WINDOW_DAYS` of scores so the feed benefits retroactively from fresh feedback, while older rows stay frozen (gravity already buried them).
+
+**Local embeddings, optional dependency**
+The embedding model (Qwen3-Embedding-0.6B, Apache 2.0) runs locally in the worker process — zero API cost, works without an OpenRouter key, multilingual. `sentence-transformers` is an optional extra (`embeddings`): without it the instance runs classic only and the admin toggle refuses `smart` with an explicit 422. One vector per article, no chunking (the summary already condenses the topic; user multi-modality is handled by the k-NN, not by splitting articles). ⚠️ Changing the model means a full re-backfill — vectors from different models are not comparable.
 
 **Synchronous weight update on feedback**
 keyword_weights update immediately on like/dislike so the next enrichment run benefits from fresh weights. The daily `cron_refresh_weights` is a safety net only.

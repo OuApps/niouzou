@@ -37,7 +37,7 @@ CREATE TABLE users (
 ### app_settings
 ```sql
 CREATE TABLE app_settings (
-  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article, score_threshold)
+  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article, score_threshold, scoring_mode, smart_topk, smart_lambda, smart_beta, smart_decay_halflife_days, smart_rescore_window_days)
   value         TEXT NOT NULL,                     -- setting value (overrides env var at runtime)
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -137,9 +137,14 @@ CREATE TABLE article_relevance_scores (
   article_id        UUID NOT NULL REFERENCES articles(id),
   user_id           UUID NOT NULL REFERENCES users(id),
   relevance_score   FLOAT NOT NULL CHECK (relevance_score >= 0.0 AND relevance_score <= 1.0),
-                    -- probability the user will enjoy this article
-                    -- computed once at enrichment time, never recomputed
-  scorer            VARCHAR,                     -- 'tfidf' or 'ai_keyword'; null for legacy rows
+                    -- probability the user will enjoy this article.
+                    -- Computed at enrichment time. Classic mode: never
+                    -- recomputed. Smart mode (E16-S3): rows whose article
+                    -- was ingested within SMART_RESCORE_WINDOW_DAYS are
+                    -- re-scored nightly by cron_refresh_weights.
+  scorer            VARCHAR,                     -- 'tfidf' | 'ai_keyword' | 'smart_match' (E16);
+                                                 -- null for legacy rows. Traces which engine
+                                                 -- produced the current score.
   is_cold_start     BOOLEAN NOT NULL DEFAULT FALSE,
                     -- E10-S4: true when none of the article's keywords has a row
                     -- in keyword_weights for this user. Stamped by ScoringService
@@ -327,7 +332,11 @@ created (status = pending)
                              /stats can surface in-progress counts)
       → content extracted
       → keywords extracted (salience set, never changes)
-      → relevance_score computed per user (frozen)
+      → relevance_score computed per user (frozen in classic mode;
+        smart mode re-scores the recent window nightly — E16-S3)
+      → embedding computed (E16-S2, both modes; NULL if the optional
+        embeddings extra is missing — Smart Match then falls back to
+        classic for that article)
       → enriched_at set
       → status = enriched
   → article surfaced in feed if:

@@ -10,26 +10,29 @@ Niouzou is a self-hostable, mobile-first news aggregator with a TikTok/Tinder-st
 |---|---|
 | API | Python 3.13 / FastAPI / SQLAlchemy 2.0 async |
 | PWA | React / TypeScript / Vite / Tailwind CSS |
-| DB | PostgreSQL |
+| DB | PostgreSQL + pgvector (image `pgvector/pgvector:pg17`) |
 | RSS | Miniflux (external Docker image, REST API only) |
 | LLM | OpenRouter (optional) |
 | Auth | JWT via python-jose + passlib |
-| Scoring | TFIDFScorer (default) or AIKeywordScorer (if OPENROUTER_API_KEY set) |
+| Scoring | `scoring_mode = classic` (default): TFIDFScorer or AIKeywordScorer (if OPENROUTER_API_KEY). `smart` (E16): Smart Match embedding k-NN |
+| Embeddings | Qwen3-Embedding-0.6B local via sentence-transformers (optional extra `embeddings`) — E16 |
 
-## Three concepts to never confuse
+## Concepts to never confuse
 
 - `keyword.salience` — how central a keyword is to an **article** (set once at enrichment)
 - `keyword_weight` — how much a keyword influences a specific **user's** feed (learned from feedback)
-- `article.relevance_score` — probability (0.0–1.0) the user will enjoy the article (computed once at enrichment, never recomputed)
+- `article.relevance_score` — probability (0.0–1.0) the user will enjoy the article. Computed at enrichment; never recomputed in classic mode. In smart mode, articles from the last `SMART_RESCORE_WINDOW_DAYS` are re-scored nightly (E16-S3)
+- `article.embedding` — 1024-dim semantic vector (title + summary), set at enrichment in both modes; NULL → Smart Match falls back to classic for that article
 
 ## Key rules
 
 - Never put business logic in routers — routers call services
 - Never call DB directly from a router
-- `ScoringPipeline` is the only entry point for scoring — never call scorers directly
+- `ScoringPipeline` is the only entry point for the classic scorers — never call them directly. Smart Match (`scoring/smart_match.py`, needs DB) is invoked only via `ScoringService.score_article_for_user`
+- The embedding model is loaded only via `services/embedding_service.py` (lazy, worker process only). **Tests never load the real model** — inject fakes (`tests/fake_embeddings.py`; conftest has a tripwire)
 - `BlobBackground` component must appear on every PWA screen
 - All colors and styles from `docs/DESIGN_SYSTEM.md` — no improvising
-- AI (OpenRouter) is optional — system must work fully without it
+- AI (OpenRouter) is optional — system must work fully without it (Smart Match too: embeddings are local)
 
 ## Before writing any code
 
@@ -48,8 +51,9 @@ api/niouzou/
   services/     ← all business logic
   models/       ← SQLAlchemy ORM
   schemas/      ← Pydantic
-  scoring/      ← BaseScorer, TFIDFScorer, AIKeywordScorer, ScoringPipeline
+  scoring/      ← BaseScorer, TFIDFScorer, AIKeywordScorer, ScoringPipeline, smart_match (E16)
   crons/        ← fetch, enrich, refresh_weights
+  tools/        ← one-shot ops CLIs (backfill_embeddings)
   migrations/   ← Alembic
 
 pwa/src/
@@ -65,7 +69,7 @@ pwa/src/
 
 See `docs/ARCHITECTURE.md` for the full list.
 Required: `DATABASE_URL`, `MINIFLUX_URL`, `JWT_SECRET`
-Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`
+Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`, `SCORING_MODE`, `SMART_*` (E16 knobs)
 
 The Miniflux API token is provisioned automatically from Miniflux's own DB
 (`api/niouzou/services/miniflux_bootstrap.py`) — no env var.
@@ -77,9 +81,12 @@ The Miniflux API token is provisioned automatically from Miniflux's own DB
   is not installed, so `docker compose -f …` fails with
   `unknown shorthand flag: 'f'`.
 - **Container runtime is Colima**, sized lean (2 CPU / 2 GiB RAM / 10 GiB
-  disk). Pulling large images may be tight — prefer `postgres:17` over
-  multi-arch manifest images that have triggered `exec format error` on
-  this setup in the past (`postgres:17-alpine` was one such case).
+  disk). Pulling large images may be tight — some multi-arch manifest images
+  have triggered `exec format error` on this setup in the past
+  (`postgres:17-alpine` was one such case). The current Postgres image,
+  `pgvector/pgvector:pg17`, was validated on Colima on 2026-06-10.
+  Running the full enrichment locally (embedding model, E16) needs more RAM:
+  `colima start --memory 4`.
 - **Tests need the Postgres test container running** before pytest can do
   anything: `docker-compose -f docker-compose.test.yml up -d` (port 5433),
   then `DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test

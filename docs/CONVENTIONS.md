@@ -146,9 +146,17 @@ class FeedService:
 - Validation errors handled automatically by Pydantic
 
 ### Scoring
-- Always subclass `BaseScorer` for new scorers
-- `ScoringPipeline` is the only entry point — never call scorers directly from services
+- Always subclass `BaseScorer` for new *pure* scorers (no I/O)
+- `ScoringPipeline` is the only entry point for the classic scorers — never
+  call them directly from services
 - Scorer output is an unbounded float; normalisation to 0.0–1.0 happens in `ScoringPipeline`
+- **Exception (E16):** `scoring/smart_match.py` needs the DB (the user's
+  feedback neighbours) so it lives outside `BaseScorer`. It is only ever
+  invoked through `ScoringService.score_article_for_user`, which branches on
+  `scoring_mode` — never call `smart_score` from a router or another service
+- **Embeddings:** the model is loaded only via `services/embedding_service.py`
+  (lazy singleton). Tests NEVER load the real model — inject a fake encoder
+  (see `tests/fake_embeddings.py` and the conftest tripwire)
 
 ---
 

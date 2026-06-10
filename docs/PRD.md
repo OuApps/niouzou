@@ -54,6 +54,8 @@ No open source, self-hostable solution exists with a mobile-first UX and a perso
 - LLM-extracted weighted keywords
 - Cover image (og:image scraping, AI generation as fallback)
 - Semantic scoring based on extracted keywords
+- **Smart Match** (delivered, E16): embedding-based semantic scoring (local
+  model, zero API cost) behind an admin toggle — Classic stays the default
 - Newsletter support (dedicated email address per user)
 - Personal reading statistics + ability to view and manually edit keyword scores
 
