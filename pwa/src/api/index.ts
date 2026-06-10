@@ -210,6 +210,8 @@ export interface Me {
   saved_count: number
   keyword_count: number
   source_count: number
+  // E16-S5 — active scoring engine; drives the Smart Match banner on Keywords.
+  scoring_mode: 'classic' | 'smart'
 }
 
 export function getMe(): Promise<Me> {

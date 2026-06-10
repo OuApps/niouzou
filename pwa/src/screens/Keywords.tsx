@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, Check, SlidersHorizontal, Lock, LockOpen, Trash2 } from 'lucide-react'
+import { ArrowLeft, Pencil, Check, SlidersHorizontal, Lock, LockOpen, Sparkles, Trash2 } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
-import { getKeywords, patchKeyword, resetKeywords, ApiError } from '../api'
+import { getKeywords, getMe, patchKeyword, resetKeywords, ApiError } from '../api'
 import type { KeywordWeight } from '../types/api'
 
 const PAGE_SIZE = 50
@@ -35,6 +35,23 @@ export const Keywords = () => {
 
   const [confirmReset, setConfirmReset] = useState(false)
   const [resetting, setResetting] = useState(false)
+
+  // E16-S5 — Smart Match banner. In classic mode (the default, also the
+  // fallback when /me fails) the screen is strictly unchanged.
+  const [scoringMode, setScoringMode] = useState<'classic' | 'smart'>('classic')
+  useEffect(() => {
+    let active = true
+    getMe()
+      .then((me) => {
+        if (active) setScoringMode(me.scoring_mode)
+      })
+      .catch(() => {
+        // Banner is informational only — stay on the classic (hidden) default.
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   // ── Initial load + reload ─────────────────────────────────────────────────
   useEffect(() => {
@@ -411,6 +428,33 @@ export const Keywords = () => {
           />
         ) : (
           <>
+            {scoringMode === 'smart' && (
+              <div
+                className="glass-sm"
+                style={{
+                  borderRadius: 12,
+                  padding: '10px 12px',
+                  marginTop: 12,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                }}
+              >
+                <Sparkles
+                  size={14}
+                  style={{ color: 'var(--accent-text)', flexShrink: 0, marginTop: 1 }}
+                />
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  Smart Match is active: learned weights are indicative only.
+                  Pinned weights{' '}
+                  <Lock
+                    size={10}
+                    style={{ display: 'inline', verticalAlign: '-1px', color: 'var(--accent-text)' }}
+                  />{' '}
+                  still apply to the score.
+                </p>
+              </div>
+            )}
             {positive.length > 0 && (
               <>
                 <h4

@@ -447,11 +447,16 @@ Returns the authenticated user's profile plus aggregate counts.
   "is_admin": false,
   "saved_count": 42,
   "keyword_count": 18,
-  "source_count": 7
+  "source_count": 7,
+  "scoring_mode": "classic"
 }
 ```
 
 > `is_admin` is always `false` for now — the admin role is not yet implemented.
+> `scoring_mode` (E16-S5) is the instance-wide active engine
+> (`"classic"` | `"smart"`), read-only here — it is set via
+> `PATCH /admin/config`. The Keywords screen uses it to show the
+> Smart Match banner.
 
 ---
 

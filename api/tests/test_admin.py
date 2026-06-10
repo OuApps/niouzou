@@ -289,3 +289,16 @@ async def test_embedding_counts(db_session):
     await db_session.flush()
 
     assert await embedding_counts(db_session) == (1, 2)
+
+
+async def test_me_exposes_scoring_mode(db_session):
+    from niouzou.services.me_service import MeService
+    from tests.factories import make_user
+
+    user = await make_user(db_session)
+    me = await MeService(db_session).get(user.id)
+    assert me.scoring_mode == "classic"
+
+    await SettingsService(db_session).set("scoring_mode", "smart")
+    me = await MeService(db_session).get(user.id)
+    assert me.scoring_mode == "smart"

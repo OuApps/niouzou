@@ -318,3 +318,73 @@ async def test_rescore_only_touches_the_recent_window(db_session):
     # Outside the window → frozen, even though a like would now lift it.
     assert row.relevance_score == 0.5
     assert row.scorer == "tfidf"
+
+
+# ── E16-S5 — pinned keywords as hard boosts ───────────────────────────────────
+
+
+async def _pin(session, user, term, weight):
+    session.add(
+        KeywordWeight(
+            user_id=user.id, term=term, weight=weight, manually_overridden=True
+        )
+    )
+    await session.flush()
+
+
+async def test_positive_pin_boosts_article_without_any_like(db_session):
+    """Pin 'rugby' at +5 → any article carrying the keyword wins the boost,
+    even though the user has zero like history (the user contract)."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await _embedded_article(db_session, source, axis_vector(0))
+    await add_keyword(db_session, article, "rugby", 0.9)
+    await _pin(db_session, user, "rugby", 5.0)
+
+    score, _ = await smart_score(db_session, article.id, user.id, params=PARAMS)
+
+    # sigmoid(0 + 5·0.9) ≈ 0.989 — way above neutral.
+    assert score > 0.95
+
+
+async def test_negative_pin_pushes_article_below_neutral(db_session):
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await _embedded_article(db_session, source, axis_vector(0))
+    await add_keyword(db_session, article, "politique", 0.8)
+    await _pin(db_session, user, "politique", -5.0)
+
+    score, _ = await smart_score(db_session, article.id, user.id, params=PARAMS)
+
+    assert score < 0.05
+
+
+async def test_learned_weights_do_not_boost_in_smart_mode(db_session):
+    """Only *pinned* (manually_overridden) weights act on the smart score —
+    learned weights are indicative, the embedding carries the signal."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await _embedded_article(db_session, source, axis_vector(0))
+    await add_keyword(db_session, article, "rugby", 0.9)
+    db_session.add(
+        KeywordWeight(
+            user_id=user.id, term="rugby", weight=5.0, manually_overridden=False
+        )
+    )
+    await db_session.flush()
+
+    score, _ = await smart_score(db_session, article.id, user.id, params=PARAMS)
+
+    assert abs(score - 0.5) < 1e-9
+
+
+async def test_pin_only_applies_to_articles_carrying_the_keyword(db_session):
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    await _pin(db_session, user, "rugby", 5.0)
+    other = await _embedded_article(db_session, source, axis_vector(1))
+    await add_keyword(db_session, other, "bourse", 0.9)
+
+    score, _ = await smart_score(db_session, other.id, user.id, params=PARAMS)
+
+    assert abs(score - 0.5) < 1e-9

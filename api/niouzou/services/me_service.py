@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from niouzou.deps import SessionDep
 from niouzou.models import ArticleFeedback, KeywordWeight, Source, User
 from niouzou.schemas.me import Me
+from niouzou.services.settings_service import SettingsService
 
 
 class MeService:
@@ -49,10 +50,13 @@ class MeService:
             )
         )
 
+        scoring_mode = await SettingsService(self.session).get("scoring_mode")
+
         return Me(
             email=user_row.email,
             is_admin=user_row.is_admin,
             saved_count=saved_count or 0,
             keyword_count=keyword_count or 0,
             source_count=source_count or 0,
+            scoring_mode=str(scoring_mode),
         )
