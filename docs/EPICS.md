@@ -15,7 +15,8 @@
 | EPIC 9 | Refonte UX TikTok-like | EPIC 3, EPIC 4, EPIC 5 |
 | EPIC 10 | Scaling | EPIC 5 |
 | EPIC 11 | Filtres Explore | EPIC 9, EPIC 10 |
-| EPIC 12 | Robustesse des keywords | EPIC 5, EPIC 9 |
+| EPIC 12 | ~~Robustesse des keywords~~ (remplacée par EPIC 16) | EPIC 5, EPIC 9 |
+| EPIC 16 | Smart Match — scoring sémantique par embeddings | EPIC 5, EPIC 9, EPIC 10 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -2570,7 +2571,16 @@ Le empty state existant (sans filtres) reste inchangé.
 
 ---
 
-## EPIC 12 — Robustesse des keywords
+## EPIC 12 — Robustesse des keywords ⛔ REMPLACÉE PAR EPIC 16
+
+> **Statut (2026-06-10) : abandonnée avant implémentation, remplacée par EPIC 16 (Smart Match).**
+> Audit : la taxonomie fixe (~200 termes) fait s'effondrer le pouvoir discriminant du scoring
+> (tous les articles d'un même domaine portent le même sac de keywords) et **aggrave** le cas
+> multi-intérêts via les termes parapluie partagés entre clusters (`sport`, `tech`, `france`).
+> S3 contenait en outre une erreur de spec bloquante : `xx_ent_wiki_sm` n'émet ni `GPE` ni
+> `PRODUCT` (labels WikiNER : `LOC`, `MISC`, `ORG`, `PER`) — ses tests d'acceptance étaient
+> infaisables. La canonicalisation du vocabulaire survit en E16-S6 ; le `kind`/badges (S1/S4)
+> sont abandonnés avec la taxonomie. Le texte original est conservé ci-dessous pour référence.
 
 **Objectif** : Remplacer l'extraction libre de keywords (TF-IDF brut / LLM non contraint) par une extraction à deux niveaux stables — une taxonomie fixe de ~200 topics et des entités nommées dynamiques via NER. Résultat : des `keyword_weights` qui s'accumulent de façon cohérente sur des termes récurrents, et non sur des tokens éphémères propres à un seul article.
 
@@ -3057,3 +3067,304 @@ La couche 2 est un garde-fou : elle protège du cas où Miniflux est manipulé h
 **Coût LLM évité.** Chaque doublon évité = un cycle d'enrichment évité (≈ 1 appel OpenRouter + 1 extraction newspaper). Sur Le Monde / Le Monde Sciences (~5–10 doublons par jour observés), c'est non négligeable sur la facture.
 
 **Cohérence avec E14-S1.** Les deux fonctionnent ensemble : E14-S1 nettoie Miniflux des entries dont aucune source ne veut. E15-S1 dédup encore plus finement (deux sources la veulent mais on ne veut qu'une seule copie côté DB). Aucune interaction négative attendue.
+
+---
+
+## EPIC 16 — Smart Match : scoring sémantique par embeddings (juin 2026)
+
+**Objectif** : ajouter un second moteur de scoring, **Smart Match**, basé sur des embeddings
+sémantiques et un k-NN sur l'historique de feedback de l'utilisateur. Il coexiste avec le
+moteur actuel (**Classic**, keywords + poids) derrière un toggle admin `scoring_mode`.
+Classic reste le défaut et n'est PAS modifié.
+
+> Dépend de EPIC 5 (enrichissement), EPIC 9 (feedback/poids), EPIC 10 (cron refresh, cold start).
+> Remplace EPIC 12, abandonnée après audit (voir bannière E12).
+
+**Problèmes résolus** (que E12 ne résolvait pas ou aggravait) :
+- **P1 — fragmentation** : "IA" / "intelligence artificielle" / "LLM" sont quasi confondus dans
+  l'espace d'embedding ; plus besoin de taxonomie ni de compaction pour accumuler du signal.
+- **P2 — absence de sémantique** : deux articles sur le même sujet sans keyword commun
+  partagent enfin du signal ; la polysémie ("transfert" rugby vs finance) est résolue par le contexte.
+- **P3 — score figé à l'enrichissement** : en mode Smart Match les scores des articles récents
+  sont **recalculés** chaque nuit — le feed profite enfin rétroactivement de l'apprentissage.
+
+### Décisions de design
+
+1. **Pas de profil utilisateur unique.** Un user aime le rugby ET l'informatique : la moyenne de
+   ses embeddings serait un centroïde dans le vide sémantique entre les deux. Le scoring est
+   *instance-based* (k-NN) : un article candidat n'est comparé qu'aux K feedbacks **les plus
+   similaires** — un article rugby est jugé contre les likes rugby, jamais contre les likes Rust.
+   Multi-modal par construction, zéro clustering, zéro hyperparamètre de "nombre de profils".
+2. **Modèle d'embedding local** (sentence-transformers), pas OpenRouter : respecte la règle
+   « le système doit marcher sans clé API ». Multilingue → résout FR/EN au passage.
+   Modèle verrouillé (2026-06-10, après comparatif MTEB) : **`Qwen/Qwen3-Embedding-0.6B`** —
+   top qualité multilingue de sa catégorie (MTEB ~64,3), Apache 2.0, 1024 dims (Matryoshka).
+   ⚠️ Quasi irréversible : changer de modèle = re-backfill complet (vecteurs de modèles
+   différents non comparables entre eux).
+3. **pgvector, pas de vector DB dédiée.** Une extension Postgres, pas une 4ᵉ brique à self-hoster.
+4. **`keyword_weights` continue de vivre dans les deux modes.** Le cron `refresh_weights` et le
+   chemin feedback ne changent pas : l'écran Keywords reste alimenté, les overrides manuels
+   restent des leviers (boost dans la formule Smart Match, cf. S5), et le retour au mode Classic
+   est sans perte.
+5. **Bascule de mode sans rescoring massif.** Les `article_relevance_scores` existants gardent
+   leur valeur ; seuls les nouveaux scorings (enrichissement + rescoring nightly en mode smart)
+   utilisent le moteur actif. La colonne `scorer` ('tfidf' | 'ai_keyword' | 'smart_match') trace la provenance.
+
+### Formule Smart Match
+
+Le signal par feedback réutilise la valeur E9-S1 : `value = (±1 reaction) + 0.5·saved + 0.5·read`.
+
+```
+liked(u)    = feedbacks de u avec value > 0 (embedding de l'article joint)
+disliked(u) = feedbacks de u avec value < 0
+
+S⁺ = Σ_{i ∈ topK(liked, sim)}    sim(a, eᵢ) · valueᵢ · decay(tᵢ)
+S⁻ = Σ_{j ∈ topK(disliked, sim)} sim(a, eⱼ) · |valueⱼ| · decay(tⱼ)
+
+raw   = S⁺ − λ·S⁻
+score = sigmoid(β·raw + Σ_{kw pinnés ∩ keywords(a)} weight·salience)
+```
+
+- `sim` = similarité cosinus pgvector (`1 - (embedding <=> ...)`)
+- `decay(t) = 0.5^(age_jours(t) / halflife)` — un like d'il y a 6 mois pèse moins qu'un like d'hier
+- `raw = 0` (aucun feedback) → `score = 0.5` : même sémantique neutre que Classic, un nouveau user voit tout
+- Défauts (clés `app_settings`) : `smart_topk = 5`, `smart_lambda = 0.8`, `smart_beta = 0.5`,
+  `smart_decay_halflife_days = 90`, `smart_rescore_window_days = 14`
+- `is_cold_start` en mode smart : TRUE ssi le user n'a aucun feedback avec `value > 0`
+
+> Pas d'index ANN nécessaire : le k-NN se fait sur les articles *feedbackés du user* (quelques
+> centaines de rows max), pas sur tout le corpus. `ORDER BY embedding <=> :a LIMIT K` sur cette
+> jointure suffit largement. Un index HNSW est une optimisation future hors scope.
+
+**Ordre de livraison** : S1 → S2 → S3 → S4 → S5. S6 est indépendante (livrable en parallèle).
+
+### Stories
+
+- [ ] **E16-S1** — Infra : pgvector + colonne `articles.embedding`
+- [ ] **E16-S2** — Service d'embedding local + intégration `cron_enrich` + backfill
+- [ ] **E16-S3** — `SmartMatchScorer` (k-NN) + rescoring nightly
+- [ ] **E16-S4** — Toggle admin `scoring_mode` : Classic / Smart Match
+- [ ] **E16-S5** — Keywords pinnés comme boost + écran Keywords en mode smart
+- [ ] **E16-S6** — Canonicalisation organique du vocabulaire keywords (les deux modes)
+
+---
+
+#### [ ] E16-S1 — Infra : pgvector + colonne `articles.embedding`
+
+**Changements.**
+- `docker-compose.yml` / `docker-compose.test.yml` : image `pgvector/pgvector:pg17` à la place
+  de `postgres:17`. ⚠️ **Valider sur Colima d'abord** (`docker-compose pull` + démarrage) — le
+  setup local a déjà produit des `exec format error` sur certaines images multi-arch
+  (cf. CLAUDE.md). Si l'image pose problème, fallback : installer l'extension dans une image dérivée.
+- Migration Alembic : `CREATE EXTENSION IF NOT EXISTS vector;` puis
+  `ALTER TABLE articles ADD COLUMN embedding vector(1024);` (nullable — les articles non encore
+  embeddés ont NULL).
+- Modèle SQLAlchemy `Article` : colonne `embedding` (lib `pgvector` Python, type `Vector(1024)`).
+- `docs/DATA_MODEL.md` mis à jour.
+
+**Acceptance.**
+- Migration passe sur DB vierge et DB peuplée ; rollback propre (drop column, l'extension reste).
+- La stack `docker-compose` démarre sur Colima sans erreur.
+- Les tests existants passent inchangés (la colonne est nullable, rien ne la lit encore).
+
+---
+
+#### [ ] E16-S2 — Service d'embedding local + intégration `cron_enrich` + backfill
+
+**Dépendance** : `sentence-transformers`, modèle **`Qwen/Qwen3-Embedding-0.6B`**
+(1024 dims, ~600M params, ~1,2 Go disque ; RAM ~1,2 Go en fp16, ~2,4 Go en fp32 —
+charger en fp16/bf16 par défaut, option ONNX int8 si le CPU cible rame). Ajouté dans
+`api/pyproject.toml`. Choisi le 2026-06-10 après comparatif (vs gte-multilingual-base,
+EmbeddingGemma, bge-m3, e5) : meilleure qualité multilingue de sa catégorie, licence
+Apache 2.0 cohérente avec le projet, Matryoshka (troncature possible des dims sans recalcul).
+
+**Nouveau composant** : `api/niouzou/services/embedding_service.py`
+- Singleton de module, chargé **lazy** au premier appel (pas au boot de l'API : seuls le cron
+  d'enrichissement et le backfill en ont besoin ; on évite ~1,2 Go de RAM résidente dans le
+  process web).
+- `embed(title: str, summary: str) -> list[float]` : embedde `title + " " + summary_executive`
+  (ou `content[:1000]` en fallback). Normalisation L2 pour que `<=>` (cosinus) soit cohérent.
+- **Pas d'instruction prompt** : Qwen3-Embedding est instruction-aware (préfixe côté "query"),
+  mais notre usage est symétrique (article ↔ article) — tout est embeddé en mode document,
+  sans instruction, uniformément. À figer dans le code avec un commentaire : mélanger des
+  vecteurs avec/sans instruction casserait la comparabilité.
+
+**Intégration `cron_enrich`** : après l'extraction de keywords, calculer et stocker l'embedding
+dans la même transaction. **Toujours actif quel que soit le mode** (coût ~200-400 ms CPU/article,
+négligeable au rythme du cron) : ainsi la bascule Classic → Smart Match est instantanée pour
+les articles récents.
+
+**Backfill** : commande CLI `python -m niouzou.tools.backfill_embeddings` — embedde par batch
+de 50 tous les articles `embedding IS NULL`, ordonnés du plus récent au plus ancien,
+interruptible/reprenable (idempotent par construction). Pas de bouton admin dans cette story.
+
+**Tests** — ⚠️ le vrai modèle n'est JAMAIS chargé (cf. Notes E16) : tous les tests injectent
+un faux encodeur (vecteurs synthétiques 1024d normés, déterministes).
+- Article enrichi → `embedding` non NULL, dimension 1024, norme ≈ 1 (via le faux encodeur).
+- Texte vide → pas d'exception, embedding du titre seul.
+- Le loader n'est appelé qu'une fois par process (mock du loader, compteur d'appels).
+- Backfill : 3 articles sans embedding → 3 embeddés ; relance → 0 travail.
+
+**Acceptance.**
+- `cron_enrich` embedde chaque nouvel article, quel que soit `scoring_mode`.
+- L'API web ne charge jamais le modèle (vérifiable : import lazy non déclenché par le boot).
+- Temps d'embedding < 1 s par article sur CPU.
+
+---
+
+#### [ ] E16-S3 — `SmartMatchScorer` (k-NN) + rescoring nightly
+
+**Nouveau composant** : `api/niouzou/scoring/smart_match.py`. Contrairement aux scorers
+existants (purs, sans I/O), Smart Match a besoin de la DB (les voisins du user). Il ne rentre
+donc PAS dans `BaseScorer` : c'est `ScoringService.score_article_for_user` qui branche selon
+`scoring_mode` (lu via `settings_service`, une fois par run de cron).
+
+```
+async def smart_score(session, article_id, user_id) -> tuple[float, bool]:
+    """Retourne (score, is_cold_start). Implémente la formule de l'epic en 2 requêtes :
+    topK liked + topK disliked via ORDER BY embedding <=> :a LIMIT :k sur la jointure
+    article_feedbacks × articles (embedding NOT NULL), puis calcul Python."""
+```
+
+- Article sans embedding (legacy non backfillé) → fallback transparent sur le scorer Classic
+  actif (tfidf/ai_keyword), `scorer` stampé en conséquence. Aucun article ne reste sans score.
+- `scorer = 'smart_match'` sur les rows scorées par ce chemin.
+- Le boost keywords pinnés (S5) est intégré ici dès le départ (terme `Σ weight·salience` dans
+  la sigmoïde) mais ne devient observable qu'avec S5 — pas de double implémentation.
+
+**Rescoring nightly (le fix de P3)** : `cron_refresh_weights` gagne une étape, active uniquement
+en mode smart : re-scorer `article_relevance_scores` des articles dont `fetched_at >` maintenant
+− `smart_rescore_window_days`, pour tous les users concernés. Les rows plus anciennes restent
+figées (elles sont déjà sorties du feed par la gravité). En mode Classic cette étape est un no-op.
+
+**Tests** (embeddings de test = vecteurs synthétiques orthogonaux, pas le vrai modèle).
+- User qui a liké 3 articles "rugby" (vecteurs proches) : article candidat proche → score > 0.5 ;
+  article orthogonal ("bourse") → ≈ 0.5 (pas de pénalité : aucun voisin pertinent).
+- **Multi-intérêts** : user avec deux clusters de likes (rugby, tech) orthogonaux → un candidat
+  rugby ET un candidat tech scorent tous les deux > 0.5 ; un candidat à mi-chemin ne score pas
+  mieux que les deux (pas d'effet centroïde).
+- Dislikes proches du candidat → score < 0.5.
+- Decay : un like vieux de 2×halflife pèse 4× moins qu'un like du jour.
+- User sans feedback → score = 0.5, `is_cold_start = TRUE`.
+- Article sans embedding → fallback Classic, `scorer != 'smart_match'`.
+- Rescoring nightly : un score initial à 0.5 (user sans historique au moment de l'enrichissement)
+  remonte après que le user a liké des articles similaires.
+
+**Acceptance.**
+- En mode smart, les nouveaux articles enrichis ont `scorer = 'smart_match'`.
+- Le rescoring nightly ne touche que la fenêtre configurée et seulement en mode smart.
+- Aucun changement de comportement quand `scoring_mode = 'classic'` (suite de tests existante intacte).
+
+---
+
+#### [ ] E16-S4 — Toggle admin `scoring_mode` : Classic / Smart Match
+
+**Setting** : clé `app_settings.scoring_mode`, valeurs `'classic'` (défaut) | `'smart'`.
+
+**API admin** : exposée dans les settings existants (GET/PUT). Validation : `'smart'` refusé
+avec 422 + message explicite si `sentence-transformers` n'est pas installé ou si l'extension
+`vector` est absente de la DB.
+
+**Admin UI** (écran Settings) : section "Scoring engine", deux choix radio :
+- **Classic** — sous-titre « Keyword weights (current behavior) »
+- **Smart Match** — sous-titre « Semantic similarity to your liked articles (beta) »
+
+Sous le radio, une ligne d'état : `Embeddings: 1 240 / 1 312 articles (94 %)` — un simple
+COUNT, pour que l'admin sache si un backfill (S2) vaut le coup avant de basculer. Pas de
+bouton de backfill dans l'UI (CLI only, cf. S2).
+
+**Sémantique de bascule** (documentée dans l'UI par une note) : le changement de mode affecte
+les scorings *futurs* (enrichissement + rescoring nightly) ; les scores existants ne sont pas
+recalculés à la bascule.
+
+**Acceptance.**
+- Défaut `'classic'` sur instance existante ET sur DB vierge (zéro changement de comportement au déploiement).
+- La bascule ne déclenche aucun rescoring synchrone (réponse < 1 s).
+- `npm run build` passe.
+
+---
+
+#### [ ] E16-S5 — Keywords pinnés comme boost + écran Keywords en mode smart
+
+**Contexte.** L'écran Keywords est un différenciateur produit : l'utilisateur voit et pilote ses
+préférences. En mode smart, les poids *appris* ne pilotent plus le score (l'embedding s'en
+charge), mais les poids *manuellement overridés* (`manually_overridden = true`) doivent rester
+des leviers durs — c'est un contrat utilisateur.
+
+**Changements.**
+- Le terme `Σ_{kw pinnés ∩ keywords(article)} weight·salience` (déjà câblé en S3) est couvert
+  par des tests dédiés : pin "rugby" à +5 → tout article portant le keyword "rugby" gagne le
+  boost dans la sigmoïde, même si l'utilisateur n'a aucun like rugby.
+- Écran Keywords en mode smart : bandeau informatif discret en haut de liste —
+  « Smart Match actif : les poids appris sont indicatifs ; les poids épinglés 📌 restent appliqués au score. »
+  Le mode courant est exposé via `GET /me` ou un endpoint settings public read-only (au choix de l'implémentation, documenter dans API_SPEC).
+- Aucun changement aux interactions existantes (édition, pin, reset).
+
+**Acceptance.**
+- Pin positif/négatif observable sur le score d'un article test en mode smart.
+- En mode classic, l'écran Keywords est strictement inchangé (pas de bandeau).
+
+---
+
+#### [ ] E16-S6 — Canonicalisation organique du vocabulaire keywords (les deux modes)
+
+**Contexte.** Seule survivante d'E12 : réduire la fragmentation des keywords ("IA" vs
+"intelligence artificielle") SANS taxonomie hardcodée. Utile dans les deux modes (en classic
+pour les poids, en smart pour la lisibilité de l'écran Keywords et la précision des pins).
+
+**Changement** (`enrichment_service` / prompt `scoring.ai_keywords` en DB) :
+- Injecter dans le system prompt les ~100 termes les plus fréquents de l'instance
+  (`SELECT term FROM article_keywords GROUP BY term ORDER BY count(*) DESC LIMIT 100`,
+  calculé une fois par run de cron, pas par article).
+- Consigne ajoutée : *« Quand un concept de l'article correspond à un terme de cette liste,
+  réutilise exactement ce terme plutôt qu'une variante. Les concepts absents de la liste
+  restent libres. »*
+- Pas de filtrage côté Python : le vocabulaire reste ouvert, il *converge* au lieu d'être contraint.
+- Le fallback TF-IDF est inchangé (il n'a pas de problème de variantes — il recopie le texte).
+- La compaction E10-S3 reste le filet de sécurité pour l'existant.
+
+**Tests.**
+- Le prompt envoyé contient les termes les plus fréquents (mock OpenRouter, assertion sur le system).
+- Instance vide (0 keywords) → prompt sans section vocabulaire, pas d'erreur.
+
+**Acceptance.**
+- Sur un corpus de test où "intelligence-artificielle" domine, un nouvel article IA réutilise le
+  terme canonique (vérifiable en mock en faisant retourner la variante par le LLM : le terme
+  reste accepté — la convergence est *incitative*, pas un filtre).
+
+---
+
+### Notes E16
+
+**RAM.** Le modèle (~1,2 Go chargé en fp16) tourne dans le process cron, en lazy — le process
+web ne le charge jamais. La cible de déploiement est Railway, où la marge RAM est confortable.
+En dev local (Colima 2 GiB), augmenter la VM si on veut faire tourner l'enrichissement complet
+(`colima start --memory 4`) ; les tests, eux, ne chargent JAMAIS le modèle (cf. règle ci-dessous).
+Documenter ~1,5 Go de RAM additionnelle recommandée dans le README self-host.
+
+**Règle de test absolue : le modèle d'embedding est une boîte noire, toujours mocké.**
+Aucun test, à aucun niveau (unit, intégration, CI), ne télécharge ni ne charge
+`Qwen3-Embedding-0.6B`. `embedding_service` expose un point d'injection (même pattern que
+`OpenRouterClient` dans les scorers) ; les tests injectent un faux encodeur retournant des
+vecteurs synthétiques déterministes (1024 dims, normés). Vérifier la qualité réelle du modèle
+n'est pas le travail de la suite de tests.
+
+**Un seul vecteur par article — pas de chunking (délibéré).** On embedde `title + summary_executive`
+(~100-200 mots), pas le contenu intégral : le résumé condense déjà le sujet, et un article de
+presse est essentiellement mono-sujet. Le chunking (N vecteurs/article + agrégation max-sim)
+se justifie pour du retrieval fin sur documents longs, pas ici — il multiplierait stockage et
+complexité du k-NN pour un gain marginal. La multi-modalité qui compte est au niveau du *user*
+(plusieurs centres d'intérêt), et elle est traitée par le k-NN top-K, pas par le découpage des
+articles. Si un besoin passage-level émerge un jour (très longs formats), ce sera une epic dédiée.
+
+**Coût.** Zéro coût API : l'embedding est local. À l'inverse, en mode smart on POURRAIT
+économiser l'appel LLM d'extraction de keywords — on ne le fait PAS : les keywords restent
+nécessaires (écran Keywords, pins, badges, retour lossless au mode classic).
+
+**Pourquoi pas de `kind`/badges (E12-S1/S4) ?** Sans taxonomie ni NER, tous les keywords ont la
+même provenance (extraction LLM ou TF-IDF, déjà tracée par `article_relevance_scores.scorer`).
+La colonne `kind` n'aurait plus rien à distinguer.
+
+**Évolutions futures hors scope** : index HNSW si le corpus dépasse ~100k articles ; centroïdes
+multi-clusters (HDBSCAN, similarité max) si le k-NN devient coûteux ; "similar articles" dans
+l'UI détail article (gratuit avec pgvector, une story d'une autre epic).
