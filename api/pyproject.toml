@@ -34,6 +34,9 @@ dependencies = [
 # (see api/Dockerfile); bare-metal: `uv sync --extra embeddings`.
 embeddings = [
     "sentence-transformers>=3.3",
+    # Declared directly (it's transitive via sentence-transformers) so the
+    # [tool.uv.sources] CPU-index pin below applies to it.
+    "torch>=2.6",
 ]
 
 [dependency-groups]
@@ -46,6 +49,18 @@ dev = [
 
 [tool.uv]
 default-groups = ["dev"]
+
+# torch is pulled in by sentence-transformers (extra `embeddings`). The
+# default PyPI wheels bundle the CUDA stack on Linux (~5 GB of nvidia-* libs
+# we never use — embedding runs on CPU). Pin torch to the official CPU index
+# so the Docker image stays small enough for Railway.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]
