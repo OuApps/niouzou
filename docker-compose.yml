@@ -33,7 +33,11 @@ services:
   # The init script in infra/postgres-init/ creates the `miniflux` user + db on
   # the first boot (Postgres ignores it on subsequent boots).
   postgres:
-    image: postgres:17-alpine
+    # pgvector build of Postgres 17 (E16-S1). ⚠️ Debian/glibc image — if the
+    # `niouzou_db` volume was initialised under postgres:17-alpine (musl),
+    # text-index collation order differs: run `REINDEX DATABASE niouzou;`
+    # (and `miniflux`) once after the first boot on this image.
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-niouzou}

@@ -23,6 +23,8 @@ dependencies = [
     # HTML/XML from RSS sources through lxml — older defaults allowed XXE-style
     # local-file reads.
     "lxml>=6.1",
+    # SQLAlchemy/asyncpg adapter for the Postgres `vector` type (E16-S1).
+    "pgvector>=0.3",
 ]
 
 [dependency-groups]

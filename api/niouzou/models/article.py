@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -57,3 +58,8 @@ class Article(Base):
     # ``enrichment_method='tfidf'`` already signals that case so the column is
     # left blank rather than duplicating the indicator.
     enrichment_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    # E16 — semantic embedding of title + summary_executive (Qwen3-Embedding,
+    # L2-normalised, document mode without instruction prefix). NULL until the
+    # enrichment cron or the backfill CLI computes it; Smart Match falls back
+    # to the Classic scorer for NULL rows.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)

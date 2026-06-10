@@ -14,7 +14,8 @@ name: niouzou-test
 
 services:
   postgres:
-    image: postgres:17
+    # pgvector build so the test schema can CREATE EXTENSION vector (E16-S1).
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: niouzou
       POSTGRES_PASSWORD: niouzou

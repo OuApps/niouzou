@@ -97,6 +97,11 @@ CREATE TABLE articles (
   enrichment_error     TEXT,                     -- captured exception when AI failed and fell back to TF-IDF; null on success
   enrichment_model     VARCHAR,                  -- E10-S2: OpenRouter model id on AI success (e.g. 'google/gemma-4-28b');
                                                  -- NULL on TF-IDF (native or fallback). Powers the score-debug bottom sheet.
+  embedding            VECTOR(1024),             -- E16: semantic embedding of title + summary_executive
+                                                 -- (Qwen3-Embedding-0.6B, L2-normalised, document mode).
+                                                 -- Requires the pgvector extension. NULL until computed by
+                                                 -- cron_enrich or the backfill CLI; Smart Match falls back
+                                                 -- to the Classic scorer for NULL rows.
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   UNIQUE (source_id, miniflux_entry_id)          -- same entry may exist for different sources (multi-user)
