@@ -289,6 +289,7 @@ async def _run_pipeline() -> None:
                                 ai_scoring=resources.ai_scoring,
                                 tfidf_scoring=resources.tfidf_scoring,
                                 openrouter_model=resources.openrouter_model,
+                                embedder=resources.embedder,
                             )
                             enriched_ok = True
 

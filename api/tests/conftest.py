@@ -18,7 +18,7 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from niouzou.db import async_session_factory, engine
-from niouzou.services import miniflux_bootstrap
+from niouzou.services import embedding_service, miniflux_bootstrap
 
 
 # Stub the Miniflux token bootstrap for the entire test suite. Production code
@@ -26,6 +26,25 @@ from niouzou.services import miniflux_bootstrap
 # miniflux_bootstrap.py); tests mock the Miniflux HTTP API with respx, so the
 # token value is irrelevant — short-circuit the cache so no DB call happens.
 miniflux_bootstrap._cached_key = "test-miniflux-token"
+
+
+# E16 absolute rule: the real embedding model is NEVER loaded in tests.
+# Two layers of defence: the module singleton is pre-seeded with a
+# deterministic fake encoder, and the real loader is replaced with a tripwire
+# in case some code path constructs its own EmbeddingService.
+from tests.fake_embeddings import HashEncoder  # noqa: E402
+
+embedding_service._service = embedding_service.EmbeddingService(HashEncoder())
+
+
+def _no_real_model() -> embedding_service.Encoder:
+    raise RuntimeError(
+        "tests must never load the real embedding model — inject a fake "
+        "encoder (see tests/fake_embeddings.py)"
+    )
+
+
+embedding_service._load_encoder = _no_real_model
 
 
 async def _db_reachable() -> bool:

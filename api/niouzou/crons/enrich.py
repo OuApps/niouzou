@@ -47,6 +47,11 @@ from niouzou.db import session_scope
 from niouzou.models import Article, ArticleKeyword, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
+from niouzou.services.embedding_service import (
+    EmbeddingService,
+    embedding_available,
+    get_embedding_service,
+)
 from niouzou.services.enrichment_service import EnrichmentService
 from niouzou.services.llm_prompts_service import load_all_into_dict
 from niouzou.services.openrouter_client import OpenRouterClient
@@ -67,6 +72,10 @@ class EnrichmentResources:
     # to stamp ``articles.enrichment_model`` on the AI path; ``None`` when AI
     # is disabled for this run (TF-IDF native path).
     openrouter_model: str | None = None
+    # E16-S2 — local embedding service; ``None`` when sentence-transformers
+    # isn't installed (articles then keep embedding = NULL). The model itself
+    # loads lazily on the first embed call, never here.
+    embedder: EmbeddingService | None = None
 
 
 async def _pending_article_ids(session: AsyncSession, limit: int) -> list[uuid.UUID]:
@@ -153,11 +162,22 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
             max_keywords_per_article=effective.max_keywords_per_article,
         )
 
+    if embedding_available():
+        embedder = get_embedding_service()
+    else:
+        embedder = None
+        logger.warning(
+            "cron_enrich: sentence-transformers not installed — articles "
+            "will keep embedding = NULL (Smart Match unavailable)"
+        )
+
     logger.info(
-        "cron_enrich: resources ready (ai_enabled=%s, model=%s, vocab_terms=%d)",
+        "cron_enrich: resources ready (ai_enabled=%s, model=%s, vocab_terms=%d, "
+        "embeddings=%s)",
         enrichment.ai_enabled,
         effective.openrouter_model if client is not None else "n/a",
         len(vocab),
+        "on" if embedder is not None else "off",
     )
     try:
         yield EnrichmentResources(
@@ -167,6 +187,7 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
             openrouter_model=(
                 effective.openrouter_model if client is not None else None
             ),
+            embedder=embedder,
         )
     finally:
         if client is not None:
@@ -181,6 +202,7 @@ async def enrich_article(
     ai_scoring: ScoringService,
     tfidf_scoring: ScoringService,
     openrouter_model: str | None = None,
+    embedder: EmbeddingService | None = None,
 ) -> None:
     """Enrich a single article in the given (open) transaction.
 
@@ -267,7 +289,31 @@ async def enrich_article(
         time.perf_counter() - t0,
     )
 
-    # 5. Transition to enriched + record the active method/error (E7-S15).
+    # 5. Semantic embedding (E16-S2) — computed for every article regardless
+    # of scoring_mode, so a later Classic → Smart Match switch is instant for
+    # recent articles. Stored in the same transaction as the rest of the
+    # enrichment. A failure leaves the column NULL (Smart Match falls back to
+    # Classic for that row) instead of aborting the whole enrichment.
+    if embedder is not None:
+        t0 = time.perf_counter()
+        try:
+            article.embedding = await asyncio.to_thread(
+                embedder.embed_article,
+                article.title,
+                article.summary_executive,
+                article.content,
+            )
+            logger.info(
+                "enrich[%s]: embedding computed in %.2fs",
+                article.id,
+                time.perf_counter() - t0,
+            )
+        except Exception:
+            logger.exception(
+                "enrich: embedding failed for %s — leaving NULL", article.id
+            )
+
+    # 6. Transition to enriched + record the active method/error (E7-S15).
     # ``enrichment_model`` is populated only on the AI success path (E10-S2);
     # TF-IDF fallback intentionally leaves it NULL so the debug panel doesn't
     # mislabel the row as AI-enriched.
@@ -327,6 +373,7 @@ async def run() -> int:
                         ai_scoring=resources.ai_scoring,
                         tfidf_scoring=resources.tfidf_scoring,
                         openrouter_model=resources.openrouter_model,
+                        embedder=resources.embedder,
                     )
                     enriched += 1
                 logger.info(

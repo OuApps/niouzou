@@ -34,11 +34,14 @@ WORKDIR /app
 # uv.lock change — not on every source edit. --no-dev keeps test-only packages
 # (pytest, respx...) out of the image. --frozen fails loudly if the lock is stale.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev
+# --extra embeddings pulls sentence-transformers + torch (E16): the worker
+# computes article embeddings locally. Self-hosters who want a slimmer image
+# can drop the flag — the app degrades to Classic scoring only.
+RUN uv sync --frozen --no-install-project --no-dev --extra embeddings
 
 # Then add the project source and install the package itself into the venv.
 COPY . /app
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra embeddings
 
 # --- Runtime stage: slim image with just the venv + app -----------------------
 FROM python:3.13-slim AS runtime

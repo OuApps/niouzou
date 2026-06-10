@@ -27,6 +27,15 @@ dependencies = [
     "pgvector>=0.3",
 ]
 
+[project.optional-dependencies]
+# Local embedding model for Smart Match (E16). Optional on purpose: without
+# it the instance runs Classic scoring only, articles keep embedding = NULL,
+# and the admin toggle refuses 'smart' (E16-S4). The Docker image installs it
+# (see api/Dockerfile); bare-metal: `uv sync --extra embeddings`.
+embeddings = [
+    "sentence-transformers>=3.3",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.2",

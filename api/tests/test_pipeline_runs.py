@@ -440,6 +440,7 @@ async def test_run_pipeline_records_completed_with_counters(db_session, monkeypa
         ai_scoring = None
         tfidf_scoring = None
         openrouter_model = None
+        embedder = None
 
     from contextlib import asynccontextmanager
 
@@ -505,6 +506,7 @@ async def test_run_pipeline_counts_failed_and_resets_status(
         ai_scoring = None
         tfidf_scoring = None
         openrouter_model = None
+        embedder = None
 
     @asynccontextmanager
     async def _fake_resources():
