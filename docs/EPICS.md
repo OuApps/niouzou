@@ -3140,22 +3140,28 @@ score = sigmoid(β·raw + Σ_{kw pinnés ∩ keywords(a)} weight·salience)
 
 ### Stories
 
-- [ ] **E16-S1** — Infra : pgvector + colonne `articles.embedding`
-- [ ] **E16-S2** — Service d'embedding local + intégration `cron_enrich` + backfill
-- [ ] **E16-S3** — `SmartMatchScorer` (k-NN) + rescoring nightly
-- [ ] **E16-S4** — Toggle admin `scoring_mode` : Classic / Smart Match
-- [ ] **E16-S5** — Keywords pinnés comme boost + écran Keywords en mode smart
-- [ ] **E16-S6** — Canonicalisation organique du vocabulaire keywords (les deux modes)
+- [x] **E16-S1** — Infra : pgvector + colonne `articles.embedding`
+- [x] **E16-S2** — Service d'embedding local + intégration `cron_enrich` + backfill
+- [x] **E16-S3** — `SmartMatchScorer` (k-NN) + rescoring nightly
+- [x] **E16-S4** — Toggle admin `scoring_mode` : Classic / Smart Match
+- [x] **E16-S5** — Keywords pinnés comme boost + écran Keywords en mode smart
+- [x] **E16-S6** — Canonicalisation organique du vocabulaire keywords — déjà couverte par E10-S2 (voir story)
 
 ---
 
-#### [ ] E16-S1 — Infra : pgvector + colonne `articles.embedding`
+#### [x] E16-S1 — Infra : pgvector + colonne `articles.embedding`
 
 **Changements.**
 - `docker-compose.yml` / `docker-compose.test.yml` : image `pgvector/pgvector:pg17` à la place
   de `postgres:17`. ⚠️ **Valider sur Colima d'abord** (`docker-compose pull` + démarrage) — le
   setup local a déjà produit des `exec format error` sur certaines images multi-arch
   (cf. CLAUDE.md). Si l'image pose problème, fallback : installer l'extension dans une image dérivée.
+  ✅ Validé le 2026-06-10 : l'image pull et démarre sur Colima sans erreur.
+- ⚠️ **Note migration de volume** (découvert à l'implémentation) : `docker-compose.yml` tournait
+  en réalité sur `postgres:17-alpine` (musl). `pgvector/pgvector:pg17` est Debian/glibc — l'ordre
+  de collation des index texte diffère. Sur un volume existant, exécuter une fois
+  `REINDEX DATABASE niouzou;` (et `miniflux`) après le premier boot sur la nouvelle image
+  (commentaire en place dans docker-compose.yml).
 - Migration Alembic : `CREATE EXTENSION IF NOT EXISTS vector;` puis
   `ALTER TABLE articles ADD COLUMN embedding vector(1024);` (nullable — les articles non encore
   embeddés ont NULL).
@@ -3169,7 +3175,7 @@ score = sigmoid(β·raw + Σ_{kw pinnés ∩ keywords(a)} weight·salience)
 
 ---
 
-#### [ ] E16-S2 — Service d'embedding local + intégration `cron_enrich` + backfill
+#### [x] E16-S2 — Service d'embedding local + intégration `cron_enrich` + backfill
 
 **Dépendance** : `sentence-transformers`, modèle **`Qwen/Qwen3-Embedding-0.6B`**
 (1024 dims, ~600M params, ~1,2 Go disque ; RAM ~1,2 Go en fp16, ~2,4 Go en fp32 —
@@ -3212,7 +3218,7 @@ un faux encodeur (vecteurs synthétiques 1024d normés, déterministes).
 
 ---
 
-#### [ ] E16-S3 — `SmartMatchScorer` (k-NN) + rescoring nightly
+#### [x] E16-S3 — `SmartMatchScorer` (k-NN) + rescoring nightly
 
 **Nouveau composant** : `api/niouzou/scoring/smart_match.py`. Contrairement aux scorers
 existants (purs, sans I/O), Smart Match a besoin de la DB (les voisins du user). Il ne rentre
@@ -3233,8 +3239,9 @@ async def smart_score(session, article_id, user_id) -> tuple[float, bool]:
   la sigmoïde) mais ne devient observable qu'avec S5 — pas de double implémentation.
 
 **Rescoring nightly (le fix de P3)** : `cron_refresh_weights` gagne une étape, active uniquement
-en mode smart : re-scorer `article_relevance_scores` des articles dont `fetched_at >` maintenant
-− `smart_rescore_window_days`, pour tous les users concernés. Les rows plus anciennes restent
+en mode smart : re-scorer `article_relevance_scores` des articles dont `created_at >` maintenant
+− `smart_rescore_window_days` (la colonne s'appelle `created_at` = timestamp d'ingestion ;
+`fetched_at` n'existe pas — corrigé à l'audit), pour tous les users concernés. Les rows plus anciennes restent
 figées (elles sont déjà sorties du feed par la gravité). En mode Classic cette étape est un no-op.
 
 **Tests** (embeddings de test = vecteurs synthétiques orthogonaux, pas le vrai modèle).
@@ -3257,7 +3264,7 @@ figées (elles sont déjà sorties du feed par la gravité). En mode Classic cet
 
 ---
 
-#### [ ] E16-S4 — Toggle admin `scoring_mode` : Classic / Smart Match
+#### [x] E16-S4 — Toggle admin `scoring_mode` : Classic / Smart Match
 
 **Setting** : clé `app_settings.scoring_mode`, valeurs `'classic'` (défaut) | `'smart'`.
 
@@ -3284,7 +3291,7 @@ recalculés à la bascule.
 
 ---
 
-#### [ ] E16-S5 — Keywords pinnés comme boost + écran Keywords en mode smart
+#### [x] E16-S5 — Keywords pinnés comme boost + écran Keywords en mode smart
 
 **Contexte.** L'écran Keywords est un différenciateur produit : l'utilisateur voit et pilote ses
 préférences. En mode smart, les poids *appris* ne pilotent plus le score (l'embedding s'en
@@ -3306,7 +3313,20 @@ des leviers durs — c'est un contrat utilisateur.
 
 ---
 
-#### [ ] E16-S6 — Canonicalisation organique du vocabulaire keywords (les deux modes)
+#### [x] E16-S6 — Canonicalisation organique du vocabulaire keywords (les deux modes)
+
+> ✅ **Constat d'audit (2026-06-10) : déjà couverte par E10-S2.** Le « vocab nudge » existant
+> fait exactement ce que demande cette story, en mieux ciblé : `cron_enrich._load_top_keywords`
+> injecte les 200 termes les plus fréquents (un `GROUP BY count(*)` par run de cron, pas par
+> article) dans le prompt du **call combiné d'enrichissement** — c'est lui qui extrait les
+> keywords depuis E13, pas `scoring.ai_keywords` que cette story visait — avec la consigne
+> `Existing vocabulary (reuse when applicable): …` et un cap en caractères pour ne jamais
+> écraser l'article (régression corrigée en E10-S2). Pas de filtrage côté Python : le
+> vocabulaire converge sans être contraint, exactement la sémantique voulue ici. Les tests
+> demandés existent : `test_generate_enrichment_injects_vocab` (les termes apparaissent dans
+> le prompt) ; le cas « instance vide » est le défaut de tous les tests `EnrichmentService`
+> (vocab vide → pas de ligne vocabulaire, pas d'erreur) et est exercé sur le chemin cron par
+> `test_run_closes_openrouter_client` (`_load_top_keywords` → `[]`). Aucun code ajouté pour S6.
 
 **Contexte.** Seule survivante d'E12 : réduire la fragmentation des keywords ("IA" vs
 "intelligence artificielle") SANS taxonomie hardcodée. Utile dans les deux modes (en classic

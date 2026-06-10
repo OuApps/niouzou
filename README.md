@@ -44,6 +44,18 @@ Open **http://localhost:3000**, create your account, add an RSS feed, start
 swiping. Database migrations, the Miniflux admin user, and Miniflux's API key
 are all provisioned automatically on the first boot — no UI step.
 
+> **RAM note (Smart Match).** The optional Smart Match scoring engine embeds
+> articles with a local model (Qwen3-Embedding-0.6B) inside the refresh
+> worker — budget **~1.5 GB of additional RAM** for that container when you
+> enable it. The model loads lazily on the first enrichment, never in the
+> API process. Classic mode (the default) needs nothing extra.
+>
+> **Upgrading an existing install to the pgvector image:** the Postgres
+> image changed from `postgres:17-alpine` to `pgvector/pgvector:pg17`
+> (glibc). On a pre-existing data volume, run `REINDEX DATABASE niouzou;`
+> and `REINDEX DATABASE miniflux;` once after the first boot — text-index
+> collation order differs between musl and glibc.
+
 ---
 
 ## Deploy on Railway
