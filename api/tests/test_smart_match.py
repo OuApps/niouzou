@@ -388,3 +388,95 @@ async def test_pin_only_applies_to_articles_carrying_the_keyword(db_session):
     score, _ = await smart_score(db_session, other.id, user.id, params=PARAMS)
 
     assert abs(score - 0.5) < 1e-9
+
+
+# ── E16-S7 — score-debug breakdown in smart mode ──────────────────────────────
+
+
+async def test_score_debug_smart_returns_neighbours_and_pins(db_session):
+    from niouzou.services.articles_service import ArticlesService
+
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+
+    fresh_like = await _embedded_article(db_session, source, axis_vector(0), title="fresh like")
+    await _feedback(db_session, user, fresh_like, age_days=0.0)
+    old_like = await _embedded_article(db_session, source, axis_vector(0), title="old like")
+    await _feedback(db_session, user, old_like, age_days=PARAMS.decay_halflife_days)
+    dislike = await _embedded_article(db_session, source, axis_vector(0), title="disliked")
+    await _feedback(db_session, user, dislike, reaction="dislike")
+
+    candidate = await _embedded_article(db_session, source, axis_vector(0), title="candidate")
+    await add_keyword(db_session, candidate, "rugby", 0.9)
+    await _pin(db_session, user, "rugby", 5.0)
+    db_session.add(
+        ArticleRelevanceScore(
+            article_id=candidate.id,
+            user_id=user.id,
+            relevance_score=0.9,
+            scorer="smart_match",
+        )
+    )
+    await db_session.flush()
+
+    debug = await ArticlesService(db_session).score_debug(user.id, candidate.id)
+
+    assert debug.scorer == "smart_match"
+    liked = {n.title: n for n in debug.liked_neighbors}
+    assert set(liked) == {"fresh like", "old like"}
+    assert all(abs(n.similarity - 1.0) < 1e-6 for n in liked.values())
+    # Decay: the halflife-old like contributes half the fresh one.
+    assert abs(liked["fresh like"].contribution - 1.0) < 0.01
+    assert abs(liked["old like"].contribution - 0.5) < 0.01
+    assert [n.title for n in debug.disliked_neighbors] == ["disliked"]
+    assert debug.pins is not None and len(debug.pins) == 1
+    pin = debug.pins[0]
+    assert (pin.term, pin.weight, pin.salience) == ("rugby", 5.0, 0.9)
+    assert abs(pin.contribution - 4.5) < 1e-9
+
+
+async def test_score_debug_classic_payload_unchanged(db_session):
+    from niouzou.services.articles_service import ArticlesService
+
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await _embedded_article(db_session, source, axis_vector(0))
+    await add_keyword(db_session, article, "rust", 0.9)
+    db_session.add(
+        ArticleRelevanceScore(
+            article_id=article.id, user_id=user.id, relevance_score=0.6, scorer="tfidf"
+        )
+    )
+    await db_session.flush()
+
+    debug = await ArticlesService(db_session).score_debug(user.id, article.id)
+
+    assert debug.scorer == "tfidf"
+    # Smart fields stay null in classic mode — legacy payload untouched.
+    assert debug.liked_neighbors is None
+    assert debug.disliked_neighbors is None
+    assert debug.pins is None
+    assert [kw.term for kw in debug.keywords] == ["rust"]
+
+
+async def test_score_debug_smart_without_embedding_degrades_cleanly(db_session):
+    from niouzou.services.articles_service import ArticlesService
+
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await make_article(db_session, source)  # embedding NULL
+    db_session.add(
+        ArticleRelevanceScore(
+            article_id=article.id,
+            user_id=user.id,
+            relevance_score=0.5,
+            scorer="smart_match",
+        )
+    )
+    await db_session.flush()
+
+    debug = await ArticlesService(db_session).score_debug(user.id, article.id)
+
+    assert debug.liked_neighbors == []
+    assert debug.disliked_neighbors == []
+    assert debug.pins == []

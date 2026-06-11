@@ -65,29 +65,64 @@ class SmartMatchParams:
     decay_halflife_days: float = 90.0
 
 
+@dataclass(slots=True)
+class Neighbour:
+    """One feedbacked article in a candidate's k-NN neighbourhood.
+
+    Shared by the scoring path and the score-debug endpoint (E16-S7) so the
+    formula is implemented exactly once.
+    """
+
+    title: str
+    similarity: float
+    value: float
+    age_days: float
+
+    def contribution(self, halflife_days: float) -> float:
+        """similarity × |value| × decay — this neighbour's share of S+/S−."""
+        return (
+            self.similarity
+            * abs(self.value)
+            * 0.5 ** (max(self.age_days, 0.0) / halflife_days)
+        )
+
+
+@dataclass(slots=True)
+class PinContribution:
+    """One pinned keyword's share of the boost term (E16-S5/S7)."""
+
+    term: str
+    weight: float
+    salience: float
+
+    @property
+    def contribution(self) -> float:
+        return self.weight * self.salience
+
+
 def _sigmoid(x: float) -> float:
     # Same clamp as ScoringPipeline._normalize: saturate instead of overflow.
     x = max(-60.0, min(60.0, x))
     return 1.0 / (1.0 + math.exp(-x))
 
 
-async def _topk_neighbours(
+async def topk_neighbours(
     session: AsyncSession,
     user_id: uuid.UUID,
     candidate_embedding,
     k: int,
     *,
     positive: bool,
-) -> list[tuple[float, float, float]]:
-    """(similarity, value, age_days) of the K feedbacks nearest the candidate.
+) -> list[Neighbour]:
+    """The K feedbacked articles nearest the candidate, one polarity per call.
 
-    One polarity per call: ``positive`` selects feedbacks with value > 0,
-    otherwise value < 0. Only feedbacked articles that have an embedding can
-    be neighbours.
+    ``positive`` selects feedbacks with value > 0, otherwise value < 0. Only
+    feedbacked articles that have an embedding can be neighbours.
     """
     distance = Article.embedding.cosine_distance(candidate_embedding)
     stmt = (
         select(
+            Article.title,
             (1.0 - distance).label("sim"),
             _VALUE.label("value"),
             _AGE_DAYS.label("age_days"),
@@ -102,37 +137,48 @@ async def _topk_neighbours(
         .order_by(distance)
         .limit(k)
     )
-    return [(row.sim, row.value, row.age_days) for row in await session.execute(stmt)]
+    return [
+        Neighbour(
+            title=row.title,
+            similarity=row.sim,
+            value=row.value,
+            age_days=row.age_days,
+        )
+        for row in await session.execute(stmt)
+    ]
 
 
-async def _pinned_boost(
+async def pinned_breakdown(
     session: AsyncSession, article_id: uuid.UUID, user_id: uuid.UUID
-) -> float:
-    """Σ weight·salience over the user's pinned keywords on this article.
+) -> list[PinContribution]:
+    """The user's pinned keywords present on this article, with their boost.
 
     Pinned (= ``manually_overridden``) weights are a user contract (E16-S5):
     learned weights stop driving the score in smart mode, but explicit
-    overrides stay hard levers, added inside the sigmoid.
+    overrides stay hard levers, added inside the sigmoid. At most
+    MAX_KEYWORDS_PER_ARTICLE rows — summing in Python costs nothing and the
+    same rows feed the score-debug panel (E16-S7).
     """
-    return (
-        await session.scalar(
-            select(
-                func.coalesce(
-                    func.sum(KeywordWeight.weight * ArticleKeyword.salience), 0.0
-                )
-            )
-            .select_from(ArticleKeyword)
-            .join(
-                KeywordWeight,
-                (KeywordWeight.term == ArticleKeyword.term)
-                & (KeywordWeight.user_id == user_id),
-            )
-            .where(
-                ArticleKeyword.article_id == article_id,
-                KeywordWeight.manually_overridden.is_(True),
-            )
+    rows = await session.execute(
+        select(
+            ArticleKeyword.term, KeywordWeight.weight, ArticleKeyword.salience
         )
-    ) or 0.0
+        .select_from(ArticleKeyword)
+        .join(
+            KeywordWeight,
+            (KeywordWeight.term == ArticleKeyword.term)
+            & (KeywordWeight.user_id == user_id),
+        )
+        .where(
+            ArticleKeyword.article_id == article_id,
+            KeywordWeight.manually_overridden.is_(True),
+        )
+        .order_by(ArticleKeyword.salience.desc())
+    )
+    return [
+        PinContribution(term=term, weight=weight, salience=salience)
+        for term, weight, salience in rows
+    ]
 
 
 async def _has_positive_feedback(session: AsyncSession, user_id: uuid.UUID) -> bool:
@@ -170,21 +216,21 @@ async def smart_score(
     if candidate is None:
         return None
 
-    liked = await _topk_neighbours(
+    liked = await topk_neighbours(
         session, user_id, candidate, params.topk, positive=True
     )
-    disliked = await _topk_neighbours(
+    disliked = await topk_neighbours(
         session, user_id, candidate, params.topk, positive=False
     )
 
-    def decayed_sum(rows: list[tuple[float, float, float]]) -> float:
-        return sum(
-            sim * abs(value) * 0.5 ** (max(age_days, 0.0) / params.decay_halflife_days)
-            for sim, value, age_days in rows
-        )
+    def decayed_sum(rows: list[Neighbour]) -> float:
+        return sum(n.contribution(params.decay_halflife_days) for n in rows)
 
     raw = decayed_sum(liked) - params.lambda_ * decayed_sum(disliked)
-    boost = await _pinned_boost(session, article_id, user_id)
+    boost = sum(
+        pin.contribution
+        for pin in await pinned_breakdown(session, article_id, user_id)
+    )
     score = _sigmoid(params.beta * raw + boost)
 
     if liked:

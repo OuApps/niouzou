@@ -286,6 +286,33 @@ access returns `403` (never leaks another user's `keyword_weights`).
 > `relevance_score` is null when the article was never scored for this user
 > (rare — happens for articles enriched before the user existed).
 
+**Smart Match articles (E16-S7).** When `scorer` is `"smart_match"`, three
+extra fields explain the k-NN score (they are `null` otherwise — the classic
+payload is unchanged):
+
+```json
+{
+  "scorer": "smart_match",
+  "liked_neighbors": [
+    { "title": "Le XV de France domine l'Irlande", "similarity": 0.81,
+      "value": 1.5, "age_days": 3.2, "contribution": 1.18 }
+  ],
+  "disliked_neighbors": [],
+  "pins": [
+    { "term": "rugby", "weight": 5.0, "salience": 0.9, "contribution": 4.5 }
+  ]
+}
+```
+
+> `liked_neighbors` / `disliked_neighbors` are the top-K feedbacked articles
+> most similar to this one, per polarity. `contribution = similarity × |value|
+> × decay(age_days)` — the row's share of S+/S−. `pins` lists the user's
+> pinned keywords present on the article (`contribution = weight × salience`,
+> added inside the sigmoid). Neighbours are recomputed at request time, so
+> they may differ marginally from those that produced the stored score if the
+> user feedbacked since. In Smart Match, the `keywords` weights are
+> indicative only — the PWA replaces the weight list with these sections.
+
 **Errors**
 - `403 forbidden` — article exists but belongs to another user's source.
 - `404 not_found` — no article with that id.

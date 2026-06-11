@@ -162,11 +162,31 @@ export interface ScoreDebugKeyword {
   weight: number | null
 }
 
+// E16-S7 — smart-mode breakdown: one k-NN neighbour of the scored article.
+export interface ScoreDebugNeighbor {
+  title: string
+  similarity: number
+  value: number
+  age_days: number
+  contribution: number
+}
+
+export interface ScoreDebugPin {
+  term: string
+  weight: number
+  salience: number
+  contribution: number
+}
+
 export interface ScoreDebug {
   relevance_score: number | null
   scorer: string | null
   enrichment_model: string | null
   keywords: ScoreDebugKeyword[]
+  // Present only when scorer === 'smart_match'.
+  liked_neighbors?: ScoreDebugNeighbor[] | null
+  disliked_neighbors?: ScoreDebugNeighbor[] | null
+  pins?: ScoreDebugPin[] | null
 }
 
 export function getScoreDebug(articleId: string): Promise<ScoreDebug> {

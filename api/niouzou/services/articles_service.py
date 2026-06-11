@@ -22,7 +22,16 @@ from niouzou.schemas.articles import (
     ArticleSourceRef,
     ScoreDebug,
     ScoreDebugKeyword,
+    ScoreDebugNeighbor,
+    ScoreDebugPin,
 )
+from niouzou.scoring.smart_match import (
+    SCORER_NAME as SMART_SCORER,
+    SmartMatchParams,
+    pinned_breakdown,
+    topk_neighbours,
+)
+from niouzou.services.settings_service import SettingsService
 
 
 class ArticlesService:
@@ -172,6 +181,15 @@ class ArticlesService:
         ).all() if terms_rows else []
         weights = {term: weight for term, weight in weights_rows}
 
+        # E16-S7 — smart-mode breakdown: the k-NN neighbours and the pinned
+        # boost that the formula actually uses, recomputed at request time.
+        # None in classic mode so the legacy payload is unchanged.
+        liked = disliked = pins = None
+        if scorer_name == SMART_SCORER:
+            liked, disliked, pins = await self._smart_breakdown(
+                article_id, user_id
+            )
+
         return ScoreDebug(
             relevance_score=relevance,
             scorer=scorer_name,
@@ -180,4 +198,57 @@ class ArticlesService:
                 ScoreDebugKeyword(term=term, weight=weights.get(term))
                 for term in terms_rows
             ],
+            liked_neighbors=liked,
+            disliked_neighbors=disliked,
+            pins=pins,
         )
+
+    async def _smart_breakdown(
+        self, article_id: uuid.UUID, user_id: uuid.UUID
+    ) -> tuple[
+        list[ScoreDebugNeighbor], list[ScoreDebugNeighbor], list[ScoreDebugPin]
+    ]:
+        """Neighbours + pins behind a smart_match score (E16-S7).
+
+        Reuses the exact scoring-path queries (scoring/smart_match.py) so the
+        formula isn't implemented twice. An article whose embedding vanished
+        (degenerate — the scorer stamp says smart_match but there is nothing
+        to compare) yields empty neighbour lists rather than an error.
+        """
+        effective = await SettingsService(self.session).get_effective()
+        params = SmartMatchParams(
+            topk=effective.smart_topk,
+            decay_halflife_days=effective.smart_decay_halflife_days,
+        )
+
+        candidate = await self.session.scalar(
+            select(Article.embedding).where(Article.id == article_id)
+        )
+        liked: list[ScoreDebugNeighbor] = []
+        disliked: list[ScoreDebugNeighbor] = []
+        if candidate is not None:
+            for positive, bucket in ((True, liked), (False, disliked)):
+                neighbours = await topk_neighbours(
+                    self.session, user_id, candidate, params.topk, positive=positive
+                )
+                bucket.extend(
+                    ScoreDebugNeighbor(
+                        title=n.title,
+                        similarity=n.similarity,
+                        value=n.value,
+                        age_days=n.age_days,
+                        contribution=n.contribution(params.decay_halflife_days),
+                    )
+                    for n in neighbours
+                )
+
+        pins = [
+            ScoreDebugPin(
+                term=pin.term,
+                weight=pin.weight,
+                salience=pin.salience,
+                contribution=pin.contribution,
+            )
+            for pin in await pinned_breakdown(self.session, article_id, user_id)
+        ]
+        return liked, disliked, pins

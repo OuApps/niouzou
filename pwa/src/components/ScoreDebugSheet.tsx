@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { X } from 'lucide-react'
+import { Lock, X } from 'lucide-react'
 import { getScoreDebug } from '../api'
-import type { ScoreDebug } from '../api'
+import type { ScoreDebug, ScoreDebugNeighbor } from '../api'
 import { Spinner } from './Spinner'
 
 interface Props {
@@ -131,7 +131,9 @@ const ScoreDebugContent = ({ debug }: { debug: ScoreDebug }) => {
       ? 'AI'
       : debug.scorer === 'tfidf'
         ? 'TF-IDF'
-        : '—'
+        : debug.scorer === 'smart_match'
+          ? 'Smart Match'
+          : '—'
   return (
     <>
       <div
@@ -159,7 +161,9 @@ const ScoreDebugContent = ({ debug }: { debug: ScoreDebug }) => {
         )}
       </div>
 
-      {debug.keywords.length === 0 ? (
+      {debug.scorer === 'smart_match' ? (
+        <SmartBreakdown debug={debug} />
+      ) : debug.keywords.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
           No keywords extracted for this article.
         </div>
@@ -199,6 +203,168 @@ const ScoreDebugContent = ({ debug }: { debug: ScoreDebug }) => {
           ))}
         </div>
       )}
+    </>
+  )
+}
+
+// ── E16-S7 — Smart Match breakdown ───────────────────────────────────────────
+// The score comes from the k-NN over the user's feedbacked articles plus the
+// pinned-keyword boost; learned keyword weights play no role, so the classic
+// weight list is replaced by the signals that actually produced the score.
+
+const sectionTitle = (color: string): React.CSSProperties => ({
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.8px',
+  color,
+  margin: '14px 0 6px 2px',
+})
+
+const NeighborRows = ({
+  neighbors,
+  sign,
+}: {
+  neighbors: ScoreDebugNeighbor[]
+  sign: 1 | -1
+}) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    {neighbors.map((n, i) => (
+      <div
+        key={`${n.title}-${i}`}
+        className="flex items-center justify-between"
+        style={{
+          padding: '8px 10px',
+          borderRadius: 10,
+          background: 'rgba(255,255,255,0.04)',
+          fontSize: 12,
+          gap: 10,
+        }}
+      >
+        <span
+          style={{
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+          }}
+        >
+          {n.title}
+        </span>
+        <span
+          style={{
+            display: 'flex',
+            gap: 8,
+            flexShrink: 0,
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>
+            sim {n.similarity.toFixed(2)}
+          </span>
+          <span
+            style={{
+              fontWeight: 600,
+              color: sign > 0 ? 'var(--action-like)' : 'var(--action-dislike)',
+            }}
+          >
+            {sign > 0 ? '+' : '−'}
+            {n.contribution.toFixed(2)}
+          </span>
+        </span>
+      </div>
+    ))}
+  </div>
+)
+
+const SmartBreakdown = ({ debug }: { debug: ScoreDebug }) => {
+  const liked = debug.liked_neighbors ?? []
+  const disliked = debug.disliked_neighbors ?? []
+  const pins = debug.pins ?? []
+
+  return (
+    <>
+      {liked.length === 0 && disliked.length === 0 && pins.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          No feedback history to compare against yet — the score is neutral.
+        </div>
+      )}
+
+      {liked.length > 0 && (
+        <>
+          <h4 style={sectionTitle('var(--action-like)')}>
+            Closest to your likes
+          </h4>
+          <NeighborRows neighbors={liked} sign={1} />
+        </>
+      )}
+
+      {disliked.length > 0 && (
+        <>
+          <h4 style={sectionTitle('var(--action-dislike)')}>
+            Closest to your dislikes
+          </h4>
+          <NeighborRows neighbors={disliked} sign={-1} />
+        </>
+      )}
+
+      {pins.length > 0 && (
+        <>
+          <h4 style={sectionTitle('var(--accent-text)')}>
+            <Lock size={10} style={{ display: 'inline', verticalAlign: '-1px' }} />{' '}
+            Pinned keywords
+          </h4>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {pins.map((pin) => (
+              <div
+                key={pin.term}
+                className="flex items-center justify-between"
+                style={{
+                  padding: '8px 10px',
+                  borderRadius: 10,
+                  background: 'rgba(255,255,255,0.04)',
+                  fontSize: 12,
+                }}
+              >
+                <span style={{ color: 'var(--text-primary)' }}>
+                  {pin.term}
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>
+                    {' '}
+                    ({pin.weight > 0 ? '+' : ''}
+                    {pin.weight.toFixed(1)} × {pin.salience.toFixed(2)})
+                  </span>
+                </span>
+                <span
+                  style={{
+                    fontWeight: 600,
+                    fontVariantNumeric: 'tabular-nums',
+                    color:
+                      pin.contribution >= 0
+                        ? 'var(--action-like)'
+                        : 'var(--action-dislike)',
+                  }}
+                >
+                  {pin.contribution > 0 ? '+' : ''}
+                  {pin.contribution.toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <p
+        style={{
+          fontSize: 11,
+          color: 'var(--text-tertiary)',
+          marginTop: 14,
+          lineHeight: 1.5,
+        }}
+      >
+        Learned keyword weights are indicative in Smart Match — they don't
+        affect this score.
+      </p>
     </>
   )
 }

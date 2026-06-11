@@ -3146,6 +3146,7 @@ score = sigmoid(β·raw + Σ_{kw pinnés ∩ keywords(a)} weight·salience)
 - [x] **E16-S4** — Toggle admin `scoring_mode` : Classic / Smart Match
 - [x] **E16-S5** — Keywords pinnés comme boost + écran Keywords en mode smart
 - [x] **E16-S6** — Canonicalisation organique du vocabulaire keywords — déjà couverte par E10-S2 (voir story)
+- [x] **E16-S7** — Score breakdown en mode smart : voisins k-NN + pins au lieu des poids appris
 
 ---
 
@@ -3351,6 +3352,52 @@ pour les poids, en smart pour la lisibilité de l'écran Keywords et la précisi
 - Sur un corpus de test où "intelligence-artificielle" domine, un nouvel article IA réutilise le
   terme canonique (vérifiable en mock en faisant retourner la variante par le LLM : le terme
   reste accepté — la convergence est *incitative*, pas un filtre).
+
+---
+
+#### [x] E16-S7 — Score breakdown en mode smart : voisins k-NN + pins au lieu des poids appris
+
+**Contexte.** Le popup "Score breakdown" (E10-S2 : `GET /articles/{id}/score-debug` +
+`ScoreDebugSheet.tsx`) explique un score classic par la liste des keywords de l'article et les
+poids appris du user. Sur un article scoré `smart_match`, cette vue devient trompeuse : le label
+scorer tombe sur `'—'` (mapping inconnu) et les poids affichés laissent croire qu'ils ont produit
+le score, alors qu'en smart seuls les pins y contribuent — le score vient des k plus proches
+voisins likés/dislikés. Trou de spec identifié après livraison S1-S6.
+
+**Changements.**
+- **API** — `GET /articles/{id}/score-debug` : quand la row `article_relevance_scores` du user
+  porte `scorer = 'smart_match'`, le payload gagne trois champs (absents/null sinon — payload
+  classic strictement inchangé) :
+  - `liked_neighbors` / `disliked_neighbors` : les top-K feedbacks les plus similaires par
+    polarité — `{title, similarity, value, age_days, contribution}` avec
+    `contribution = similarity × |value| × decay(age_days)` ;
+  - `pins` : le détail du boost pins — `{term, weight, salience, contribution}` avec
+    `contribution = weight × salience` (uniquement les `manually_overridden` ∩ keywords de l'article).
+- Réutiliser les requêtes existantes de `scoring/smart_match.py` (top-K + pins), étendues pour
+  remonter le titre du voisin — pas de double implémentation de la formule. Les paramètres
+  (`smart_topk`, halflife…) sont lus des settings effectifs au moment de l'appel.
+- ⚠️ **Sémantique assumée** : les voisins sont recalculés à l'ouverture du popup, pas stockés —
+  ils peuvent différer marginalement de ceux qui ont produit le score persisté (nouveaux
+  feedbacks depuis). Le rescoring nightly garde l'écart faible ; acceptable pour une vue debug.
+- **PWA** (`ScoreDebugSheet.tsx`) : mapping label `smart_match` → « Smart Match ». Quand le
+  scorer est `smart_match` : sections « Closest to your likes » / « Closest to your dislikes »
+  (titre tronqué + sim + contribution signée), section « Pinned keywords » si non vide, et note
+  « Learned weights are indicative in Smart Match — they don't affect this score. » à la place
+  de la liste keywords/poids. En classic : rendu strictement inchangé.
+- `docs/API_SPEC.md` mis à jour.
+
+**Tests** (vecteurs synthétiques, pattern test_smart_match).
+- Article smart avec 2 likes proches + 1 dislike proche → payload : voisins dans la bonne
+  polarité, `similarity` ≈ attendue, `contribution` décroissante avec l'âge, pins listés avec
+  `weight × salience`.
+- Article classic (`scorer = 'tfidf'`) → payload identique à avant S7 (champs smart absents).
+- Article `smart_match` dont l'embedding a disparu (cas dégénéré) → champs smart vides, pas d'erreur.
+
+**Acceptance.**
+- En classic, payload et rendu pixel-identiques à avant.
+- Sur un article smart : label « Smart Match », voisins par polarité, pins visibles, aucun
+  poids appris affiché comme contributif.
+- `npm run build` passe.
 
 ---
 
