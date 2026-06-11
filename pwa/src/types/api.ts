@@ -21,7 +21,7 @@ export interface SourceFull {
   active: boolean
 }
 
-export type Scorer = 'tfidf' | 'ai_keyword'
+export type Scorer = 'tfidf' | 'ai_keyword' | 'smart_match'
 
 export interface FeedArticle extends FeedbackState {
   id: string

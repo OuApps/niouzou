@@ -1,6 +1,14 @@
-import { Sparkles } from 'lucide-react'
+import { Hash, Radar, Sparkles } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import type { Scorer } from '../types/api'
+
+// Maps the persisted `scorer` column to the icon shown in the badge, so a
+// glance at the feed tells you which engine produced the score.
+const SCORER_ICONS: Record<Scorer, { Icon: typeof Sparkles; label: string }> = {
+  ai_keyword: { Icon: Sparkles, label: 'Scored by AI' },
+  smart_match: { Icon: Radar, label: 'Scored by Smart Match' },
+  tfidf: { Icon: Hash, label: 'Scored by keywords' },
+}
 
 interface ScoreBadgeProps {
   score: number
@@ -26,9 +34,8 @@ export const ScoreBadge = ({
   isColdStart = false,
   onClick,
 }: ScoreBadgeProps) => {
-  // Only flag AI-scored articles. TF-IDF (and pre-E7-S7 null) shows the score
-  // alone — TF-IDF is the baseline so calling it out adds noise.
-  const isAi = scorer === 'ai_keyword'
+  // Pre-E7-S7 rows have no `scorer` recorded — show the score alone.
+  const scorerIcon = scorer ? SCORER_ICONS[scorer] : null
   const Tag: 'button' | 'span' = onClick ? 'button' : 'span'
   const handleClick = onClick
     ? (event: MouseEvent<HTMLElement>) => {
@@ -58,10 +65,10 @@ export const ScoreBadge = ({
       }}
     >
       {isColdStart ? '–' : `${Math.round(score * 100)}%`}
-      {isAi && (
-        <Sparkles
+      {scorerIcon && (
+        <scorerIcon.Icon
           size={11}
-          aria-label="Scored by AI"
+          aria-label={scorerIcon.label}
           style={{ color: 'inherit' }}
         />
       )}

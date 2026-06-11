@@ -351,7 +351,9 @@ Library: **Lucide React** (`lucide-react`) for React components.
 | Profile | `User` |
 | RSS source | `Rss` |
 | Clock / time | `Clock` |
-| Score | no icon — plain `%` text |
+| Score (TF-IDF) | `Hash` |
+| Score (AI keyword) | `Sparkles` |
+| Score (Smart Match) | `Radar` |
 | Edit keyword | `Pencil` |
 | Menu arrow | `ChevronRight` |
 | Sign out | `LogOut` |
