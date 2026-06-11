@@ -264,9 +264,11 @@ export const Explore = () => {
 
   const hasActiveFilters =
     active.filters.scoreKind !== 'gteThreshold' || active.filters.sourceIds.length > 0
+  // Disabled sources no longer feed articles — don't clutter the filter bar.
+  const activeSources = sources?.filter((s) => s.active) ?? null
   // The sources row is suppressed entirely when the user has 0 or 1 source —
   // filtering a single source down to itself is meaningless.
-  const showSourcesRow = (sources?.length ?? 0) > 1
+  const showSourcesRow = (activeSources?.length ?? 0) > 1
   const showThresholdChip = scoreThreshold !== null && scoreThreshold > 0
 
   return (
@@ -308,9 +310,9 @@ export const Explore = () => {
           })}
         </ChipRow>
 
-        {showSourcesRow && sources && (
+        {showSourcesRow && activeSources && (
           <ChipRow label="Sources :">
-            {sources.map((s) => (
+            {activeSources.map((s) => (
               <FilterChip
                 key={s.id}
                 label={s.name.length > 18 ? `${s.name.slice(0, 17)}…` : s.name}
