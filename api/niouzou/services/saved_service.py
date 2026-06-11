@@ -22,6 +22,7 @@ from niouzou.models import (
 )
 from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.feed import SavedArticle, SavedResponse, SourceRef
+from niouzou.services.settings_service import SettingsService
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
@@ -53,18 +54,25 @@ class SavedService:
             .scalar_subquery()
         )
 
+        # E16-S9 — both scores are returned; the active method tag follows
+        # the live scoring_mode so the PWA highlights the right chip.
+        scoring_mode = str(
+            await SettingsService(self.session).get("scoring_mode")
+        )
+
         stmt = (
             select(
                 Article,
                 Source.id.label("source_id"),
                 Source.name.label("source_name"),
-                func.coalesce(ArticleRelevanceScore.relevance_score, 0.0).label(
-                    "relevance_score"
-                ),
-                ArticleRelevanceScore.scorer.label("scorer"),
-                func.coalesce(ArticleRelevanceScore.is_cold_start, False).label(
-                    "is_cold_start"
-                ),
+                ArticleRelevanceScore.keyword_score.label("keyword_score"),
+                func.coalesce(
+                    ArticleRelevanceScore.keyword_cold_start, False
+                ).label("keyword_cold_start"),
+                ArticleRelevanceScore.smart_score.label("smart_score"),
+                func.coalesce(
+                    ArticleRelevanceScore.smart_cold_start, False
+                ).label("smart_cold_start"),
                 ArticleFeedback.updated_at.label("saved_at"),
                 ArticleFeedback.reaction.label("reaction"),
                 ArticleFeedback.is_saved.label("is_saved"),
@@ -117,9 +125,11 @@ class SavedService:
                 url=r.Article.url,
                 source=SourceRef(id=r.source_id, name=r.source_name),
                 published_at=r.Article.published_at,
-                relevance_score=r.relevance_score,
-                scorer=r.scorer,
-                is_cold_start=bool(r.is_cold_start),
+                keyword_score=r.keyword_score,
+                keyword_cold_start=bool(r.keyword_cold_start),
+                smart_score=r.smart_score,
+                smart_cold_start=bool(r.smart_cold_start),
+                active_method=scoring_mode,
                 enrichment_model=r.Article.enrichment_model,
                 saved_at=r.saved_at,
                 keywords=list(r.keywords or []),

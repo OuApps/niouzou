@@ -9,6 +9,7 @@ class Me(BaseModel):
     saved_count: int
     keyword_count: int
     source_count: int
-    # E16-S5 — active scoring engine ('classic' | 'smart'), read-only. Lets
-    # the Keywords screen show the Smart Match banner without an admin call.
+    # E16-S5/S9 — active score selector ('keyword' | 'smart'), read-only.
+    # Lets the Keywords screen show the Smart Match banner without an admin
+    # call.
     scoring_mode: str

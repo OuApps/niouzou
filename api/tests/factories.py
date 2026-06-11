@@ -74,16 +74,22 @@ async def set_relevance(
     session: AsyncSession,
     article: Article,
     user: User,
-    score: float,
+    score: float | None,
     *,
     is_cold_start: bool = False,
+    smart_score: float | None = None,
+    smart_cold_start: bool = False,
 ) -> None:
+    """Seed a dual-score row (E16-S8). ``score`` fills ``keyword_score`` (the
+    default active method) so pre-E16 tests keep their semantics unchanged."""
     session.add(
         ArticleRelevanceScore(
             article_id=article.id,
             user_id=user.id,
-            relevance_score=score,
-            is_cold_start=is_cold_start,
+            keyword_score=score,
+            keyword_cold_start=is_cold_start,
+            smart_score=smart_score,
+            smart_cold_start=smart_cold_start,
         )
     )
     await session.flush()

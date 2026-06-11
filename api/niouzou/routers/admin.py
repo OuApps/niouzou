@@ -70,7 +70,7 @@ def _config_response(  # type: ignore[no-untyped-def]
         openrouter_api_key=mask_api_key(effective.openrouter_api_key),
         max_keywords_per_article=effective.max_keywords_per_article,
         cron_fetch_interval=effective.cron_fetch_interval,
-        cron_refresh_weights_hour=effective.cron_refresh_weights_hour,
+        cron_nightly_refresh_hour=effective.cron_nightly_refresh_hour,
         score_threshold=effective.score_threshold,
         scoring_mode=effective.scoring_mode,
         embeddings_done=embeddings_done,

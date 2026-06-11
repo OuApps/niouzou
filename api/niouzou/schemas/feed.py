@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -26,18 +27,20 @@ class FeedArticle(BaseModel):
     url: str
     source: SourceRef
     published_at: datetime | None
-    relevance_score: float
-    # "tfidf" or "ai_keyword" when known, null for pre-E7-S7 rows.
-    scorer: str | None = None
+    # E16-S8/S9 — both persisted scores travel together so the PWA can render
+    # the two chips side by side (E16-S10). A NULL score means the method had
+    # no input for this article (no keywords / no embedding); together with
+    # the cold flags it renders as «–». ``active_method`` tells which score
+    # drove the threshold filter + ranking for this response.
+    keyword_score: float | None = None
+    keyword_cold_start: bool = False
+    smart_score: float | None = None
+    smart_cold_start: bool = False
+    active_method: Literal["keyword", "smart"] = "keyword"
     # OpenRouter model id when the article went through the AI path (E10-S2),
-    # e.g. ``"google/gemma-4-28b"``. ``null`` on TF-IDF (native or fallback)
-    # and on pre-E10-S2 rows. Used by the score-debug bottom sheet.
+    # e.g. ``"google/gemma-4-28b"``. ``null`` when the LLM was unavailable and
+    # on pre-E10-S2 rows. Used by the score-debug bottom sheet.
     enrichment_model: str | None = None
-    # E10-S4 — True when none of the article's keywords has a user weight
-    # yet. The PWA renders ``New`` on the score badge instead of the
-    # misleading neutral percentage, and the feed query passes the article
-    # through regardless of ``score_threshold``.
-    is_cold_start: bool = False
     # Top keywords sorted by salience DESC (E7-S10). Empty list when the article
     # has no extracted keywords yet (e.g. pending enrichment).
     keywords: list[str] = []

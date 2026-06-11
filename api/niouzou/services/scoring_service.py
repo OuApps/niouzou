@@ -4,9 +4,19 @@ This is the bridge between the pure ``ScoringPipeline`` and the database. The
 enrichment cron (Epic 5) calls it after content extraction; the logic lives
 here so it stays out of the cron and is independently testable.
 
+E16-S8 — both scoring methods are computed together on every pass,
+independently of ``scoring_mode``:
+
+  * ``keyword_score`` — AI keywords × user weights through the pipeline,
+    NULL when the article has no keywords (LLM unavailable at enrichment;
+    the TF-IDF fallback is gone).
+  * ``smart_score`` — embedding k-NN (scoring/smart_match.py), NULL when the
+    article has no embedding.
+
 Invariants from docs/ARCHITECTURE.md:
   * ``keyword.salience`` is article-level, written once.
-  * ``relevance_score`` is user-level, frozen at enrichment, never recomputed.
+  * Scores are user-level, stamped at enrichment and refreshed nightly within
+    the rescore window by ``cron_nightly_refresh`` (E16-S9).
 """
 
 import uuid
@@ -18,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from niouzou.config import get_settings
 from niouzou.models import Article, ArticleKeyword, ArticleRelevanceScore, KeywordWeight
 from niouzou.scoring import ScoredKeyword, ScoringPipeline
-from niouzou.scoring.smart_match import SCORER_NAME, SmartMatchParams, smart_score
+from niouzou.scoring.smart_match import SmartMatchParams, smart_score
 
 
 class ScoringService:
@@ -27,18 +37,12 @@ class ScoringService:
         pipeline: ScoringPipeline | None = None,
         *,
         max_keywords_per_article: int | None = None,
-        scoring_mode: str = "classic",
         smart_params: SmartMatchParams | None = None,
     ) -> None:
         self.pipeline = pipeline or ScoringPipeline()
-        # E16 — engine selector, snapshotted from app_settings once per cron
-        # run (like the rest of EffectiveConfig). 'classic' keeps the keyword
-        # pipeline below; 'smart' routes scoring through smart_match with a
-        # transparent per-article fallback when the embedding is missing.
-        self.scoring_mode = scoring_mode
         self.smart_params = smart_params
-        # Cap applied at the persistence boundary so it covers both TF-IDF and
-        # AI extractors uniformly (E7-S5). Defaults to the env-driven setting;
+        # Cap applied at the persistence boundary so every keyword source goes
+        # through the same gate (E7-S5). Defaults to the env-driven setting;
         # tests override via the kwarg.
         self.max_keywords_per_article = (
             max_keywords_per_article
@@ -52,7 +56,8 @@ class ScoringService:
         """Extract keywords from the article's text and store them (idempotent).
 
         Article-level and set once; re-running replaces them rather than
-        accumulating duplicates.
+        accumulating duplicates. Only used outside the enrichment cron (the
+        cron stores the combined LLM call's keywords via ``store_keywords``).
         """
         text = " ".join(filter(None, [article.title, article.content]))
         keywords = self.pipeline.extract_keywords(text)
@@ -99,27 +104,42 @@ class ScoringService:
 
     async def score_article_for_user(
         self, session: AsyncSession, article_id: uuid.UUID, user_id: uuid.UUID
-    ) -> float:
-        """Compute and persist this user's relevance_score for the article.
+    ) -> None:
+        """Compute and persist BOTH scores for this (article, user) pair.
 
-        In smart mode (E16-S3), the score comes from the embedding k-NN; an
-        article without an embedding falls through to the Classic path below
-        (and is stamped with the classic scorer's name) so no article is ever
-        left unscored. In classic mode, reads the article's stored saliences
-        and the user's keyword weights, runs the pipeline, and upserts
-        ``article_relevance_scores``.
+        Always computes both methods (E16-S8) — ``scoring_mode`` plays no role
+        here; it only selects which column the feed reads (E16-S9). A method
+        whose input is missing (no keywords / no embedding) stores NULL and is
+        treated as cold downstream.
         """
-        if self.scoring_mode == "smart":
-            result = await smart_score(
-                session, article_id, user_id, params=self.smart_params
-            )
-            if result is not None:
-                score, is_cold_start = result
-                await self._upsert_score(
-                    session, article_id, user_id, score, SCORER_NAME, is_cold_start
-                )
-                return score
+        keyword_score, keyword_cold = await self._keyword_score(
+            session, article_id, user_id
+        )
 
+        smart_result = await smart_score(
+            session, article_id, user_id, params=self.smart_params
+        )
+        if smart_result is None:
+            # No embedding (legacy row not backfilled, or embedder missing at
+            # enrichment) — the smart method simply has no opinion.
+            smart_value, smart_cold = None, False
+        else:
+            smart_value, smart_cold = smart_result
+
+        await self._upsert_scores(
+            session,
+            article_id,
+            user_id,
+            keyword_score=keyword_score,
+            keyword_cold_start=keyword_cold,
+            smart_score=smart_value,
+            smart_cold_start=smart_cold,
+        )
+
+    async def _keyword_score(
+        self, session: AsyncSession, article_id: uuid.UUID, user_id: uuid.UUID
+    ) -> tuple[float | None, bool]:
+        """(keyword_score, keyword_cold_start) — NULL score without keywords."""
         keywords = [
             ScoredKeyword(term=term, salience=salience)
             for term, salience in (
@@ -130,6 +150,11 @@ class ScoringService:
                 )
             ).all()
         ]
+        if not keywords:
+            # LLM unavailable at enrichment → no keywords → the keyword method
+            # has nothing to score (badge «–», E16-S8).
+            return None, False
+
         user_weights = dict(
             (
                 await session.execute(
@@ -149,36 +174,29 @@ class ScoringService:
         # On réutilise le dict ``user_weights`` déjà chargé pour éviter une
         # requête supplémentaire dans le hot path d'enrichissement.
         is_cold_start = not any(kw.term in user_weights for kw in keywords)
-
-        await self._upsert_score(
-            session, article_id, user_id, score, self.pipeline.scorer_name, is_cold_start
-        )
-        return score
+        return score, is_cold_start
 
     @staticmethod
-    async def _upsert_score(
+    async def _upsert_scores(
         session: AsyncSession,
         article_id: uuid.UUID,
         user_id: uuid.UUID,
-        score: float,
-        scorer_name: str,
-        is_cold_start: bool,
+        *,
+        keyword_score: float | None,
+        keyword_cold_start: bool,
+        smart_score: float | None,
+        smart_cold_start: bool,
     ) -> None:
+        values = {
+            "keyword_score": keyword_score,
+            "keyword_cold_start": keyword_cold_start,
+            "smart_score": smart_score,
+            "smart_cold_start": smart_cold_start,
+        }
         await session.execute(
             pg_insert(ArticleRelevanceScore)
-            .values(
-                article_id=article_id,
-                user_id=user_id,
-                relevance_score=score,
-                scorer=scorer_name,
-                is_cold_start=is_cold_start,
-            )
+            .values(article_id=article_id, user_id=user_id, **values)
             .on_conflict_do_update(
-                index_elements=["article_id", "user_id"],
-                set_={
-                    "relevance_score": score,
-                    "scorer": scorer_name,
-                    "is_cold_start": is_cold_start,
-                },
+                index_elements=["article_id", "user_id"], set_=values
             )
         )

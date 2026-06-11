@@ -90,9 +90,11 @@ export const ArticleListRow = ({
           </span>
           <span style={{ flexShrink: 0 }}>
             <ScoreBadge
-              score={article.relevance_score}
-              scorer={article.scorer}
-              isColdStart={article.is_cold_start ?? false}
+              keywordScore={article.keyword_score}
+              keywordColdStart={article.keyword_cold_start}
+              smartScore={article.smart_score}
+              smartColdStart={article.smart_cold_start}
+              activeMethod={article.active_method}
               onClick={() => setDebugOpen(true)}
             />
           </span>

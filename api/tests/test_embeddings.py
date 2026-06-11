@@ -136,8 +136,7 @@ async def test_enrich_article_stores_embedding(fake_newspaper, db_session):
         db_session,
         article,
         enrichment=EnrichmentService(None),  # AI off — embedding is unrelated
-        ai_scoring=tfidf,
-        tfidf_scoring=tfidf,
+        scoring=tfidf,
         embedder=EmbeddingService(HashEncoder()),
     )
 
@@ -159,8 +158,7 @@ async def test_enrich_article_without_embedder_leaves_null(
         db_session,
         article,
         enrichment=EnrichmentService(None),
-        ai_scoring=tfidf,
-        tfidf_scoring=tfidf,
+        scoring=tfidf,
         embedder=None,  # sentence-transformers not installed
     )
 
@@ -184,8 +182,7 @@ async def test_embedding_failure_does_not_abort_enrichment(
         db_session,
         article,
         enrichment=EnrichmentService(None),
-        ai_scoring=tfidf,
-        tfidf_scoring=tfidf,
+        scoring=tfidf,
         embedder=EmbeddingService(ExplodingEncoder()),
     )
 

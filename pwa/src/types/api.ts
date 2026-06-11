@@ -21,7 +21,9 @@ export interface SourceFull {
   active: boolean
 }
 
-export type Scorer = 'tfidf' | 'ai_keyword' | 'smart_match'
+// E16-S9 — the two persisted scoring methods; `scoring_mode` selects which
+// one drives the feed filter + ranking.
+export type ScoringMethod = 'keyword' | 'smart'
 
 export interface FeedArticle extends FeedbackState {
   id: string
@@ -38,17 +40,19 @@ export interface FeedArticle extends FeedbackState {
   url: string
   source: SourceRef
   published_at: string
-  relevance_score: number
-  scorer?: Scorer | null
-  // OpenRouter model id when the article was AI-enriched (E10-S2). Null on
-  // TF-IDF (native or fallback) and on pre-E10-S2 rows. Shown in the score
+  // E16-S8/S10 — both scores travel together so the card renders the two
+  // chips side by side. Null = the method had no input for this article
+  // (no keywords / no embedding); together with the cold flags it renders
+  // as «–». `active_method` says which score drove the ranking.
+  keyword_score: number | null
+  keyword_cold_start: boolean
+  smart_score: number | null
+  smart_cold_start: boolean
+  active_method: ScoringMethod
+  // OpenRouter model id when the article was AI-enriched (E10-S2). Null when
+  // the LLM was unavailable and on pre-E10-S2 rows. Shown in the score
   // debug bottom sheet.
   enrichment_model?: string | null
-  // E10-S4 — true when none of the article's keywords has a user weight
-  // yet. The ScoreBadge renders ``New`` instead of the neutral percentage,
-  // and the server passes the article through regardless of the configured
-  // score_threshold.
-  is_cold_start?: boolean
   keywords?: string[]
   read_time_minutes?: number
   // Set by the server when the stored content looks like a paywall teaser

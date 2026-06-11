@@ -18,8 +18,9 @@ rugby likes only — multi-interest by construction.
 
 Unlike the ``BaseScorer`` implementations (pure, no I/O), Smart Match needs
 the database (the user's feedback neighbours), so it lives outside the
-scorer hierarchy: ``ScoringService.score_article_for_user`` branches here
-when ``scoring_mode = 'smart'``.
+scorer hierarchy: ``ScoringService.score_article_for_user`` calls it on
+every pass to fill the ``smart_score`` column (E16-S8 — both methods are
+always computed; ``scoring_mode`` only selects which column the feed reads).
 
 No ANN index needed: the k-NN runs over the *user's feedbacked articles*
 (hundreds of rows at most), not the whole corpus — a plain
@@ -34,8 +35,6 @@ from sqlalchemy import case, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from niouzou.models import Article, ArticleFeedback, ArticleKeyword, KeywordWeight
-
-SCORER_NAME = "smart_match"
 
 # E9-S1 feedback signal, as a SQLAlchemy expression (the SQL-string twin
 # lives in services/weights.py::_FEEDBACK_VALUE).
@@ -201,8 +200,8 @@ async def smart_score(
     """Score one article for one user with the Smart Match formula.
 
     Returns ``(score, is_cold_start)``, or ``None`` when the article has no
-    embedding yet (legacy row not backfilled) — the caller then falls back to
-    the active Classic scorer so no article is ever left unscored.
+    embedding yet (legacy row not backfilled) — the caller then stores
+    ``smart_score = NULL`` and the ranked queries treat the row as cold.
 
     ``is_cold_start`` is TRUE iff the user has no feedback with value > 0
     (the smart-mode definition — keyword vocabulary overlap is irrelevant

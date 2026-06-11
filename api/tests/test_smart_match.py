@@ -1,4 +1,4 @@
-"""E16-S3 — Smart Match scorer maths + ScoringService branching + nightly rescore.
+"""E16-S3/S8 — Smart Match maths + dual-score ScoringService + nightly rescore.
 
 All embeddings here are synthetic axis/blend vectors (tests/fake_embeddings.py)
 so cosine similarities are exact: same axis → 1.0, different axes → 0.0,
@@ -10,19 +10,11 @@ without Postgres.
 import math
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
-
-from niouzou.crons.refresh_weights import rescore_recent_smart
-from niouzou.models import (
-    Article,
-    ArticleFeedback,
-    ArticleRelevanceScore,
-    KeywordWeight,
-)
+from niouzou.crons.nightly_refresh import rescore_recent
+from niouzou.models import ArticleFeedback, ArticleRelevanceScore, KeywordWeight
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
 from niouzou.scoring.smart_match import SmartMatchParams, smart_score
 from niouzou.services.scoring_service import ScoringService
-from niouzou.services.settings_service import SettingsService
 from tests.factories import add_keyword, make_article, make_source, make_user
 from tests.fake_embeddings import axis_vector, blend_vector
 
@@ -189,85 +181,64 @@ async def test_feedback_value_uses_saved_and_read_dimensions(db_session):
     assert is_cold is False
 
 
-# ── ScoringService branching ──────────────────────────────────────────────────
+# ── ScoringService — both scores at once (E16-S8) ────────────────────────────
 
 
-def _smart_service() -> ScoringService:
+def _service() -> ScoringService:
     return ScoringService(
         ScoringPipeline(TFIDFScorer()),
         max_keywords_per_article=6,
-        scoring_mode="smart",
         smart_params=PARAMS,
     )
 
 
-async def test_smart_mode_stamps_smart_match_scorer(db_session):
+async def test_scoring_populates_both_columns(db_session):
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     article = await _embedded_article(db_session, source, axis_vector(0))
+    await add_keyword(db_session, article, "rugby", 0.9)
 
-    await _smart_service().score_article_for_user(db_session, article.id, user.id)
+    await _service().score_article_for_user(db_session, article.id, user.id)
 
     row = await db_session.get(ArticleRelevanceScore, (article.id, user.id))
-    assert row.scorer == "smart_match"
-    assert row.is_cold_start is True  # no feedback yet
+    assert row.keyword_score is not None
+    assert row.smart_score is not None
+    assert row.smart_cold_start is True  # no positive feedback yet
+    assert row.keyword_cold_start is True  # no keyword in the user's vocab
 
 
-async def test_article_without_embedding_falls_back_to_classic(db_session):
+async def test_article_without_embedding_scores_keyword_only(db_session):
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     article = await make_article(db_session, source)  # embedding stays NULL
     await add_keyword(db_session, article, "rugby", 0.9)
 
-    score = await _smart_service().score_article_for_user(
-        db_session, article.id, user.id
-    )
+    await _service().score_article_for_user(db_session, article.id, user.id)
 
     row = await db_session.get(ArticleRelevanceScore, (article.id, user.id))
-    assert row.scorer == "tfidf"  # the active classic engine, not smart_match
-    assert 0.0 <= score <= 1.0
+    assert row.smart_score is None
+    assert row.keyword_score is not None and 0.0 <= row.keyword_score <= 1.0
 
 
-async def test_classic_mode_is_untouched_by_smart_params(db_session):
+async def test_article_without_keywords_scores_smart_only(db_session):
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     article = await _embedded_article(db_session, source, axis_vector(0))
-    await add_keyword(db_session, article, "rugby", 0.9)
 
-    classic = ScoringService(
-        ScoringPipeline(TFIDFScorer()), max_keywords_per_article=6
-    )
-    await classic.score_article_for_user(db_session, article.id, user.id)
+    await _service().score_article_for_user(db_session, article.id, user.id)
 
     row = await db_session.get(ArticleRelevanceScore, (article.id, user.id))
-    assert row.scorer == "tfidf"
+    assert row.keyword_score is None
+    assert row.smart_score is not None
 
 
-# ── nightly rescoring (E16-S3) ────────────────────────────────────────────────
-
-
-async def test_rescore_is_noop_in_classic_mode(db_session):
-    user = await make_user(db_session)
-    source = await make_source(db_session, user)
-    article = await _embedded_article(db_session, source, axis_vector(0))
-    db_session.add(
-        ArticleRelevanceScore(
-            article_id=article.id, user_id=user.id, relevance_score=0.5, scorer="tfidf"
-        )
-    )
-    await db_session.flush()
-
-    assert await rescore_recent_smart(db_session) == 0
-
-    row = await db_session.get(ArticleRelevanceScore, (article.id, user.id))
-    assert row.relevance_score == 0.5 and row.scorer == "tfidf"
+# ── nightly rescoring (E16-S3, dual since E16-S9) ─────────────────────────────
 
 
 async def test_rescore_lifts_frozen_neutral_score_after_likes(db_session):
     """The frozen-score fix: a 0.5 stamped before the user had any history
-    rises once the user likes similar articles."""
-    await SettingsService(db_session).set("scoring_mode", "smart")
-
+    rises once the user likes similar articles — whatever scoring_mode says
+    (no override set here: the rescore no longer gates on the mode)."""
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     candidate = await _embedded_article(db_session, source, axis_vector(0))
@@ -275,9 +246,8 @@ async def test_rescore_lifts_frozen_neutral_score_after_likes(db_session):
         ArticleRelevanceScore(
             article_id=candidate.id,
             user_id=user.id,
-            relevance_score=0.5,
-            scorer="smart_match",
-            is_cold_start=True,
+            smart_score=0.5,
+            smart_cold_start=True,
         )
     )
     for i in range(3):
@@ -285,39 +255,65 @@ async def test_rescore_lifts_frozen_neutral_score_after_likes(db_session):
         await _feedback(db_session, user, liked)
     await db_session.flush()
 
-    rescored = await rescore_recent_smart(db_session)
+    rescored = await rescore_recent(db_session)
     assert rescored >= 1
 
     row = await db_session.get(ArticleRelevanceScore, (candidate.id, user.id))
     await db_session.refresh(row)
-    assert row.relevance_score > 0.5
-    assert row.scorer == "smart_match"
-    assert row.is_cold_start is False
+    assert row.smart_score > 0.5
+    assert row.smart_cold_start is False
+
+
+async def test_rescore_refreshes_keyword_score_too(db_session):
+    """E16-S9 — the nightly pass refreshes BOTH columns: a stale neutral
+    keyword_score follows the recomputed weights."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await make_article(db_session, source)
+    await add_keyword(db_session, article, "rugby", 0.9)
+    db_session.add(
+        ArticleRelevanceScore(
+            article_id=article.id,
+            user_id=user.id,
+            keyword_score=0.5,
+            keyword_cold_start=True,
+        )
+    )
+    db_session.add(
+        KeywordWeight(
+            user_id=user.id, term="rugby", weight=3.0, manually_overridden=False
+        )
+    )
+    await db_session.flush()
+
+    assert await rescore_recent(db_session) >= 1
+
+    row = await db_session.get(ArticleRelevanceScore, (article.id, user.id))
+    await db_session.refresh(row)
+    assert row.keyword_score > 0.5
+    assert row.keyword_cold_start is False
 
 
 async def test_rescore_only_touches_the_recent_window(db_session):
-    await SettingsService(db_session).set("scoring_mode", "smart")
-
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     # Ingested well outside smart_rescore_window_days (default 14).
     stale = await _embedded_article(db_session, source, axis_vector(0), age_days=60)
     db_session.add(
         ArticleRelevanceScore(
-            article_id=stale.id, user_id=user.id, relevance_score=0.5, scorer="tfidf"
+            article_id=stale.id, user_id=user.id, smart_score=0.5
         )
     )
     liked = await _embedded_article(db_session, source, axis_vector(0), title="l")
     await _feedback(db_session, user, liked)
     await db_session.flush()
 
-    await rescore_recent_smart(db_session)
+    await rescore_recent(db_session)
 
     row = await db_session.get(ArticleRelevanceScore, (stale.id, user.id))
     await db_session.refresh(row)
     # Outside the window → frozen, even though a like would now lift it.
-    assert row.relevance_score == 0.5
-    assert row.scorer == "tfidf"
+    assert row.smart_score == 0.5
 
 
 # ── E16-S5 — pinned keywords as hard boosts ───────────────────────────────────
@@ -390,10 +386,10 @@ async def test_pin_only_applies_to_articles_carrying_the_keyword(db_session):
     assert abs(score - 0.5) < 1e-9
 
 
-# ── E16-S7 — score-debug breakdown in smart mode ──────────────────────────────
+# ── E16-S7/S10 — score-debug breakdown, both sections at once ─────────────────
 
 
-async def test_score_debug_smart_returns_neighbours_and_pins(db_session):
+async def test_score_debug_returns_both_sections(db_session):
     from niouzou.services.articles_service import ArticlesService
 
     user = await make_user(db_session)
@@ -413,15 +409,18 @@ async def test_score_debug_smart_returns_neighbours_and_pins(db_session):
         ArticleRelevanceScore(
             article_id=candidate.id,
             user_id=user.id,
-            relevance_score=0.9,
-            scorer="smart_match",
+            keyword_score=0.6,
+            smart_score=0.9,
         )
     )
     await db_session.flush()
 
     debug = await ArticlesService(db_session).score_debug(user.id, candidate.id)
 
-    assert debug.scorer == "smart_match"
+    # Both persisted scores travel together (E16-S10).
+    assert debug.keyword_score == 0.6
+    assert debug.smart_score == 0.9
+    assert debug.active_method == "keyword"  # the default mode
     liked = {n.title: n for n in debug.liked_neighbors}
     assert set(liked) == {"fresh like", "old like"}
     assert all(abs(n.similarity - 1.0) < 1e-6 for n in liked.values())
@@ -429,54 +428,35 @@ async def test_score_debug_smart_returns_neighbours_and_pins(db_session):
     assert abs(liked["fresh like"].contribution - 1.0) < 0.01
     assert abs(liked["old like"].contribution - 0.5) < 0.01
     assert [n.title for n in debug.disliked_neighbors] == ["disliked"]
-    assert debug.pins is not None and len(debug.pins) == 1
+    assert len(debug.pins) == 1
     pin = debug.pins[0]
     assert (pin.term, pin.weight, pin.salience) == ("rugby", 5.0, 0.9)
     assert abs(pin.contribution - 4.5) < 1e-9
+    # Keyword section: the pinned weight shows on the article's keyword list.
+    assert [kw.term for kw in debug.keywords] == ["rugby"]
 
 
-async def test_score_debug_classic_payload_unchanged(db_session):
-    from niouzou.services.articles_service import ArticlesService
-
-    user = await make_user(db_session)
-    source = await make_source(db_session, user)
-    article = await _embedded_article(db_session, source, axis_vector(0))
-    await add_keyword(db_session, article, "rust", 0.9)
-    db_session.add(
-        ArticleRelevanceScore(
-            article_id=article.id, user_id=user.id, relevance_score=0.6, scorer="tfidf"
-        )
-    )
-    await db_session.flush()
-
-    debug = await ArticlesService(db_session).score_debug(user.id, article.id)
-
-    assert debug.scorer == "tfidf"
-    # Smart fields stay null in classic mode — legacy payload untouched.
-    assert debug.liked_neighbors is None
-    assert debug.disliked_neighbors is None
-    assert debug.pins is None
-    assert [kw.term for kw in debug.keywords] == ["rust"]
-
-
-async def test_score_debug_smart_without_embedding_degrades_cleanly(db_session):
+async def test_score_debug_without_embedding_degrades_cleanly(db_session):
     from niouzou.services.articles_service import ArticlesService
 
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     article = await make_article(db_session, source)  # embedding NULL
+    await add_keyword(db_session, article, "rust", 0.9)
     db_session.add(
         ArticleRelevanceScore(
             article_id=article.id,
             user_id=user.id,
-            relevance_score=0.5,
-            scorer="smart_match",
+            keyword_score=0.6,
         )
     )
     await db_session.flush()
 
     debug = await ArticlesService(db_session).score_debug(user.id, article.id)
 
+    assert debug.keyword_score == 0.6
+    assert debug.smart_score is None
     assert debug.liked_neighbors == []
     assert debug.disliked_neighbors == []
     assert debug.pins == []
+    assert [kw.term for kw in debug.keywords] == ["rust"]

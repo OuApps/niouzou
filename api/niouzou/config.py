@@ -6,6 +6,7 @@ call os.environ directly elsewhere.
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,15 +46,24 @@ class Settings(BaseSettings):
     premium_content_max_chars: int = 800
     cron_fetch_interval: int = 15
     cron_enrich_interval: int = 30
-    # UTC hour for the daily keyword-weight recompute (E8-S6). Read once at
-    # refresh-worker startup; live changes via /admin/config take effect on
-    # the next restart.
-    cron_refresh_weights_hour: int = 3
+    # UTC hour for the nightly refresh: keyword-weight recompute + rescore of
+    # both scores within the window (E8-S6, renamed in E16-S9). The legacy
+    # CRON_REFRESH_WEIGHTS_HOUR env var is still honoured as a fallback so a
+    # deployment can migrate its config at its own pace.
+    cron_nightly_refresh_hour: int = Field(
+        default=3,
+        validation_alias=AliasChoices(
+            "cron_nightly_refresh_hour", "cron_refresh_weights_hour"
+        ),
+    )
 
     # --- Smart Match (E16) ---
-    # Scoring engine: 'classic' (keywords + weights, the default) or 'smart'
-    # (embedding k-NN). Admin-overridable via app_settings like the rest.
-    scoring_mode: str = "classic"
+    # Active score selector (E16-S9): 'keyword' (AI keywords × weights, the
+    # default) or 'smart' (embedding k-NN). Both scores are always computed;
+    # this only picks which one drives the feed filter + ranking. 'classic'
+    # is accepted as a legacy alias of 'keyword'. Admin-overridable via
+    # app_settings like the rest.
+    scoring_mode: str = "keyword"
     # k-NN neighbourhood size per polarity (liked / disliked).
     smart_topk: int = 5
     # Weight of the dislike term: raw = S+ − λ·S−.

@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from niouzou.models import ArticleKeyword, ArticleRelevanceScore
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline, TFIDFScorer
-from niouzou.scoring.ai_keyword import AIKeywordScorer
+from niouzou.services.embedding_service import EmbeddingService
 from niouzou.services.enrichment_service import (
     EnrichmentService,
     _detect_language,
@@ -21,6 +21,7 @@ from niouzou.services.enrichment_service import (
 )
 from niouzou.services.scoring_service import ScoringService
 from tests.factories import make_article, make_source, make_user
+from tests.fake_embeddings import HashEncoder
 from tests.test_ai_keyword import FakeClient
 
 _ARTICLE_TEXT = (
@@ -95,7 +96,7 @@ def test_generate_enrichment_without_ai_returns_empty_fallback():
     result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
     assert result.summary_executive is None
     assert result.summary_short is None
-    # Signals "AI not run" so the cron knows to fall back to TF-IDF.
+    # Signals "AI not run" — the cron stores no keywords (keyword_score NULL).
     assert result.keywords is None
 
 
@@ -120,7 +121,7 @@ def test_generate_enrichment_degrades_to_fallback_on_llm_failure():
     svc = EnrichmentService(openrouter_client=client)
     result = svc.generate_enrichment("Title", _ARTICLE_TEXT)
     # Never raises — falls back to an empty Enrichment with keywords=None so
-    # the cron triggers its TF-IDF fallback path.
+    # the cron records the failure and stores no keywords.
     assert result.summary_short is None
     assert result.summary_executive is None
     assert result.keywords is None
@@ -312,6 +313,30 @@ async def _pending_article(db_session, *, content="<p>rss</p>"):
     return user, article
 
 
+def _scoring() -> ScoringService:
+    # E16-S8 — a single ScoringService computes both scores; the pipeline is
+    # only used for the pure relevance maths, never for extraction.
+    return ScoringService(ScoringPipeline(TFIDFScorer()))
+
+
+def _fake_embedder() -> EmbeddingService:
+    return EmbeddingService(HashEncoder())
+
+
+async def _dual_scores(db_session, article, user):
+    return (
+        await db_session.execute(
+            select(
+                ArticleRelevanceScore.keyword_score,
+                ArticleRelevanceScore.smart_score,
+            ).where(
+                ArticleRelevanceScore.article_id == article.id,
+                ArticleRelevanceScore.user_id == user.id,
+            )
+        )
+    ).first()
+
+
 async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
     from niouzou.crons.enrich import enrich_article
 
@@ -325,19 +350,13 @@ async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
             ]
         )
     )
-    # AI pipeline is still needed for the relevance-score path and the
-    # ``scorer`` indicator stored on article_relevance_scores. Its scorer's
-    # ``extract_keywords`` is no longer called from the cron — the AI keywords
-    # come from the EnrichmentService reply.
-    ai_scoring = ScoringService(ScoringPipeline(AIKeywordScorer(FakeClient([]))))
-    tfidf_scoring = ScoringService(ScoringPipeline(TFIDFScorer()))
 
     await enrich_article(
         db_session,
         article,
         enrichment=enrichment,
-        ai_scoring=ai_scoring,
-        tfidf_scoring=tfidf_scoring,
+        scoring=_scoring(),
+        embedder=_fake_embedder(),
     )
 
     assert article.status == STATUS_ENRICHED
@@ -348,6 +367,7 @@ async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
     # E7-S15: successful AI path records the method, no error.
     assert article.enrichment_method == "ai"
     assert article.enrichment_error is None
+    assert article.embedding is not None
 
     terms = (
         await db_session.execute(
@@ -356,33 +376,32 @@ async def test_enrich_article_full_ai_path(fake_newspaper, db_session):
     ).scalars().all()
     assert terms == ["rust"]
 
-    score = await db_session.scalar(
-        select(ArticleRelevanceScore.relevance_score).where(
-            ArticleRelevanceScore.article_id == article.id,
-            ArticleRelevanceScore.user_id == user.id,
-        )
-    )
-    assert score is not None and 0.0 <= score <= 1.0
+    # E16-S8: LLM on + embedder on → BOTH scores populated.
+    scores = await _dual_scores(db_session, article, user)
+    assert scores is not None
+    assert scores.keyword_score is not None and 0.0 <= scores.keyword_score <= 1.0
+    assert scores.smart_score is not None and 0.0 <= scores.smart_score <= 1.0
 
 
-async def test_enrich_article_falls_back_to_tfidf_on_ai_keyword_failure(
+async def test_enrich_article_llm_failure_keeps_smart_score(
     fake_newspaper, db_session
 ):
+    """LLM down → no keywords (keyword_score NULL), but the local embedding
+    still yields a smart_score and the article surfaces (E16-S8 — the TF-IDF
+    fallback is gone)."""
     from niouzou.crons.enrich import enrich_article
 
     user, article = await _pending_article(db_session)
-    # LLM enrichment call always fails → cron must fall back to TF-IDF for
-    # both summaries (newspaper first sentences) and keywords.
+    # LLM enrichment call always fails → keyword extraction is LLM-only now,
+    # so no keywords are stored at all.
     enrichment = EnrichmentService(FakeClient(["nope", "nope"]))
-    ai_scoring = ScoringService(ScoringPipeline(AIKeywordScorer(FakeClient([]))))
-    tfidf_scoring = ScoringService(ScoringPipeline(TFIDFScorer()))
 
     await enrich_article(
         db_session,
         article,
         enrichment=enrichment,
-        ai_scoring=ai_scoring,
-        tfidf_scoring=tfidf_scoring,
+        scoring=_scoring(),
+        embedder=_fake_embedder(),
     )
 
     assert article.status == STATUS_ENRICHED
@@ -391,10 +410,67 @@ async def test_enrich_article_falls_back_to_tfidf_on_ai_keyword_failure(
         .select_from(ArticleKeyword)
         .where(ArticleKeyword.article_id == article.id)
     )
-    assert keyword_count > 0  # TF-IDF produced keywords from the article text
-    # E7-S15: fallback path records 'tfidf' + the captured AI error string.
-    assert article.enrichment_method == "tfidf"
+    assert keyword_count == 0
+    assert article.enrichment_method is None
     assert article.enrichment_error  # non-empty string from the AI failure
+
+    scores = await _dual_scores(db_session, article, user)
+    assert scores.keyword_score is None
+    assert scores.smart_score is not None
+
+
+async def test_enrich_article_embedder_off_keyword_only(
+    fake_newspaper, db_session
+):
+    """No embedder installed → smart_score NULL, keyword_score populated."""
+    from niouzou.crons.enrich import enrich_article
+
+    user, article = await _pending_article(db_session)
+    enrichment = EnrichmentService(
+        FakeClient(
+            [
+                '{"summary_executive": "- bullet", '
+                '"keywords": [{"term": "rust", "salience": 0.9}]}'
+            ]
+        )
+    )
+
+    await enrich_article(
+        db_session,
+        article,
+        enrichment=enrichment,
+        scoring=_scoring(),
+        embedder=None,
+    )
+
+    assert article.status == STATUS_ENRICHED
+    assert article.embedding is None
+    scores = await _dual_scores(db_session, article, user)
+    assert scores.keyword_score is not None
+    assert scores.smart_score is None
+
+
+async def test_enrich_never_reaches_tfidf_extractor(
+    fake_newspaper, db_session, monkeypatch
+):
+    """E16-S8 acceptance — no code path from cron_enrich extracts TF-IDF
+    keywords anymore, even when the LLM fails."""
+    from niouzou.crons.enrich import enrich_article
+
+    def _tripwire(self, text, *, corpus=None):
+        raise AssertionError("TFIDFScorer.extract_keywords reached from cron_enrich")
+
+    monkeypatch.setattr(TFIDFScorer, "extract_keywords", _tripwire)
+
+    user, article = await _pending_article(db_session)
+    await enrich_article(
+        db_session,
+        article,
+        enrichment=EnrichmentService(FakeClient(["nope", "nope"])),
+        scoring=_scoring(),
+        embedder=_fake_embedder(),
+    )
+    assert article.status == STATUS_ENRICHED
 
 
 async def test_run_closes_openrouter_client(monkeypatch):
@@ -431,7 +507,7 @@ async def test_run_closes_openrouter_client(monkeypatch):
             openrouter_model="test/model",
             max_keywords_per_article=6,
             cron_fetch_interval=15,
-            cron_refresh_weights_hour=3,
+            cron_nightly_refresh_hour=3,
             score_threshold=0.0,
         )
 
@@ -454,23 +530,28 @@ async def test_run_closes_openrouter_client(monkeypatch):
     assert client.closed is True
 
 
-async def test_enrich_article_no_ai_path(fake_newspaper, db_session):
+async def test_enrich_article_no_ai_no_embedder(fake_newspaper, db_session):
+    """Both inputs off → both scores NULL, article still enriched and
+    surfaces (badge «–»/«–», E16-S8)."""
     from niouzou.crons.enrich import enrich_article
 
     user, article = await _pending_article(db_session)
-    tfidf_scoring = ScoringService(ScoringPipeline(TFIDFScorer()))
 
     await enrich_article(
         db_session,
         article,
         enrichment=EnrichmentService(openrouter_client=None),
-        ai_scoring=tfidf_scoring,
-        tfidf_scoring=tfidf_scoring,
+        scoring=_scoring(),
+        embedder=None,
     )
 
     assert article.status == STATUS_ENRICHED
     assert article.summary_executive is None  # no AI → no executive summary
     assert article.summary_short is None  # no longer generated, even off-AI
-    # E7-S15: pure TF-IDF (AI off) records the method without an error.
-    assert article.enrichment_method == "tfidf"
+    # AI off is not an error — method stays NULL, no error recorded.
+    assert article.enrichment_method is None
     assert article.enrichment_error is None
+
+    scores = await _dual_scores(db_session, article, user)
+    assert scores.keyword_score is None
+    assert scores.smart_score is None

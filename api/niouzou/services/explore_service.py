@@ -23,10 +23,12 @@ from niouzou.schemas.explore import (
 )
 from niouzou.schemas.feed import SourceRef
 from niouzou.services.ranked_query import (
+    active_columns,
     build_ranked_query,
     clamp_limit,
     row_to_article,
 )
+from niouzou.services.settings_service import SettingsService
 
 
 class ExploreService:
@@ -88,6 +90,12 @@ class ExploreService:
             "premium_max_chars": get_settings().premium_content_max_chars,
         }
 
+        # E16-S9 — min_score filters on the active method's score.
+        scoring_mode = str(
+            await SettingsService(self.session).get("scoring_mode")
+        )
+        active_score, active_cold = active_columns(scoring_mode)
+
         keyset = ""
         if cursor:
             decoded = decode_cursor(cursor)
@@ -98,16 +106,17 @@ class ExploreService:
             keyset = "AND (ai.seen_at, a.id) < (:cursor_seen_at, :cursor_id)"
 
         # E11-S1 — score filter on history. ``ars`` is LEFT JOINed so an
-        # article without a score row would slip through with the default
-        # ``COALESCE(..., 0.0)``; when ``min_score > 0`` we exclude those
-        # explicitly (the user clearly wants ranked rows).
+        # article without a score row would slip through; when
+        # ``min_score > 0`` we exclude those explicitly (the user clearly
+        # wants ranked rows). A scored row whose *active* score is NULL is
+        # treated as cold (E16-S9) and passes.
         score_filter = ""
         if min_score > 0.0:
             params["min_score"] = min_score
             score_filter = (
-                "AND (ars.relevance_score IS NOT NULL "
-                "AND (ars.relevance_score >= :min_score "
-                "OR ars.is_cold_start = TRUE))"
+                "AND (ars.article_id IS NOT NULL "
+                f"AND ({active_score} >= :min_score "
+                f"OR {active_cold} = TRUE OR {active_score} IS NULL))"
             )
 
         source_filter = ""
@@ -130,9 +139,10 @@ class ExploreService:
                 a.published_at AS published_at,
                 s.id AS source_id,
                 s.name AS source_name,
-                COALESCE(ars.relevance_score, 0.0) AS relevance_score,
-                ars.scorer AS scorer,
-                COALESCE(ars.is_cold_start, FALSE) AS is_cold_start,
+                ars.keyword_score AS keyword_score,
+                COALESCE(ars.keyword_cold_start, FALSE) AS keyword_cold_start,
+                ars.smart_score AS smart_score,
+                COALESCE(ars.smart_cold_start, FALSE) AS smart_cold_start,
                 a.enrichment_model AS enrichment_model,
                 (a.content IS NOT NULL
                  AND char_length(a.content) < :premium_max_chars
@@ -178,9 +188,11 @@ class ExploreService:
                 url=r["url"],
                 source=SourceRef(id=r["source_id"], name=r["source_name"]),
                 published_at=r["published_at"],
-                relevance_score=r["relevance_score"],
-                scorer=r["scorer"],
-                is_cold_start=bool(r["is_cold_start"]),
+                keyword_score=r["keyword_score"],
+                keyword_cold_start=bool(r["keyword_cold_start"]),
+                smart_score=r["smart_score"],
+                smart_cold_start=bool(r["smart_cold_start"]),
+                active_method=scoring_mode,
                 enrichment_model=r["enrichment_model"],
                 keywords=list(r["keywords"] or []),
                 is_premium=bool(r["is_premium"]),
@@ -229,6 +241,12 @@ class ExploreService:
             "premium_max_chars": settings.premium_content_max_chars,
         }
 
+        # E16-S9 — active score drives both the ranking and the min_score cap.
+        scoring_mode = str(
+            await SettingsService(self.session).get("scoring_mode")
+        )
+        active_score, active_cold = active_columns(scoring_mode)
+
         keyset = ""
         if cursor:
             decoded = decode_cursor(cursor)
@@ -238,13 +256,14 @@ class ExploreService:
 
         # E11-S1 — explicit min_score on Explore New (separate knob from the
         # global SCORE_THRESHOLD, which still isn't applied here). Cold-start
-        # articles bypass the cap, mirroring the Feed's policy in E10-S4.
+        # articles — and NULL active scores (E16-S9) — bypass the cap,
+        # mirroring the Feed's policy in E10-S4.
         explore_filter_parts: list[str] = []
         if min_score > 0.0:
             params["min_score"] = min_score
             explore_filter_parts.append(
-                "AND (ars.relevance_score >= :min_score "
-                "OR ars.is_cold_start = TRUE)"
+                f"AND ({active_score} >= :min_score "
+                f"OR {active_cold} = TRUE OR {active_score} IS NULL)"
             )
         if validated_source_ids:
             params["source_ids"] = [str(sid) for sid in validated_source_ids]
@@ -254,6 +273,7 @@ class ExploreService:
         extra_filters = "\n            ".join(explore_filter_parts)
 
         query = build_ranked_query(
+            scoring_mode=scoring_mode,
             apply_threshold=False,
             apply_random_surface=False,
             keyset=keyset,
@@ -263,7 +283,7 @@ class ExploreService:
         has_more = len(rows) > page_size
         rows = rows[:page_size]
 
-        articles = [row_to_article(r) for r in rows]
+        articles = [row_to_article(r, scoring_mode) for r in rows]
 
         next_cursor: str | None = None
         if has_more and rows:

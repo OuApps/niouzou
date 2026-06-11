@@ -24,7 +24,7 @@ async def test_settings_get_falls_back_to_env_defaults(db_session):
     assert await svc.get("openrouter_model") == "nvidia/nemotron-3-super-120b-a12b:free"
     assert await svc.get("max_keywords_per_article") == 6
     assert await svc.get("cron_fetch_interval") == 15
-    assert await svc.get("cron_refresh_weights_hour") == 3
+    assert await svc.get("cron_nightly_refresh_hour") == 3
 
 
 async def test_settings_set_then_get_returns_typed_override(db_session):
@@ -60,12 +60,12 @@ async def test_settings_empty_string_clears_override(db_session):
 async def test_settings_get_effective_snapshots_all_keys(db_session):
     svc = SettingsService(db_session)
     await svc.set("openrouter_model", "openai/gpt-4o")
-    await svc.set("cron_refresh_weights_hour", 7)
+    await svc.set("cron_nightly_refresh_hour", 7)
     await db_session.commit()
 
     cfg = await svc.get_effective()
     assert cfg.openrouter_model == "openai/gpt-4o"
-    assert cfg.cron_refresh_weights_hour == 7
+    assert cfg.cron_nightly_refresh_hour == 7
     # Untouched keys come from env defaults.
     assert cfg.max_keywords_per_article == 6
 
@@ -219,14 +219,14 @@ async def test_require_admin_blocks_non_admin():
     assert (await get_current_admin(user)) is user
 
 
-# ── E16-S4 — scoring_mode toggle ──────────────────────────────────────────────
+# ── E16-S4/S9 — scoring_mode selector ─────────────────────────────────────────
 
 
-async def test_scoring_mode_defaults_to_classic(db_session):
+async def test_scoring_mode_defaults_to_keyword(db_session):
     svc = SettingsService(db_session)
-    assert await svc.get("scoring_mode") == "classic"
+    assert await svc.get("scoring_mode") == "keyword"
     cfg = await svc.get_effective()
-    assert cfg.scoring_mode == "classic"
+    assert cfg.scoring_mode == "keyword"
     # Smart knobs resolve to their documented defaults.
     assert cfg.smart_topk == 5
     assert cfg.smart_lambda == 0.8
@@ -235,11 +235,21 @@ async def test_scoring_mode_defaults_to_classic(db_session):
     assert cfg.smart_rescore_window_days == 14
 
 
+async def test_scoring_mode_legacy_classic_normalises_to_keyword(db_session):
+    """Pre-E16-S9 deployments may still carry 'classic' (env var or stale DB
+    row) — reads collapse it onto the new whitelist."""
+    svc = SettingsService(db_session)
+    await svc.set("scoring_mode", "classic")
+    await db_session.commit()
+    assert await svc.get("scoring_mode") == "keyword"
+    assert (await svc.get_effective()).scoring_mode == "keyword"
+
+
 async def test_validate_rejects_unknown_scoring_mode_value(db_session):
     from niouzou.services.settings_service import InvalidSettingError
 
     svc = SettingsService(db_session)
-    with pytest.raises(InvalidSettingError, match="classic"):
+    with pytest.raises(InvalidSettingError, match="keyword"):
         await svc.validate("scoring_mode", "bogus")
 
 
@@ -251,8 +261,8 @@ async def test_validate_smart_refused_without_embedding_lib(db_session, monkeypa
     svc = SettingsService(db_session)
     with pytest.raises(InvalidSettingError, match="embeddings"):
         await svc.validate("scoring_mode", "smart")
-    # classic is always accepted, lib or not.
-    await svc.validate("scoring_mode", "classic")
+    # keyword is always accepted, lib or not.
+    await svc.validate("scoring_mode", "keyword")
 
 
 async def test_validate_smart_ok_with_lib_and_pgvector(db_session, monkeypatch):
@@ -297,7 +307,7 @@ async def test_me_exposes_scoring_mode(db_session):
 
     user = await make_user(db_session)
     me = await MeService(db_session).get(user.id)
-    assert me.scoring_mode == "classic"
+    assert me.scoring_mode == "keyword"
 
     await SettingsService(db_session).set("scoring_mode", "smart")
     me = await MeService(db_session).get(user.id)

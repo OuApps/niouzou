@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from niouzou.config import get_settings
 from niouzou.models import ArticleFeedback, ArticleImpression
 from niouzou.services.feed_service import FeedService
+from niouzou.services.settings_service import SettingsService
 from tests.factories import make_article, make_source, make_user, set_relevance
 
 NOW = datetime.now(timezone.utc)
@@ -81,6 +82,66 @@ async def test_cursor_pages_do_not_overlap(db_session):
 
     seen_ids = [a.id for a in page1.articles + page2.articles + page3.articles]
     assert len(seen_ids) == len(set(seen_ids)) == 5
+
+
+async def test_scoring_mode_flip_reranks_without_rescore(db_session):
+    """E16-S9 — scoring_mode selects the active score column; flipping it
+    re-ranks instantly using the other persisted column, no DB write."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    a = await make_article(db_session, source, title="keyword-wins", published_at=NOW)
+    b = await make_article(db_session, source, title="smart-wins", published_at=NOW)
+    await set_relevance(db_session, a, user, 0.9, smart_score=0.1)
+    await set_relevance(db_session, b, user, 0.1, smart_score=0.9)
+    await db_session.commit()
+
+    svc = FeedService(db_session)
+    feed = await svc.get_feed(user.id, cursor=None, limit=None)
+    assert [x.title for x in feed.articles] == ["keyword-wins", "smart-wins"]
+    assert feed.articles[0].active_method == "keyword"
+    # Both scores travel in every row (E16-S10).
+    assert feed.articles[0].keyword_score == 0.9
+    assert feed.articles[0].smart_score == 0.1
+
+    await SettingsService(db_session).set("scoring_mode", "smart")
+    await db_session.commit()
+
+    feed = await svc.get_feed(user.id, cursor=None, limit=None)
+    assert [x.title for x in feed.articles] == ["smart-wins", "keyword-wins"]
+    assert feed.articles[0].active_method == "smart"
+
+
+async def test_null_active_score_is_treated_as_cold(db_session, monkeypatch):
+    """E16-S9 — a NULL active score (method had no input) surfaces with the
+    0.5 baseline and bypasses the threshold instead of being hidden."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("SCORE_THRESHOLD", "0.8")
+    monkeypatch.setenv("RANDOM_SURFACE_RATE", "0.0")
+    monkeypatch.setenv("COLD_START_THRESHOLD", "1")
+
+    try:
+        user = await make_user(db_session)
+        source = await make_source(db_session, user)
+        unscored = await make_article(db_session, source, title="no-keywords")
+        await set_relevance(db_session, unscored, user, None, smart_score=0.9)
+        # One feedback graduates the user out of the E7-S6 global cold start,
+        # so the threshold actually applies.
+        seen = await make_article(db_session, source, title="seen")
+        await set_relevance(db_session, seen, user, 0.9)
+        db_session.add(ArticleImpression(article_id=seen.id, user_id=user.id))
+        db_session.add(
+            ArticleFeedback(article_id=seen.id, user_id=user.id, reaction="like")
+        )
+        await db_session.commit()
+
+        feed = await FeedService(db_session).get_feed(
+            user.id, cursor=None, limit=None
+        )
+
+        assert [a.title for a in feed.articles] == ["no-keywords"]
+        assert feed.articles[0].keyword_score is None
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_cold_start_bypasses_score_threshold(db_session, monkeypatch):

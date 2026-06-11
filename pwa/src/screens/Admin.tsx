@@ -120,9 +120,9 @@ export const Admin = () => {
                 onSave={reloadConfig}
               />
               <ConfigRow
-                label="Refresh Weights (hour)"
+                label="Nightly Refresh (hour)"
                 config={config}
-                field="cron_refresh_weights_hour"
+                field="cron_nightly_refresh_hour"
                 type="number"
                 min={0}
                 max={23}
@@ -443,9 +443,9 @@ interface ScoringEngineSectionProps {
 
 const SCORING_ENGINES = [
   {
-    id: 'classic' as const,
-    label: 'Classic',
-    subtitle: 'Keyword weights (current behavior)',
+    id: 'keyword' as const,
+    label: 'Keyword',
+    subtitle: 'AI keywords × learned weights',
   },
   {
     id: 'smart' as const,
@@ -458,7 +458,7 @@ const ScoringEngineSection = ({ config, onChange }: ScoringEngineSectionProps) =
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const select = async (mode: 'classic' | 'smart') => {
+  const select = async (mode: 'keyword' | 'smart') => {
     if (mode === config.scoring_mode || saving) return
     setError(null)
     setSaving(true)
@@ -517,8 +517,8 @@ const ScoringEngineSection = ({ config, onChange }: ScoringEngineSectionProps) =
         {config.articles_total.toLocaleString()} articles ({pct}%)
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-        Switching engines affects future scoring (enrichment and nightly
-        rescoring). Existing scores are not recomputed.
+        Both scores are always computed; this only selects which one filters
+        and ranks the feed. Switching is instant — no rescore needed.
       </div>
       {error && (
         <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>

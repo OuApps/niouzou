@@ -63,7 +63,7 @@ from sqlalchemy import update
 from niouzou.config import get_settings
 from niouzou.crons import enrich as cron_enrich
 from niouzou.crons import fetch as cron_fetch
-from niouzou.crons import refresh_weights as cron_refresh_weights
+from niouzou.crons import nightly_refresh as cron_nightly_refresh
 from niouzou.db import session_scope
 from niouzou.models import Article, PipelineRun
 from niouzou.models.article import STATUS_ENRICHING, STATUS_PENDING
@@ -286,8 +286,7 @@ async def _run_pipeline() -> None:
                                 session,
                                 article,
                                 enrichment=resources.enrichment,
-                                ai_scoring=resources.ai_scoring,
-                                tfidf_scoring=resources.tfidf_scoring,
+                                scoring=resources.scoring,
                                 openrouter_model=resources.openrouter_model,
                                 embedder=resources.embedder,
                             )
@@ -376,14 +375,15 @@ async def _guarded_run() -> None:
         await _run_pipeline()
 
 
-async def _refresh_weights_job() -> None:
-    """Daily keyword-weight recompute. Independent of the pipeline lock."""
+async def _nightly_refresh_job() -> None:
+    """Daily weights recompute + dual-score rescore (E16-S9). Independent of
+    the pipeline lock."""
     try:
-        logger.info("refresh_worker: cron_refresh_weights start")
-        await cron_refresh_weights.run()
-        logger.info("refresh_worker: cron_refresh_weights done")
+        logger.info("refresh_worker: cron_nightly_refresh start")
+        await cron_nightly_refresh.run()
+        logger.info("refresh_worker: cron_nightly_refresh done")
     except Exception:
-        logger.exception("refresh_worker: cron_refresh_weights failed")
+        logger.exception("refresh_worker: cron_nightly_refresh failed")
 
 
 @asynccontextmanager
@@ -410,7 +410,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         cfg = await SettingsService(session).get_effective()
 
     interval = max(1, cfg.cron_fetch_interval)
-    weights_hour = cfg.cron_refresh_weights_hour
+    nightly_hour = cfg.cron_nightly_refresh_hour
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.add_job(
@@ -422,9 +422,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         coalesce=True,
     )
     _scheduler.add_job(
-        _refresh_weights_job,
-        CronTrigger(hour=weights_hour, minute=0),
-        id="refresh_weights",
+        _nightly_refresh_job,
+        CronTrigger(hour=nightly_hour, minute=0),
+        id="nightly_refresh",
         # The daily job can tolerate a generous grace window — a one-hour
         # restart shouldn't make us lose a run.
         misfire_grace_time=3600,
@@ -432,9 +432,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     _scheduler.start()
     logger.info(
-        "refresh_worker: scheduler started (fetch_enrich=*/%d min, refresh_weights=%02d:00 UTC)",
+        "refresh_worker: scheduler started (fetch_enrich=*/%d min, nightly_refresh=%02d:00 UTC)",
         interval,
-        weights_hour,
+        nightly_hour,
     )
     try:
         yield

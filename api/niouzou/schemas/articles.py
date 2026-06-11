@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -24,10 +25,13 @@ class ArticleDetail(BaseModel):
     source: ArticleSourceRef
     published_at: datetime | None
     enriched_at: datetime | None
-    # Null when the article has not been scored for this user yet.
-    relevance_score: float | None
-    # "tfidf" or "ai_keyword" when known, null for unscored / legacy rows.
-    scorer: str | None = None
+    # E16-S8/S9 — both persisted scores; null when the method had no input
+    # for this article (or it hasn't been scored for this user yet).
+    keyword_score: float | None = None
+    keyword_cold_start: bool = False
+    smart_score: float | None = None
+    smart_cold_start: bool = False
+    active_method: Literal["keyword", "smart"] = "keyword"
     # All keywords sorted by salience DESC (E7-S10). Empty list when unenriched.
     keywords: list[str] = []
     # True when the stored content is suspiciously short for an enriched
@@ -40,17 +44,18 @@ class ArticleDetail(BaseModel):
     read_full_article: bool = False
 
 
-# E10-S2 — Debug shape for ``GET /articles/{id}/score-debug``. Explains how a
-# relevance score was computed: the active scorer, the LLM model (if any),
-# and the user's weight on each of the article's keywords. ``weight: null``
-# distinguishes "keyword known to the article but no row in the user's
-# ``keyword_weights``" (rendered as a dash) from a numeric zero.
+# E10-S2 — Debug shape for ``GET /articles/{id}/score-debug``. Explains how
+# the scores were computed: the LLM model (if any), the user's weight on each
+# of the article's keywords (keyword section), and the k-NN neighbourhood +
+# pins (smart section). ``weight: null`` distinguishes "keyword known to the
+# article but no row in the user's ``keyword_weights``" (rendered as a dash)
+# from a numeric zero.
 class ScoreDebugKeyword(BaseModel):
     term: str
     weight: float | None
 
 
-# E16-S7 — smart-mode breakdown. One feedbacked article in the candidate's
+# E16-S7 — smart breakdown. One feedbacked article in the candidate's
 # k-NN neighbourhood: ``contribution = similarity × |value| × decay``.
 class ScoreDebugNeighbor(BaseModel):
     title: str
@@ -68,15 +73,19 @@ class ScoreDebugPin(BaseModel):
 
 
 class ScoreDebug(BaseModel):
-    relevance_score: float | None
-    scorer: str | None
+    # E16-S10 — both methods are always present so the panel can show the two
+    # sections side by side, whatever the active mode.
+    keyword_score: float | None
+    keyword_cold_start: bool = False
+    smart_score: float | None
+    smart_cold_start: bool = False
+    active_method: Literal["keyword", "smart"] = "keyword"
     enrichment_model: str | None
     keywords: list[ScoreDebugKeyword]
-    # E16-S7 — populated only when ``scorer == 'smart_match'`` (null in
-    # classic mode so the legacy payload is byte-identical). Recomputed at
-    # request time: may differ marginally from the neighbours that produced
-    # the stored score if the user feedbacked since (nightly rescore keeps
-    # the gap small).
-    liked_neighbors: list[ScoreDebugNeighbor] | None = None
-    disliked_neighbors: list[ScoreDebugNeighbor] | None = None
-    pins: list[ScoreDebugPin] | None = None
+    # E16-S7 — recomputed at request time: may differ marginally from the
+    # neighbours that produced the stored score if the user feedbacked since
+    # (nightly rescore keeps the gap small). Empty when the article has no
+    # embedding.
+    liked_neighbors: list[ScoreDebugNeighbor] = []
+    disliked_neighbors: list[ScoreDebugNeighbor] = []
+    pins: list[ScoreDebugPin] = []

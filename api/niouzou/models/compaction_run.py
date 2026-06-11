@@ -5,7 +5,7 @@ One row per "merge aliases under a canonical term" cycle:
 * `status='preview'` — the LLM proposed groups; nothing in `article_keywords`
   has been touched yet. The admin sees the list and can apply or reject.
 * `status='applied'` — `article_keywords` updated, `keyword_weights`
-  recomputed via `cron_refresh_weights`, alias orphans purged.
+  recomputed via `cron_nightly_refresh`, alias orphans purged.
 * `status='rejected'` — admin clicked cancel; the preview is housekeeping.
 * `status='failed'` — exception raised during apply; `error` holds the trace
   summary.

@@ -26,11 +26,6 @@ class ScoringPipeline:
             return AIKeywordScorer()
         return TFIDFScorer()
 
-    @property
-    def scorer_name(self) -> str:
-        """Identifier of the active scorer (persisted with relevance_score)."""
-        return self.scorer.name
-
     def extract_keywords(
         self, text: str, *, corpus: Sequence[str] | None = None
     ) -> list[ScoredKeyword]:

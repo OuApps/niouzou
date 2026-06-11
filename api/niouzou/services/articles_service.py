@@ -26,7 +26,6 @@ from niouzou.schemas.articles import (
     ScoreDebugPin,
 )
 from niouzou.scoring.smart_match import (
-    SCORER_NAME as SMART_SCORER,
     SmartMatchParams,
     pinned_breakdown,
     topk_neighbours,
@@ -61,8 +60,14 @@ class ArticlesService:
                     Source.id.label("source_id"),
                     Source.name.label("source_name"),
                     Source.url.label("source_url"),
-                    ArticleRelevanceScore.relevance_score,
-                    ArticleRelevanceScore.scorer,
+                    ArticleRelevanceScore.keyword_score,
+                    func.coalesce(
+                        ArticleRelevanceScore.keyword_cold_start, False
+                    ).label("keyword_cold_start"),
+                    ArticleRelevanceScore.smart_score,
+                    func.coalesce(
+                        ArticleRelevanceScore.smart_cold_start, False
+                    ).label("smart_cold_start"),
                     func.coalesce(ArticleFeedback.reaction, "none").label("reaction"),
                     func.coalesce(ArticleFeedback.is_saved, False).label("is_saved"),
                     func.coalesce(
@@ -94,6 +99,9 @@ class ArticlesService:
 
         article: Article = row.Article
         premium_max_chars = get_settings().premium_content_max_chars
+        scoring_mode = str(
+            await SettingsService(self.session).get("scoring_mode")
+        )
         return ArticleDetail(
             id=article.id,
             title=article.title,
@@ -106,8 +114,11 @@ class ArticlesService:
             ),
             published_at=article.published_at,
             enriched_at=article.enriched_at,
-            relevance_score=row.relevance_score,
-            scorer=row.scorer,
+            keyword_score=row.keyword_score,
+            keyword_cold_start=bool(row.keyword_cold_start),
+            smart_score=row.smart_score,
+            smart_cold_start=bool(row.smart_cold_start),
+            active_method=scoring_mode,
             keywords=list(row.keywords or []),
             is_premium=(
                 article.content is not None
@@ -148,17 +159,19 @@ class ArticlesService:
                 "Article not accessible",
             )
 
-        relevance, scorer_name = (
+        score_row = (
             await self.session.execute(
                 select(
-                    ArticleRelevanceScore.relevance_score,
-                    ArticleRelevanceScore.scorer,
+                    ArticleRelevanceScore.keyword_score,
+                    ArticleRelevanceScore.keyword_cold_start,
+                    ArticleRelevanceScore.smart_score,
+                    ArticleRelevanceScore.smart_cold_start,
                 ).where(
                     ArticleRelevanceScore.article_id == article_id,
                     ArticleRelevanceScore.user_id == user_id,
                 )
             )
-        ).first() or (None, None)
+        ).first()
 
         # Article keywords sorted by salience DESC so the panel reads top-down.
         terms_rows = (
@@ -181,18 +194,25 @@ class ArticlesService:
         ).all() if terms_rows else []
         weights = {term: weight for term, weight in weights_rows}
 
-        # E16-S7 — smart-mode breakdown: the k-NN neighbours and the pinned
-        # boost that the formula actually uses, recomputed at request time.
-        # None in classic mode so the legacy payload is unchanged.
-        liked = disliked = pins = None
-        if scorer_name == SMART_SCORER:
-            liked, disliked, pins = await self._smart_breakdown(
-                article_id, user_id
-            )
+        # E16-S7/S10 — smart breakdown (k-NN neighbours + pinned boost),
+        # recomputed at request time and returned alongside the keyword
+        # section so the panel always shows both methods.
+        liked, disliked, pins = await self._smart_breakdown(article_id, user_id)
+
+        scoring_mode = str(
+            await SettingsService(self.session).get("scoring_mode")
+        )
 
         return ScoreDebug(
-            relevance_score=relevance,
-            scorer=scorer_name,
+            keyword_score=score_row.keyword_score if score_row else None,
+            keyword_cold_start=bool(score_row.keyword_cold_start)
+            if score_row
+            else False,
+            smart_score=score_row.smart_score if score_row else None,
+            smart_cold_start=bool(score_row.smart_cold_start)
+            if score_row
+            else False,
+            active_method=scoring_mode,
             enrichment_model=owner_row.enrichment_model,
             keywords=[
                 ScoreDebugKeyword(term=term, weight=weights.get(term))
@@ -208,12 +228,12 @@ class ArticlesService:
     ) -> tuple[
         list[ScoreDebugNeighbor], list[ScoreDebugNeighbor], list[ScoreDebugPin]
     ]:
-        """Neighbours + pins behind a smart_match score (E16-S7).
+        """Neighbours + pins behind a smart score (E16-S7).
 
         Reuses the exact scoring-path queries (scoring/smart_match.py) so the
-        formula isn't implemented twice. An article whose embedding vanished
-        (degenerate — the scorer stamp says smart_match but there is nothing
-        to compare) yields empty neighbour lists rather than an error.
+        formula isn't implemented twice. An article without an embedding
+        (smart_score = NULL) yields empty neighbour lists rather than an
+        error.
         """
         effective = await SettingsService(self.session).get_effective()
         params = SmartMatchParams(

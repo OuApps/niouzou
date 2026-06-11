@@ -1,13 +1,15 @@
 """Feed business logic: HN-ranked, keyset-paginated, impression-filtered.
 
 Ranking (docs/API_SPEC.md):
-    feed_rank = relevance_score / (age_in_hours + 2) ^ FEED_GRAVITY
+    feed_rank = active_score / (age_in_hours + 2) ^ FEED_GRAVITY
 
-Pagination is keyset on (feed_rank, id) so pages never overlap. With the
-default SCORE_THRESHOLD of 0.0 every enriched article clears the threshold, so
-the RANDOM_SURFACE_RATE branch is inert and ordering is fully deterministic;
-it only kicks in to occasionally surface sub-threshold articles when a positive
-threshold is configured (anti echo chamber).
+where ``active_score`` is ``keyword_score`` or ``smart_score`` depending on
+``scoring_mode`` (E16-S9) — flipping the mode re-ranks instantly, with no
+rescore. Pagination is keyset on (feed_rank, id) so pages never overlap. With
+the default SCORE_THRESHOLD of 0.0 every enriched article clears the
+threshold, so the RANDOM_SURFACE_RATE branch is inert and ordering is fully
+deterministic; it only kicks in to occasionally surface sub-threshold articles
+when a positive threshold is configured (anti echo chamber).
 
 The ranked SELECT projection is shared with ExploreService (E9-S3) via
 ``services.ranked_query`` — Explore reuses the same gravity ordering but
@@ -28,11 +30,11 @@ from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.feed import FeedArticle, FeedResponse
 from niouzou.services.settings_service import SettingsService
 from niouzou.services.ranked_query import (
-    FEED_RANK,
     FROM_JOINS,
-    RANKED_COLUMNS,
     build_ranked_query,
     clamp_limit,
+    feed_rank_sql,
+    ranked_columns,
     row_to_article,
 )
 
@@ -76,6 +78,12 @@ class FeedService:
                 override if override is not None else settings.score_threshold
             )
 
+        # E16-S9 — the active score column (filter + ranking) follows the
+        # admin-tunable scoring_mode, read per request so a flip is instant.
+        scoring_mode = str(
+            await SettingsService(self.session).get("scoring_mode")
+        )
+
         params: dict = {
             "user_id": user_id,
             "gravity": settings.feed_gravity,
@@ -90,7 +98,9 @@ class FeedService:
         # pivot logic has already been applied.
         pivot_article: FeedArticle | None = None
         if start is not None and cursor is None:
-            pivot_article = await self._fetch_pivot(user_id, start, params)
+            pivot_article = await self._fetch_pivot(
+                user_id, start, params, scoring_mode
+            )
             if pivot_article is None:
                 raise not_found("Article not found")
 
@@ -104,7 +114,9 @@ class FeedService:
             # Continue ranking immediately after the pivot using a synthetic
             # cursor — the keyset's strict `<` naturally excludes the pivot
             # from this branch so we don't get a duplicate.
-            pivot_rank = await self._compute_feed_rank(user_id, pivot_article.id, params)
+            pivot_rank = await self._compute_feed_rank(
+                user_id, pivot_article.id, params, scoring_mode
+            )
             params["cursor_rank"] = float(pivot_rank)
             params["cursor_id"] = pivot_article.id
             keyset = "AND (feed_rank, id) < (:cursor_rank, :cursor_id)"
@@ -113,6 +125,7 @@ class FeedService:
             params["limit"] = page_size  # (+1 was already added; pivot is the +1)
 
         query = build_ranked_query(
+            scoring_mode=scoring_mode,
             apply_threshold=True,
             apply_random_surface=True,
             keyset=keyset,
@@ -131,7 +144,7 @@ class FeedService:
         articles: list[FeedArticle] = []
         if pivot_article is not None:
             articles.append(pivot_article)
-        articles.extend(row_to_article(r) for r in rows)
+        articles.extend(row_to_article(r, scoring_mode) for r in rows)
 
         next_cursor: str | None = None
         if has_more and rows:
@@ -146,7 +159,11 @@ class FeedService:
         )
 
     async def _fetch_pivot(
-        self, user_id: uuid.UUID, article_id: uuid.UUID, base_params: dict
+        self,
+        user_id: uuid.UUID,
+        article_id: uuid.UUID,
+        base_params: dict,
+        scoring_mode: str,
     ) -> FeedArticle | None:
         """Fetch a single article as if it were a feed row, ignoring impressions
         and the score gates so we can place it at the top of /feed?start=:id."""
@@ -157,7 +174,7 @@ class FeedService:
         query = text(
             f"""
             SELECT
-                {RANKED_COLUMNS}
+                {ranked_columns(scoring_mode)}
             {FROM_JOINS}
             WHERE s.user_id = :user_id
                 AND a.status = '{STATUS_ENRICHED}'
@@ -166,17 +183,21 @@ class FeedService:
             """
         )
         row = (await self.session.execute(query, params)).mappings().first()
-        return row_to_article(row) if row else None
+        return row_to_article(row, scoring_mode) if row else None
 
     async def _compute_feed_rank(
-        self, user_id: uuid.UUID, article_id: uuid.UUID, base_params: dict
+        self,
+        user_id: uuid.UUID,
+        article_id: uuid.UUID,
+        base_params: dict,
+        scoring_mode: str,
     ) -> float:
         """Recompute feed_rank for a known article. Cheaper than re-running the
         full ranked query just to learn the pivot's rank."""
         params = {**base_params, "article_id": article_id}
         query = text(
             f"""
-            SELECT {FEED_RANK} AS feed_rank
+            SELECT {feed_rank_sql(scoring_mode)} AS feed_rank
             FROM articles a
             JOIN article_relevance_scores ars
                 ON ars.article_id = a.id AND ars.user_id = :user_id

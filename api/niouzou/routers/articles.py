@@ -25,11 +25,12 @@ async def get_article(
 async def get_score_debug(
     article_id: uuid.UUID, user: CurrentUser, service: ArticlesServiceDep
 ) -> ScoreDebug:
-    """Per-article relevance-score breakdown (E10-S2).
+    """Per-article relevance-score breakdown (E10-S2, dual since E16-S10).
 
-    Returns the scorer name, enrichment model, and the user's weight on each
-    of the article's keywords (``null`` when the user has no row for that
-    term yet). 403 on cross-user access — never leaks another user's
-    ``keyword_weights``.
+    Returns both persisted scores with their inputs: the user's weight on
+    each of the article's keywords (``null`` when the user has no row for
+    that term yet) for the keyword method, and the k-NN neighbours + pinned
+    boost for the smart method. 403 on cross-user access — never leaks
+    another user's ``keyword_weights``.
     """
     return await service.score_debug(user.id, article_id)

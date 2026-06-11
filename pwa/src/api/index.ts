@@ -92,7 +92,7 @@ export interface ExploreNewPage extends Page {
 export interface ExploreOptions {
   cursor?: string
   limit?: number
-  /** E11-S1 — filter to relevance_score ≥ minScore (cold-start bypasses). */
+  /** E11-S1 — filter to active score ≥ minScore (cold/NULL bypasses). */
   minScore?: number
   /** E11-S1 — restrict to these source UUIDs (must belong to the user). */
   sourceIds?: string[]
@@ -179,14 +179,18 @@ export interface ScoreDebugPin {
 }
 
 export interface ScoreDebug {
-  relevance_score: number | null
-  scorer: string | null
+  // E16-S10 — both methods are always present so the panel shows the two
+  // sections side by side, whatever the active mode.
+  keyword_score: number | null
+  keyword_cold_start: boolean
+  smart_score: number | null
+  smart_cold_start: boolean
+  active_method: 'keyword' | 'smart'
   enrichment_model: string | null
   keywords: ScoreDebugKeyword[]
-  // Present only when scorer === 'smart_match'.
-  liked_neighbors?: ScoreDebugNeighbor[] | null
-  disliked_neighbors?: ScoreDebugNeighbor[] | null
-  pins?: ScoreDebugPin[] | null
+  liked_neighbors: ScoreDebugNeighbor[]
+  disliked_neighbors: ScoreDebugNeighbor[]
+  pins: ScoreDebugPin[]
 }
 
 export function getScoreDebug(articleId: string): Promise<ScoreDebug> {
@@ -230,8 +234,9 @@ export interface Me {
   saved_count: number
   keyword_count: number
   source_count: number
-  // E16-S5 — active scoring engine; drives the Smart Match banner on Keywords.
-  scoring_mode: 'classic' | 'smart'
+  // E16-S5/S9 — active score selector; drives the Smart Match banner on
+  // Keywords.
+  scoring_mode: 'keyword' | 'smart'
 }
 
 export function getMe(): Promise<Me> {
@@ -388,10 +393,10 @@ export interface AdminConfig {
   openrouter_api_key: string | null
   max_keywords_per_article: number
   cron_fetch_interval: number
-  cron_refresh_weights_hour: number
+  cron_nightly_refresh_hour: number
   score_threshold: number
-  // E16-S4 — scoring engine + instance-wide embedding coverage.
-  scoring_mode: 'classic' | 'smart'
+  // E16-S4/S9 — active score selector + instance-wide embedding coverage.
+  scoring_mode: 'keyword' | 'smart'
   embeddings_done: number
   articles_total: number
 }
@@ -401,9 +406,9 @@ export interface AdminConfigPatch {
   openrouter_api_key?: string
   max_keywords_per_article?: number
   cron_fetch_interval?: number
-  cron_refresh_weights_hour?: number
+  cron_nightly_refresh_hour?: number
   score_threshold?: number
-  scoring_mode?: 'classic' | 'smart'
+  scoring_mode?: 'keyword' | 'smart'
 }
 
 export interface AdminModel {

@@ -190,7 +190,7 @@ class CompactionService:
                ``manually_overridden=true`` term and exclude them.
             2. For each remaining group: pre-resolve PK collisions, then
                ``UPDATE article_keywords SET term=canonical WHERE term IN aliases``.
-            3. ``recompute_all`` (same recipe as ``cron_refresh_weights``).
+            3. ``recompute_all`` (same recipe as ``cron_nightly_refresh``).
             4. Purge alias rows from ``keyword_weights`` that no longer have a
                matching keyword.
 

@@ -111,10 +111,11 @@ async def recompute_all(session: AsyncSession) -> None:
     """Full recompute of every user's weights — the daily cron's safety net.
 
     Idempotent: running twice yields identical rows. Overridden rows are
-    preserved. ``article_relevance_scores.relevance_score`` is never
-    recomputed here — scores are frozen at enrichment. The cron does flip
-    ``is_cold_start`` back to FALSE for rows whose keywords have since
-    gained a user weight (see ``demote_cold_flags``).
+    preserved. Scores are not touched here — ``cron_nightly_refresh`` runs
+    ``rescore_recent`` right after to refresh both score columns within the
+    rescore window (E16-S9), and flips ``keyword_cold_start`` back to FALSE
+    for rows whose keywords have since gained a user weight (see
+    ``demote_cold_flags``).
     """
     statement = text(
         f"""
@@ -129,13 +130,15 @@ async def recompute_all(session: AsyncSession) -> None:
 
 
 async def demote_cold_flags(session: AsyncSession) -> int:
-    """Flip ``is_cold_start`` to FALSE on rows whose keywords are no longer
-    unknown to the user (E10-S4).
+    """Flip ``keyword_cold_start`` to FALSE on rows whose keywords are no
+    longer unknown to the user (E10-S4).
 
     Called after ``recompute_all`` in the daily cron. A row was stamped cold
     at enrichment if NONE of its article's keywords matched a user's
     ``keyword_weights``. Once the user feedbacks something that creates a
-    weight on a shared term, every cold row for that term is stale.
+    weight on a shared term, every cold row for that term is stale. The
+    smart cold flag is feedback-based and refreshed by ``rescore_recent``
+    instead (E16-S9).
 
     The query only touches rows currently flagged cold, so the scan is cheap
     even as the table grows. Returns the number of rows updated for
@@ -150,8 +153,8 @@ async def demote_cold_flags(session: AsyncSession) -> int:
         text(
             """
             UPDATE article_relevance_scores AS ars
-            SET is_cold_start = FALSE
-            WHERE ars.is_cold_start = TRUE
+            SET keyword_cold_start = FALSE
+            WHERE ars.keyword_cold_start = TRUE
               AND EXISTS (
                 SELECT 1
                 FROM article_keywords ak

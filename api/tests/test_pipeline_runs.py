@@ -437,8 +437,7 @@ async def test_run_pipeline_records_completed_with_counters(db_session, monkeypa
     # Stub enrichment_resources — yield None instances, enrich_article is stubbed too.
     class _Stub:
         enrichment = None
-        ai_scoring = None
-        tfidf_scoring = None
+        scoring = None
         openrouter_model = None
         embedder = None
 
@@ -452,7 +451,7 @@ async def test_run_pipeline_records_completed_with_counters(db_session, monkeypa
 
     async def _fake_enrich(session, article, **_kw):
         article.status = STATUS_ENRICHED
-        article.enrichment_method = "tfidf"
+        article.enrichment_method = "ai"
 
     monkeypatch.setattr(cron_enrich, "enrich_article", _fake_enrich)
 
@@ -503,8 +502,7 @@ async def test_run_pipeline_counts_failed_and_resets_status(
 
     class _Stub:
         enrichment = None
-        ai_scoring = None
-        tfidf_scoring = None
+        scoring = None
         openrouter_model = None
         embedder = None
 

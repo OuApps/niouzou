@@ -4,16 +4,19 @@ Run with: ``uv run python -m niouzou.crons.enrich`` (or via the cron container).
 
 Per pending article:
   1. Extract clean content with newspaper4k, falling back to the RSS body.
-  2. Summarise — LLM ``summary_executive`` bullets when AI is on; no summary
-     when AI is off (the body is rendered directly by the PWA).
-  3. Extract + store keywords via ScoringService (the AI scorer when a key is
-     set; on LLM failure, retry twice then fall back to TF-IDF — E10-S1).
-  4. Score the article for its source's owner and freeze the relevance_score.
-  5. Mark the article ``enriched``.
+  2. Enrich via a single combined LLM call — ``summary_executive`` bullets +
+     keywords when AI is on; neither when AI is off or the call fails
+     (keyword extraction is LLM-only since E16-S8 — no TF-IDF fallback).
+  3. Store the keywords when the LLM produced some.
+  4. Compute and store the semantic embedding (local model, AI-independent).
+  5. Score the article for its source's owner — BOTH methods at once
+     (``keyword_score`` + ``smart_score``, E16-S8), whatever ``scoring_mode``.
+  6. Mark the article ``enriched``.
 
-Persistence and scoring maths are NOT reimplemented here — steps 3–4 delegate
+Persistence and scoring maths are NOT reimplemented here — steps 3–5 delegate
 to ScoringService (Epic 3). The cron only orchestrates and owns the article
-status transition.
+status transition. An article that got neither keywords nor an embedding is
+still ``enriched`` and surfaces (both scores NULL → treated as cold).
 
 Per-user scoring scope (E5-S2 open item): an article belongs to exactly one
 source, which belongs to exactly one user, and the feed only ever surfaces an
@@ -46,7 +49,7 @@ from niouzou.config import get_settings
 from niouzou.db import session_scope
 from niouzou.models import Article, ArticleKeyword, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
-from niouzou.scoring import ScoringPipeline, TFIDFScorer
+from niouzou.scoring import ScoringPipeline
 from niouzou.scoring.smart_match import SmartMatchParams
 from niouzou.services.embedding_service import (
     EmbeddingService,
@@ -67,11 +70,10 @@ class EnrichmentResources:
     """Services needed to enrich one article — built once per run."""
 
     enrichment: EnrichmentService
-    ai_scoring: ScoringService
-    tfidf_scoring: ScoringService
+    scoring: ScoringService
     # OpenRouter model id snapshotted at the start of the run (E10-S2). Used
-    # to stamp ``articles.enrichment_model`` on the AI path; ``None`` when AI
-    # is disabled for this run (TF-IDF native path).
+    # to stamp ``articles.enrichment_model`` when the LLM produced the
+    # keywords; ``None`` when AI is disabled for this run.
     openrouter_model: str | None = None
     # E16-S2 — local embedding service; ``None`` when sentence-transformers
     # isn't installed (articles then keep embedding = NULL). The model itself
@@ -141,40 +143,20 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
             "cron_enrich: 'enrichment.combined' prompt missing from DB — "
             "falling back to the trimmed in-code constant"
         )
-    # E16-S3 — engine + knobs snapshotted once per run, like everything else
-    # in EffectiveConfig. Both ScoringService instances get them: the smart
-    # branch lives in score_article_for_user, whichever keyword path ran.
-    smart_params = SmartMatchParams(
-        topk=effective.smart_topk,
-        lambda_=effective.smart_lambda,
-        beta=effective.smart_beta,
-        decay_halflife_days=effective.smart_decay_halflife_days,
-    )
-    tfidf_scoring = ScoringService(
-        ScoringPipeline(TFIDFScorer()),
+    # E16-S8 — a single ScoringService computes both scores. The pipeline is
+    # only used for the pure relevance maths (Σ salience × weight, shared by
+    # every scorer) — keyword *extraction* comes from the combined enrichment
+    # call, never from here.
+    scoring = ScoringService(
+        ScoringPipeline(),
         max_keywords_per_article=effective.max_keywords_per_article,
-        scoring_mode=effective.scoring_mode,
-        smart_params=smart_params,
+        smart_params=SmartMatchParams(
+            topk=effective.smart_topk,
+            lambda_=effective.smart_lambda,
+            beta=effective.smart_beta,
+            decay_halflife_days=effective.smart_decay_halflife_days,
+        ),
     )
-    if client is None:
-        ai_scoring = tfidf_scoring
-    else:
-        from niouzou.scoring.ai_keyword import AIKeywordScorer
-
-        ai_scorer = AIKeywordScorer(client)
-        if "scoring.ai_keywords" in prompts:
-            ai_scorer.set_system_prompt(prompts["scoring.ai_keywords"])
-        else:
-            logger.warning(
-                "cron_enrich: 'scoring.ai_keywords' prompt missing from DB — "
-                "falling back to the trimmed in-code constant"
-            )
-        ai_scoring = ScoringService(
-            ScoringPipeline(ai_scorer),
-            max_keywords_per_article=effective.max_keywords_per_article,
-            scoring_mode=effective.scoring_mode,
-            smart_params=smart_params,
-        )
 
     if embedding_available():
         embedder = get_embedding_service()
@@ -182,7 +164,7 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
         embedder = None
         logger.warning(
             "cron_enrich: sentence-transformers not installed — articles "
-            "will keep embedding = NULL (Smart Match unavailable)"
+            "will keep embedding = NULL (smart_score unavailable)"
         )
 
     logger.info(
@@ -196,8 +178,7 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
     try:
         yield EnrichmentResources(
             enrichment=enrichment,
-            ai_scoring=ai_scoring,
-            tfidf_scoring=tfidf_scoring,
+            scoring=scoring,
             openrouter_model=(
                 effective.openrouter_model if client is not None else None
             ),
@@ -213,17 +194,16 @@ async def enrich_article(
     article: Article,
     *,
     enrichment: EnrichmentService,
-    ai_scoring: ScoringService,
-    tfidf_scoring: ScoringService,
+    scoring: ScoringService,
     openrouter_model: str | None = None,
     embedder: EmbeddingService | None = None,
 ) -> None:
     """Enrich a single article in the given (open) transaction.
 
     The AI path uses a single combined LLM call (summaries + keywords) via
-    ``EnrichmentService.generate_enrichment`` — half the OpenRouter roundtrips
-    of the previous design. On LLM failure (or AI off), summaries fall back to
-    the newspaper-derived first sentences and keywords come from TF-IDF.
+    ``EnrichmentService.generate_enrichment``. On LLM failure (or AI off) no
+    keywords are stored — ``keyword_score`` stays NULL (E16-S8); the embedding
+    is local and still computed, so ``smart_score`` survives without AI.
     """
     owner_id = await session.scalar(
         select(Source.user_id).where(Source.id == article.source_id)
@@ -265,49 +245,37 @@ async def enrich_article(
     )
     article.summary_executive = enriched.summary_executive
 
-    # 3. Keyword persistence — AI keywords when the combined call returned
-    # some, TF-IDF fallback otherwise. ``keywords is None`` signals the LLM
-    # call itself failed (or AI is off); an empty list means it ran cleanly
-    # but had nothing useful — we still treat that as needing TF-IDF.
-    t0 = time.perf_counter()
+    # 3. Keyword persistence — LLM-only (E16-S8). ``keywords is None`` signals
+    # the LLM call itself failed (or AI is off); an empty list means it ran
+    # cleanly but had nothing useful. Either way no keywords are stored and
+    # the keyword method scores NULL for this article.
     if enriched.keywords:
-        await ai_scoring.store_keywords(session, article, enriched.keywords)
-        used, method, ai_error = ai_scoring, "ai", None
+        t0 = time.perf_counter()
+        await scoring.store_keywords(session, article, enriched.keywords)
+        method, ai_error = "ai", None
+        logger.info(
+            "enrich[%s]: %d keywords stored in %.2fs",
+            article.id,
+            len(enriched.keywords),
+            time.perf_counter() - t0,
+        )
     else:
+        method = None
         if enriched.keywords is None and enrichment.ai_enabled:
             ai_error = "LLM enrichment call failed or returned no keywords"
             logger.warning(
-                "enrich: AI enrichment unusable for %s, falling back to TF-IDF",
+                "enrich: AI enrichment unusable for %s — no keywords stored "
+                "(keyword_score will be NULL)",
                 article.id,
             )
         else:
             ai_error = None
-        await tfidf_scoring.extract_and_store_keywords(session, article)
-        used, method = tfidf_scoring, "tfidf"
-    logger.info(
-        "enrich[%s]: keywords stored via %s in %.2fs%s",
-        article.id,
-        method,
-        time.perf_counter() - t0,
-        f" (ai_error={ai_error})" if ai_error else "",
-    )
 
-    # 4. Per-user relevance score, frozen now (reads DB only, no LLM).
-    # Use the same service that persisted keywords so the stored ``scorer``
-    # indicator matches the real path (TF-IDF when AI fell back).
-    t0 = time.perf_counter()
-    await used.score_article_for_user(session, article.id, owner_id)
-    logger.info(
-        "enrich[%s]: relevance score computed in %.2fs",
-        article.id,
-        time.perf_counter() - t0,
-    )
-
-    # 5. Semantic embedding (E16-S2) — computed for every article regardless
-    # of scoring_mode, so a later Classic → Smart Match switch is instant for
-    # recent articles. Stored in the same transaction as the rest of the
-    # enrichment. A failure leaves the column NULL (Smart Match falls back to
-    # Classic for that row) instead of aborting the whole enrichment.
+    # 4. Semantic embedding (E16-S2) — local model, computed for every article
+    # regardless of scoring_mode and of LLM availability. Stored (and flushed)
+    # BEFORE scoring so the smart_score SELECT sees the fresh vector in the
+    # same transaction (E16-S8). A failure leaves the column NULL
+    # (smart_score = NULL for that row) instead of aborting the enrichment.
     if embedder is not None:
         t0 = time.perf_counter()
         try:
@@ -326,11 +294,21 @@ async def enrich_article(
             logger.exception(
                 "enrich: embedding failed for %s — leaving NULL", article.id
             )
+    await session.flush()
+
+    # 5. Per-user scores, both methods at once (reads DB only, no LLM).
+    t0 = time.perf_counter()
+    await scoring.score_article_for_user(session, article.id, owner_id)
+    logger.info(
+        "enrich[%s]: keyword + smart scores computed in %.2fs",
+        article.id,
+        time.perf_counter() - t0,
+    )
 
     # 6. Transition to enriched + record the active method/error (E7-S15).
-    # ``enrichment_model`` is populated only on the AI success path (E10-S2);
-    # TF-IDF fallback intentionally leaves it NULL so the debug panel doesn't
-    # mislabel the row as AI-enriched.
+    # ``enrichment_method`` / ``enrichment_model`` are populated only when the
+    # LLM produced the keywords; a failed/disabled LLM leaves them NULL so the
+    # debug panel doesn't mislabel the row as AI-enriched.
     article.status = STATUS_ENRICHED
     article.enriched_at = datetime.now(timezone.utc)
     article.enrichment_method = method
@@ -384,8 +362,7 @@ async def run() -> int:
                         session,
                         article,
                         enrichment=resources.enrichment,
-                        ai_scoring=resources.ai_scoring,
-                        tfidf_scoring=resources.tfidf_scoring,
+                        scoring=resources.scoring,
                         openrouter_model=resources.openrouter_model,
                         embedder=resources.embedder,
                     )

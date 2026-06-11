@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Lock, X } from 'lucide-react'
+import { Hash, Lock, Radar, X } from 'lucide-react'
 import { getScoreDebug } from '../api'
 import type { ScoreDebug, ScoreDebugNeighbor } from '../api'
 import { Spinner } from './Spinner'
@@ -14,6 +14,11 @@ interface Props {
  * computed. Triggered by tapping the score badge on a feed/explore/saved
  * card. Fetches on open and caches nothing — score debug is rarely opened
  * twice on the same article.
+ *
+ * E16-S10 — both methods are always shown side by side: the keyword section
+ * (article keywords × learned weights) and the Smart Match section (k-NN
+ * neighbours + pinned boost), each with its own percentage. The active one
+ * (driving the feed) is tagged.
  */
 export const ScoreDebugSheet = ({ articleId, onClose }: Props) => {
   const [data, setData] = useState<ScoreDebug | null>(null)
@@ -121,96 +126,142 @@ export const ScoreDebugSheet = ({ articleId, onClose }: Props) => {
   )
 }
 
-const ScoreDebugContent = ({ debug }: { debug: ScoreDebug }) => {
-  const pct =
-    debug.relevance_score !== null
-      ? `${Math.round(debug.relevance_score * 100)}%`
-      : '—'
-  const scorerLabel =
-    debug.scorer === 'ai_keyword'
-      ? 'AI'
-      : debug.scorer === 'tfidf'
-        ? 'TF-IDF'
-        : debug.scorer === 'smart_match'
-          ? 'Smart Match'
-          : '—'
-  return (
-    <>
+const pctLabel = (score: number | null, coldStart: boolean): string =>
+  score === null || coldStart ? '–' : `${Math.round(score * 100)}%`
+
+const ScoreDebugContent = ({ debug }: { debug: ScoreDebug }) => (
+  <>
+    {debug.enrichment_model && (
       <div
         style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 8,
-          marginBottom: 16,
-          fontSize: 12,
+          marginBottom: 4,
+          fontSize: 11,
           color: 'var(--text-secondary)',
+          fontFamily: 'monospace',
         }}
       >
-        <span>
-          Score <strong style={{ color: 'var(--text-primary)' }}>{pct}</strong>
-        </span>
-        <span>·</span>
-        <span>{scorerLabel}</span>
-        {debug.enrichment_model && (
-          <>
-            <span>·</span>
-            <span style={{ fontFamily: 'monospace', fontSize: 11 }}>
-              {debug.enrichment_model}
-            </span>
-          </>
-        )}
+        {debug.enrichment_model}
       </div>
+    )}
 
-      {debug.scorer === 'smart_match' ? (
-        <SmartBreakdown debug={debug} />
-      ) : debug.keywords.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          No keywords extracted for this article.
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {debug.keywords.map((kw) => (
-            <div
-              key={kw.term}
-              className="flex items-center justify-between"
-              style={{
-                padding: '8px 10px',
-                borderRadius: 10,
-                background: 'rgba(255,255,255,0.04)',
-                fontSize: 13,
-              }}
-            >
-              <span style={{ color: 'var(--text-primary)' }}>{kw.term}</span>
-              <span
-                style={{
-                  color:
-                    kw.weight === null
-                      ? 'var(--text-tertiary)'
-                      : kw.weight > 0
-                        ? 'var(--action-like)'
-                        : kw.weight < 0
-                          ? 'var(--action-dislike)'
-                          : 'var(--text-secondary)',
-                  fontVariantNumeric: 'tabular-nums',
-                  fontWeight: 600,
-                }}
-              >
-                {kw.weight === null
-                  ? '—'
-                  : `${kw.weight > 0 ? '+' : ''}${kw.weight.toFixed(2)}`}
-              </span>
-            </div>
-          ))}
-        </div>
+    <MethodHeader
+      Icon={Hash}
+      label="Keyword"
+      pct={pctLabel(debug.keyword_score, debug.keyword_cold_start)}
+      active={debug.active_method === 'keyword'}
+    />
+    <KeywordSection debug={debug} />
+
+    <MethodHeader
+      Icon={Radar}
+      label="Smart Match"
+      pct={pctLabel(debug.smart_score, debug.smart_cold_start)}
+      active={debug.active_method === 'smart'}
+    />
+    <SmartSection debug={debug} />
+  </>
+)
+
+// ── Section headers ──────────────────────────────────────────────────────────
+
+const MethodHeader = ({
+  Icon,
+  label,
+  pct,
+  active,
+}: {
+  Icon: typeof Hash
+  label: string
+  pct: string
+  active: boolean
+}) => (
+  <div
+    className="flex items-center justify-between"
+    style={{ margin: '14px 0 8px' }}
+  >
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 12,
+        fontWeight: 600,
+        color: 'var(--text-primary)',
+      }}
+    >
+      <Icon size={12} style={{ color: 'var(--accent-text)' }} />
+      {label}
+      <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{pct}</strong>
+      {active && (
+        <span
+          style={{
+            fontSize: 9,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.6px',
+            padding: '2px 6px',
+            borderRadius: 10,
+            background: 'var(--accent-subtle)',
+            color: 'var(--accent)',
+            border: '1px solid var(--accent)',
+          }}
+        >
+          active
+        </span>
       )}
-    </>
+    </span>
+  </div>
+)
+
+// ── Keyword method — article keywords × learned weights ─────────────────────
+
+const KeywordSection = ({ debug }: { debug: ScoreDebug }) => {
+  if (debug.keywords.length === 0) {
+    return (
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+        No keywords extracted for this article.
+      </div>
+    )
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {debug.keywords.map((kw) => (
+        <div
+          key={kw.term}
+          className="flex items-center justify-between"
+          style={{
+            padding: '8px 10px',
+            borderRadius: 10,
+            background: 'rgba(255,255,255,0.04)',
+            fontSize: 13,
+          }}
+        >
+          <span style={{ color: 'var(--text-primary)' }}>{kw.term}</span>
+          <span
+            style={{
+              color:
+                kw.weight === null
+                  ? 'var(--text-tertiary)'
+                  : kw.weight > 0
+                    ? 'var(--action-like)'
+                    : kw.weight < 0
+                      ? 'var(--action-dislike)'
+                      : 'var(--text-secondary)',
+              fontVariantNumeric: 'tabular-nums',
+              fontWeight: 600,
+            }}
+          >
+            {kw.weight === null
+              ? '—'
+              : `${kw.weight > 0 ? '+' : ''}${kw.weight.toFixed(2)}`}
+          </span>
+        </div>
+      ))}
+    </div>
   )
 }
 
-// ── E16-S7 — Smart Match breakdown ───────────────────────────────────────────
-// The score comes from the k-NN over the user's feedbacked articles plus the
-// pinned-keyword boost; learned keyword weights play no role, so the classic
-// weight list is replaced by the signals that actually produced the score.
+// ── Smart Match method — k-NN neighbours + pinned boost (E16-S7) ─────────────
 
 const sectionTitle = (color: string): React.CSSProperties => ({
   fontSize: 11,
@@ -218,7 +269,7 @@ const sectionTitle = (color: string): React.CSSProperties => ({
   textTransform: 'uppercase',
   letterSpacing: '0.8px',
   color,
-  margin: '14px 0 6px 2px',
+  margin: '10px 0 6px 2px',
 })
 
 const NeighborRows = ({
@@ -278,7 +329,7 @@ const NeighborRows = ({
   </div>
 )
 
-const SmartBreakdown = ({ debug }: { debug: ScoreDebug }) => {
+const SmartSection = ({ debug }: { debug: ScoreDebug }) => {
   const liked = debug.liked_neighbors ?? []
   const disliked = debug.disliked_neighbors ?? []
   const pins = debug.pins ?? []
@@ -353,18 +404,6 @@ const SmartBreakdown = ({ debug }: { debug: ScoreDebug }) => {
           </div>
         </>
       )}
-
-      <p
-        style={{
-          fontSize: 11,
-          color: 'var(--text-tertiary)',
-          marginTop: 14,
-          lineHeight: 1.5,
-        }}
-      >
-        Learned keyword weights are indicative in Smart Match — they don't
-        affect this score.
-      </p>
     </>
   )
 }

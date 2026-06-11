@@ -3147,6 +3147,9 @@ score = sigmoid(β·raw + Σ_{kw pinnés ∩ keywords(a)} weight·salience)
 - [x] **E16-S5** — Keywords pinnés comme boost + écran Keywords en mode smart
 - [x] **E16-S6** — Canonicalisation organique du vocabulaire keywords — déjà couverte par E10-S2 (voir story)
 - [x] **E16-S7** — Score breakdown en mode smart : voisins k-NN + pins au lieu des poids appris
+- [x] **E16-S8** — Double score persistant : `keyword_score` ⊕ `smart_score` calculés ensemble (retrait TF-IDF)
+- [x] **E16-S9** — `scoring_mode` = sélecteur du score actif (filtre seuil + tri) + rescore des deux + rename cron nocturne
+- [x] **E16-S10** — PWA : affichage des deux scores côte à côte (chips keyword + smart)
 
 ---
 
@@ -3398,6 +3401,197 @@ voisins likés/dislikés. Trou de spec identifié après livraison S1-S6.
 - Sur un article smart : label « Smart Match », voisins par polarité, pins visibles, aucun
   poids appris affiché comme contributif.
 - `npm run build` passe.
+
+---
+
+#### [x] E16-S8 — Double score persistant : `keyword_score` ⊕ `smart_score` calculés ensemble (retrait TF-IDF)
+
+> ✅ **Livrée (2026-06-11).** Migration `d8e2f5a91c47` (backfill par provenance `scorer`,
+> validée upgrade + downgrade sur la DB de test). `enrichment_method` devient `'ai'` | NULL
+> (plus de `'tfidf'` sur les nouvelles rows ; les stats E7-S15 gardent les rows legacy).
+
+**Contexte.** Nouvelle vision (remplace l'approche « un seul score, sélectionné par le mode » de
+S3) : les **deux méthodes de scoring coexistent en permanence** sur chaque article, calculées
+ensemble à l'enrichissement, pour pouvoir les **comparer en continu**. `scoring_mode` ne décide
+plus *lequel* est calculé (les deux le sont toujours) — il ne fait que choisir lequel pilote les
+filtres feed/explore (→ S9). Effet de bord bienvenu : le flip de mode devient instantané (les deux
+colonnes sont toujours présentes, plus aucun rescore requis au changement de mode).
+
+Cette story absorbe l'ancien fix de séquencement (embedding avant scoring) : puisqu'on score les
+deux dans la foulée, l'embedding est calculé avant.
+
+**Retrait TF-IDF (décision actée).** Le fallback TF-IDF est **supprimé du chemin d'enrichissement**.
+L'extraction de keywords devient **LLM-only** ; si OpenRouter/LLM est indisponible → pas de keywords
+→ `keyword_score = NULL` → l'article se comporte côté keyword comme pour un nouveau user (badge
+« – »). L'embedding étant **local**, `smart_score` reste calculé sans IA. Conséquence assumée :
+sans IA, le mode smart reste 100 % fonctionnel, mais les features keyword (score keyword, **pins**,
+écran Keywords, badges) deviennent AI-only. ⚠️ Mettre à jour l'invariant `CLAUDE.md` (« AI optional
+— must work fully without it ») et la note « Coût » d'E16 : « marche sans IA » se restreint au
+pathway smart.
+
+**Modèle de données — `article_relevance_scores`.** PK inchangée `(article_id, user_id)`.
+- **Ajout** :
+  - `keyword_score` Float **NULL** — score keyword (AI-keywords × poids user) ; `NULL` quand
+    l'article n'a aucun keyword (LLM indispo à l'enrichissement).
+  - `keyword_cold_start` Bool NOT NULL default false — aucun keyword de l'article dans le vocab du
+    user (sémantique de l'actuel `is_cold_start`).
+  - `smart_score` Float **NULL** — score k-NN ; `NULL` quand l'article n'a pas d'embedding.
+  - `smart_cold_start` Bool NOT NULL default false — le user n'a aucun feedback positif (définition
+    cold du mode smart, cf. S3).
+  - CheckConstraint `[0,1]` sur chaque score quand non-NULL.
+- **Suppression** : `relevance_score`, `scorer`, `is_cold_start`. La colonne `scorer` devient
+  redondante (TF-IDF retiré → keyword = toujours `ai_keyword`, smart = toujours `smart_match` ;
+  l'identité de la colonne *est* la méthode). `articles.enrichment_model` (quel LLM) reste.
+- **Migration Alembic** : ajouter les 4 colonnes ; backfill depuis l'existant
+  (`scorer = 'smart_match'` → `smart_score := relevance_score`, `smart_cold_start := is_cold_start` ;
+  sinon → `keyword_score := relevance_score`, `keyword_cold_start := is_cold_start`) ; la méthode
+  non encore calculée reste `NULL` (badge « – ») jusqu'au prochain passage nocturne (S9) — acceptable
+  sur un parc self-host ; puis `DROP` des 3 anciennes colonnes.
+
+**Scoring — `ScoringService`.**
+- `score_article_for_user` calcule et upsert **les deux** scores dans l'unique row, **indépendamment
+  de `scoring_mode`** :
+  - `keyword_score` via le pipeline keyword **si** l'article a des keywords (le LLM en a produit),
+    sinon `NULL` ;
+  - `smart_score` via `smart_score()` **si** l'article a un embedding, sinon `NULL` ;
+  - + les deux flags cold.
+- Suppression du branchement « smart sinon fallback Classic » et de **tout** le chemin TF-IDF dans
+  l'enrichissement (`tfidf_scoring`, `TFIDFScorer`, double `ScoringService`) — seul `AIKeywordScorer`
+  subsiste pour l'extraction. La classe `TFIDFScorer` peut rester pour les tests unitaires du
+  pipeline mais n'est plus jamais branchée par `cron_enrich`.
+- **`crons/enrich.py::enrich_article`** — nouvel ordre : extraction → enrichissement LLM
+  (résumé + keywords) → store keywords (si présents) → **embedding** (`await session.flush()` pour
+  que le `SELECT Article.embedding` du smart voie le vecteur frais dans la même transaction) →
+  **scoring des deux** → transition `enriched`. Mettre à jour le docstring d'en-tête (liste des
+  étapes) et retirer la mention du fallback TF-IDF.
+- Échec LLM sur un article → pas de keywords stockés, `keyword_score = NULL`, mais embedding (local)
+  calculé → `smart_score` présent. L'article est quand même `enriched` et surface.
+
+**Pins inchangés** : `pinned_breakdown` joint toujours `article_keywords` ↔ `keyword_weights`
+épinglés ; sans keywords (LLM down) le boost est simplement vide.
+
+**Tests** (pattern `test_enrich` + faux encodeur `fake_embeddings`, jamais le vrai modèle).
+- LLM on + embedder on → `keyword_score` ET `smart_score` non-NULL après enrichissement (quel que
+  soit `scoring_mode`).
+- LLM off (aucun keyword) → `keyword_score = NULL`, `smart_score` non-NULL.
+- embedder `None` → `smart_score = NULL`, `keyword_score` non-NULL.
+- Les deux off → les deux `NULL`, article quand même `enriched` (badge « – »/« – »).
+- Aucun chemin n'atteint `TFIDFScorer` depuis `cron_enrich` (le double `ScoringService` a disparu).
+- Migration : une row legacy `scorer='smart_match'` → `smart_score` rempli, `keyword_score` NULL ;
+  une row `scorer='ai_keyword'` → l'inverse.
+
+**Acceptance.**
+- Tout article fraîchement enrichi a **les deux** colonnes peuplées quand LLM + embeddings sont dispo,
+  indépendamment de `scoring_mode`.
+- Plus aucune trace de TF-IDF dans le chemin d'enrichissement.
+- LLM down → `keyword_score = NULL`, `smart_score` présent ; l'article surface quand même.
+
+**Docs à mettre à jour.**
+- `DATA_MODEL.md` — table `article_relevance_scores` : nouvelles colonnes (`keyword_score`,
+  `keyword_cold_start`, `smart_score`, `smart_cold_start`), suppression de `relevance_score`/`scorer`/
+  `is_cold_start`, contraintes ; mettre à jour la définition de `article.relevance_score` et le glossaire.
+- `ARCHITECTURE.md` — décrire le double scoring à l'enrichissement, le retrait TF-IDF, le nouvel ordre
+  des étapes `enrich_article` ; clarifier que « marche sans IA » = pathway smart uniquement.
+- `CONVENTIONS.md` — la règle « `ScoringPipeline` seul point d'entrée des scorers classic » et le rôle
+  de `ScoringService.score_article_for_user` (calcule désormais les deux scores).
+- `CLAUDE.md` — invariant « AI optional » restreint au mode smart ; tableau « Scoring » (plus de
+  TF-IDF fallback) ; concept `relevance_score` → deux scores.
+
+---
+
+#### [x] E16-S9 — `scoring_mode` = sélecteur du score actif (filtre + tri) + rescore des deux + rename cron nocturne
+
+> ✅ **Livrée (2026-06-11).** Valeurs de `scoring_mode` renommées `'keyword'` | `'smart'`
+> (whitelist de la story) ; `'classic'` reste accepté comme alias legacy, normalisé en
+> `'keyword'` à la lecture, et la migration réécrit la row `app_settings` existante.
+> Env var : `CRON_NIGHTLY_REFRESH_HOUR`, avec fallback de lecture sur l'ancienne
+> `CRON_REFRESH_WEIGHTS_HOUR` (transition Railway sans coupure).
+
+**Contexte.** Avec les deux scores persistés (S8), `scoring_mode` cesse de gater le calcul et devient
+le **sélecteur du score actif** pour le feed/explore. Le score actif pilote **à la fois** le filtre
+de seuil **et** le tri par gravité (décision : les deux, pour rester cohérent — on filtre et on
+classe avec le même score). Comme les deux colonnes sont toujours présentes, **changer de mode est
+instantané** : aucun rescore ni migration.
+
+**Changements — ranking (`services/ranked_query.py`).**
+- La colonne de score active + le flag cold actif sont choisis selon `scoring_mode` (lu une fois par
+  requête depuis les settings effectifs ; whitelist `{keyword, smart}` → nom de colonne bindé sans
+  risque d'injection).
+- `FEED_RANK` : `(CASE WHEN <active_cold> OR <active_score> IS NULL THEN 0.5 ELSE <active_score> END)`
+  — un score actif `NULL` (méthode indispo pour cette row) est traité **comme cold** : baseline 0.5,
+  l'article surface au lieu d'être caché.
+- Filtre de seuil : `(<active_score> >= :threshold OR <active_cold> = TRUE OR <active_score> IS NULL)`.
+- Projection `RANKED_COLUMNS` / `FeedArticle` : renvoyer **les deux** scores + les deux flags cold
+  (et l'indication de la méthode active), pour l'affichage S10. `schemas/feed.py` + types PWA mis à
+  jour. (`scorer` retiré du payload.)
+
+**Changements — rescore nocturne + rename.**
+- Le rescore ne dépend plus du mode (les deux scores sont toujours vivants) : il **rafraîchit les
+  deux** colonnes pour les articles de la fenêtre `smart_rescore_window_days`. Sans ça, `keyword_score`
+  figé à l'enrichissement divergerait des poids recalculés chaque nuit → comparaison faussée.
+  `rescore_recent_smart` → `rescore_recent` (retire le gate `if mode != 'smart': return 0`).
+- **Rename du cron (demande explicite)** — nom polyvalent pour les deux modes :
+  `crons/refresh_weights.py` → `crons/nightly_refresh.py` ; logger `cron_refresh_weights` →
+  `cron_nightly_refresh` ; job worker `_refresh_weights_job` → `_nightly_refresh_job` ; setting
+  `cron_refresh_weights_hour` → `cron_nightly_refresh_hour`. Le job fait toujours : recompute des
+  poids keyword (`recompute_all`) + demote des cold flags + `rescore_recent`. ⚠️ Note déploiement :
+  renommer aussi la variable d'env sur Railway (`CRON_NIGHTLY_REFRESH_HOUR`) — lire l'ancienne en
+  fallback le temps d'une transition, ou couper net et mettre à jour la config.
+- `demote_cold_flags` opère désormais sur `keyword_cold_start` (le cold smart est feedback-based,
+  géré par `rescore_recent`).
+
+**Tests.**
+- `scoring_mode = 'keyword'` → feed filtré/trié sur `keyword_score` ; `'smart'` → sur `smart_score`.
+- Flip de mode → l'ordre du feed change **sans** rescore ni écriture DB.
+- Score actif `NULL` → article traité comme cold (surface, bypass seuil, baseline 0.5).
+- `rescore_recent` rafraîchit **les deux** colonnes dans la fenêtre, quel que soit le mode.
+- API : `/feed` et `/explore/new` renvoient `keyword_score`, `smart_score` + flags pour chaque row.
+
+**Acceptance.**
+- Changer `scoring_mode` dans l'admin change instantanément le classement feed/explore, sans
+  migration ni rescore.
+- L'API renvoie les deux scores pour chaque article.
+- Le cron nocturne renommé tourne pour les deux modes et rafraîchit les deux scores.
+
+**Docs à mettre à jour.**
+- `API_SPEC.md` — payloads `/feed` et `/explore/new` : champs `keyword_score`, `smart_score`, flags
+  cold, `active_method` (retrait `scorer`) ; sémantique de `scoring_mode` (sélecteur, plus gate).
+- `ARCHITECTURE.md` — `scoring_mode` comme sélecteur du score actif (filtre + tri), flip instantané ;
+  rename du cron nocturne et de l'env var ; liste des variables d'environnement (`SCORING_MODE`,
+  `CRON_NIGHTLY_REFRESH_HOUR`, anciennes retirées).
+- `CONVENTIONS.md` — renommage `crons/refresh_weights.py` → `crons/nightly_refresh.py` si un cron y
+  est listé.
+- `CLAUDE.md` — section « Repo structure » (`crons/`) + « Environment variables » (rename).
+
+---
+
+#### [x] E16-S10 — PWA : affichage des deux scores côte à côte (chips keyword + smart)
+
+**Contexte.** Surfacer les deux méthodes pour comparaison directe. Choix retenu : **deux chips côte
+à côte** sur la carte (et la vue détail), plutôt qu'une seule chip + breakdown.
+
+**Changements (`ScoreBadge.tsx`, `ArticleCard`, `ScoreDebugSheet.tsx`).**
+- En haut à droite de l'article : **deux chips** — keyword (icône `Hash` #) et smart (icône `Radar`),
+  chacune affichant son `%` ou « – » (score `NULL` ou cold). La chip **active** (selon `scoring_mode`,
+  donné par l'API) est mise en avant (fond accent plein) ; l'autre est atténuée (outline/muted). Plus
+  d'icône `Sparkles` (TF-IDF/AI distinction supprimée : keyword = toujours AI).
+- « – » unifié = score actif de cette méthode absent (`NULL`) **ou** cold-start de cette méthode.
+- Le popup « Score breakdown » affiche **toujours les deux sections** quelle que soit la méthode
+  active : section keyword (liste keywords + poids, cf. rendu classic existant) **et** section smart
+  (voisins likés/dislikés + pins, cf. S7), chacune avec son `%`. Le payload `score-debug` renvoie les
+  deux jeux de données (réutilise S7 pour le smart ; garde la liste keywords/poids pour le keyword).
+- Types PWA (`types/api.ts`) : `FeedArticle` / `ArticleDetail` gagnent `keyword_score`,
+  `keyword_cold_start`, `smart_score`, `smart_cold_start`, `active_method` ; `scorer` retiré.
+
+**Tests / acceptance.**
+- Une carte montre les deux chips ; l'active est visuellement distincte ; « – » quand une méthode est
+  NULL/cold.
+- Le breakdown montre les deux méthodes simultanément.
+- `npm run build` passe ; `BlobBackground` toujours présent ; styles issus de `DESIGN_SYSTEM.md`.
+
+**Docs à mettre à jour.**
+- `DESIGN_SYSTEM.md` — documenter les deux chips de score (keyword/smart), états actif/atténué et « – ».
+- `API_SPEC.md` — payload `score-debug` renvoyant les deux sections (keyword + smart) simultanément.
 
 ---
 

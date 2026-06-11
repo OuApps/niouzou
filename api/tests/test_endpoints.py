@@ -30,7 +30,9 @@ async def test_article_detail_shape(db_session):
 
     detail = await ArticlesService(db_session).get(user.id, article.id)
     assert detail.title == "Why Rust"
-    assert detail.relevance_score == 0.87
+    assert detail.keyword_score == 0.87
+    assert detail.smart_score is None
+    assert detail.active_method == "keyword"
     assert detail.source.name == "Feed"
     # No interaction yet — defaults apply.
     assert detail.reaction == "none"
@@ -75,7 +77,7 @@ async def test_score_debug_returns_keywords_with_weights(db_session):
     await db_session.commit()
 
     debug = await ArticlesService(db_session).score_debug(user.id, article.id)
-    assert debug.relevance_score == 0.74
+    assert debug.keyword_score == 0.74
     assert debug.enrichment_model == "google/gemma-4-28b"
     weights = {kw.term: kw.weight for kw in debug.keywords}
     assert weights == {

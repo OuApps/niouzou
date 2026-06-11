@@ -1,14 +1,14 @@
-"""Cold-start flag end-to-end (E10-S4).
+"""Cold-start flag end-to-end (E10-S4, ``keyword_cold_start`` since E16-S8).
 
 Covers:
-- ScoringService stamps ``is_cold_start`` when none of the article's keywords
-  has a row in ``keyword_weights`` for the user, and unsets it when at least
-  one does.
-- ``cron_refresh_weights.demote_cold_flags`` flips stale cold rows once a
+- ScoringService stamps ``keyword_cold_start`` when none of the article's
+  keywords has a row in ``keyword_weights`` for the user, and unsets it when
+  at least one does.
+- ``weights.demote_cold_flags`` (nightly cron) flips stale cold rows once a
   feedback brings a keyword into the user's vocab.
 - ``FeedService`` passes cold articles through even with a high
-  ``score_threshold``, and ``ranked_query`` projects ``is_cold_start`` to
-  the response payload.
+  ``score_threshold``, and ``ranked_query`` projects the cold flags to the
+  response payload.
 """
 
 import uuid
@@ -66,7 +66,7 @@ async def test_scoring_stamps_cold_when_no_keyword_known(db_session):
     await db_session.commit()
 
     row = await _score(db_session, article.id, user.id)
-    assert row.is_cold_start is True
+    assert row.keyword_cold_start is True
 
 
 async def test_scoring_stamps_warm_when_at_least_one_known(db_session):
@@ -85,7 +85,7 @@ async def test_scoring_stamps_warm_when_at_least_one_known(db_session):
     await db_session.commit()
 
     row = await _score(db_session, article.id, user.id)
-    assert row.is_cold_start is False
+    assert row.keyword_cold_start is False
 
 
 # ── demote_cold_flags (cron pass) ───────────────────────────────────────────
@@ -123,8 +123,8 @@ async def test_demote_flips_only_rows_whose_keywords_acquired_weight(
     demoted = await db_session.get(
         ArticleRelevanceScore, (cold_demoted.id, user.id)
     )
-    assert kept.is_cold_start is True
-    assert demoted.is_cold_start is False
+    assert kept.keyword_cold_start is True
+    assert demoted.keyword_cold_start is False
 
 
 async def test_demote_is_noop_when_nothing_to_flip(db_session):
@@ -160,21 +160,21 @@ async def test_feed_returns_cold_articles_above_threshold(db_session, monkeypatc
             KeywordWeight(user_id=user.id, term="politics", weight=0.0)
         )
         # Stamp explicit scores rather than computing via the pipeline so the
-        # test's intent (threshold bypass) doesn't depend on TF-IDF heuristics.
+        # test's intent (threshold bypass) doesn't depend on scorer heuristics.
         db_session.add(
             ArticleRelevanceScore(
                 article_id=cold_article.id,
                 user_id=user.id,
-                relevance_score=0.30,
-                is_cold_start=True,
+                keyword_score=0.30,
+                keyword_cold_start=True,
             )
         )
         db_session.add(
             ArticleRelevanceScore(
                 article_id=warm_low.id,
                 user_id=user.id,
-                relevance_score=0.30,
-                is_cold_start=False,
+                keyword_score=0.30,
+                keyword_cold_start=False,
             )
         )
         # Two feedbacks on unrelated already-seen articles take the user out
@@ -200,6 +200,6 @@ async def test_feed_returns_cold_articles_above_threshold(db_session, monkeypatc
         assert cold_article.id in ids
         assert warm_low.id not in ids
         cold_in_response = next(a for a in page.articles if a.id == cold_article.id)
-        assert cold_in_response.is_cold_start is True
+        assert cold_in_response.keyword_cold_start is True
     finally:
         get_settings.cache_clear()

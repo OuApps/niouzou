@@ -2,7 +2,7 @@
 
 Some env-var-backed settings (``OPENROUTER_MODEL``, ``OPENROUTER_API_KEY``,
 ``MAX_KEYWORDS_PER_ARTICLE``, ``CRON_FETCH_INTERVAL``,
-``CRON_REFRESH_WEIGHTS_HOUR``) must be tunable by the admin without a
+``CRON_NIGHTLY_REFRESH_HOUR``) must be tunable by the admin without a
 redeploy. ``SettingsService`` persists overrides in ``app_settings`` and
 resolves the effective value at read time:
 
@@ -11,7 +11,7 @@ resolves the effective value at read time:
 Env vars therefore stay the source of truth on fresh installs; the DB only
 holds drift the admin introduced through the UI.
 
-Two of the keys — ``CRON_FETCH_INTERVAL`` and ``CRON_REFRESH_WEIGHTS_HOUR`` —
+Two of the keys — ``CRON_FETCH_INTERVAL`` and ``CRON_NIGHTLY_REFRESH_HOUR`` —
 are read by the refresh worker at startup only; persisted changes take effect
 on the next worker restart (APScheduler triggers are not rebuilt live).
 """
@@ -34,7 +34,7 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
         "openrouter_model",
         "max_keywords_per_article",
         "cron_fetch_interval",
-        "cron_refresh_weights_hour",
+        "cron_nightly_refresh_hour",
         "score_threshold",
         # E16 — Smart Match engine + its tuning knobs.
         "scoring_mode",
@@ -54,7 +54,7 @@ INT_KEYS: Final[frozenset[str]] = frozenset(
     {
         "max_keywords_per_article",
         "cron_fetch_interval",
-        "cron_refresh_weights_hour",
+        "cron_nightly_refresh_hour",
         "smart_topk",
         "smart_decay_halflife_days",
         "smart_rescore_window_days",
@@ -74,11 +74,7 @@ _DEFAULT_FROM_SETTINGS = {
     "openrouter_model": lambda s: s.openrouter_model,
     "max_keywords_per_article": lambda s: s.max_keywords_per_article,
     "cron_fetch_interval": lambda s: s.cron_fetch_interval,
-    # CRON_REFRESH_WEIGHTS_HOUR is new in E8-S6; defaulted here so a fresh
-    # install resolves it before the env var lands in pydantic Settings.
-    "cron_refresh_weights_hour": lambda s: getattr(
-        s, "cron_refresh_weights_hour", 3
-    ),
+    "cron_nightly_refresh_hour": lambda s: s.cron_nightly_refresh_hour,
     "score_threshold": lambda s: s.score_threshold,
     "scoring_mode": lambda s: s.scoring_mode,
     "smart_topk": lambda s: s.smart_topk,
@@ -101,16 +97,26 @@ class EffectiveConfig:
     openrouter_model: str
     max_keywords_per_article: int
     cron_fetch_interval: int
-    cron_refresh_weights_hour: int
+    cron_nightly_refresh_hour: int
     score_threshold: float
     # E16 — defaulted so existing call sites (and tests) that build the
     # snapshot by hand keep working; get_effective() always fills them in.
-    scoring_mode: str = "classic"
+    scoring_mode: str = "keyword"
     smart_topk: int = 5
     smart_lambda: float = 0.8
     smart_beta: float = 0.5
     smart_decay_halflife_days: int = 90
     smart_rescore_window_days: int = 14
+
+
+def normalize_scoring_mode(value: object) -> str:
+    """Collapse the stored/env value onto the E16-S9 whitelist.
+
+    ``'classic'`` survives as a legacy alias of ``'keyword'`` (pre-S9 env
+    vars or DB rows); anything unknown falls back to ``'keyword'`` so the
+    feed never breaks on a typo'd env var.
+    """
+    return "smart" if value == "smart" else "keyword"
 
 
 def mask_api_key(value: str | None) -> str | None:
@@ -159,6 +165,8 @@ class SettingsService:
             return int(override)
         if key in FLOAT_KEYS:
             return float(override)
+        if key == "scoring_mode":
+            return normalize_scoring_mode(override)
         return override
 
     async def validate(self, key: str, value: str | int | float | None) -> None:
@@ -174,9 +182,11 @@ class SettingsService:
         """
         if key != "scoring_mode" or value is None or value == "":
             return
-        if value not in ("classic", "smart"):
+        # 'classic' accepted as a legacy alias of 'keyword' (normalised on
+        # read) so older clients / scripts don't break mid-transition.
+        if value not in ("keyword", "smart", "classic"):
             raise InvalidSettingError(
-                "scoring_mode must be 'classic' or 'smart'"
+                "scoring_mode must be 'keyword' or 'smart'"
             )
         if value == "smart":
             if not embedding_available():
@@ -248,9 +258,9 @@ class SettingsService:
             openrouter_model=resolve("openrouter_model"),  # type: ignore[arg-type]
             max_keywords_per_article=resolve("max_keywords_per_article"),  # type: ignore[arg-type]
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
-            cron_refresh_weights_hour=resolve("cron_refresh_weights_hour"),  # type: ignore[arg-type]
+            cron_nightly_refresh_hour=resolve("cron_nightly_refresh_hour"),  # type: ignore[arg-type]
             score_threshold=resolve("score_threshold"),  # type: ignore[arg-type]
-            scoring_mode=resolve("scoring_mode"),  # type: ignore[arg-type]
+            scoring_mode=normalize_scoring_mode(resolve("scoring_mode")),
             smart_topk=resolve("smart_topk"),  # type: ignore[arg-type]
             smart_lambda=resolve("smart_lambda"),  # type: ignore[arg-type]
             smart_beta=resolve("smart_beta"),  # type: ignore[arg-type]

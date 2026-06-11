@@ -22,8 +22,8 @@ class ScoredKeyword:
 
 
 class BaseScorer(ABC):
-    # Short identifier persisted alongside relevance_score so the PWA can show
-    # whether a score came from AI or TF-IDF (E7-S7). Override in subclasses.
+    # Short scorer identifier, kept for logs/tests (the per-row ``scorer``
+    # stamp was dropped in E16-S8 — the score column identity is the method).
     name: str = "base"
 
     @abstractmethod

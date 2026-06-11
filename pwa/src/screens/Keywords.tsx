@@ -36,9 +36,9 @@ export const Keywords = () => {
   const [confirmReset, setConfirmReset] = useState(false)
   const [resetting, setResetting] = useState(false)
 
-  // E16-S5 — Smart Match banner. In classic mode (the default, also the
+  // E16-S5 — Smart Match banner. In keyword mode (the default, also the
   // fallback when /me fails) the screen is strictly unchanged.
-  const [scoringMode, setScoringMode] = useState<'classic' | 'smart'>('classic')
+  const [scoringMode, setScoringMode] = useState<'keyword' | 'smart'>('keyword')
   useEffect(() => {
     let active = true
     getMe()
@@ -445,13 +445,13 @@ export const Keywords = () => {
                   style={{ color: 'var(--accent-text)', flexShrink: 0, marginTop: 1 }}
                 />
                 <p style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Smart Match is active: learned weights are indicative only.
-                  Pinned weights{' '}
+                  Smart Match is active: learned weights drive the keyword
+                  score only, not your feed. Pinned weights{' '}
                   <Lock
                     size={10}
                     style={{ display: 'inline', verticalAlign: '-1px', color: 'var(--accent-text)' }}
                   />{' '}
-                  still apply to the score.
+                  still apply to the Smart Match score.
                 </p>
               </div>
             )}
