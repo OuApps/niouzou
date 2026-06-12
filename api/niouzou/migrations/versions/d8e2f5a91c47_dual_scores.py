@@ -94,19 +94,9 @@ def upgrade() -> None:
     op.drop_constraint(
         "ck_relevance_scores_range", "article_relevance_scores", type_="check"
     )
-    # Dropping relevance_score silently takes idx_relevance_scores_user_id
-    # (user_id, relevance_score DESC) with it — recreate a user_id index so
-    # the FK stays indexed (user-deletion CASCADE, per-user maintenance
-    # passes). The PK (article_id, user_id) covers the ranked-query join.
     op.drop_column("article_relevance_scores", "relevance_score")
     op.drop_column("article_relevance_scores", "scorer")
     op.drop_column("article_relevance_scores", "is_cold_start")
-    op.create_index(
-        "idx_relevance_scores_user_id",
-        "article_relevance_scores",
-        ["user_id"],
-        unique=False,
-    )
 
     # E16-S9 settings housekeeping (no-ops on rows that don't exist).
     op.execute(
@@ -123,9 +113,6 @@ def downgrade() -> None:
     # Lossy by construction: the legacy schema can only hold one score per
     # row. The smart score wins when present (it was the active engine when
     # both exist), mirroring the upgrade's provenance mapping.
-    op.drop_index(
-        "idx_relevance_scores_user_id", table_name="article_relevance_scores"
-    )
     op.add_column(
         "article_relevance_scores",
         sa.Column(
@@ -169,13 +156,6 @@ def downgrade() -> None:
         "ck_relevance_scores_range",
         "article_relevance_scores",
         "relevance_score >= 0.0 AND relevance_score <= 1.0",
-    )
-    # Restore the legacy index shape from the initial schema.
-    op.create_index(
-        "idx_relevance_scores_user_id",
-        "article_relevance_scores",
-        ["user_id", sa.literal_column("relevance_score DESC")],
-        unique=False,
     )
 
     op.drop_constraint(
