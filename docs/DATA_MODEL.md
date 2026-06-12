@@ -10,7 +10,7 @@ users
   │       └──< articles     (one source → many articles)
   │               │
   │               ├──< article_keywords        (one article → many keywords)
-  │               ├──< article_relevance_scores (one article × one user → one score)
+  │               ├──< article_relevance_scores (one article × one user → keyword_score + smart_score)
   │               ├──< article_feedbacks        (one article × one user → one feedback)
   │               └──< article_impressions      (one article × one user → seen flag)
   │
@@ -93,15 +93,17 @@ CREATE TABLE articles (
                                                  -- 'enriching' rows back to 'pending' so a crash
                                                  -- mid-run is recoverable.
   enriched_at          TIMESTAMPTZ,              -- set when status → enriched
-  enrichment_method    VARCHAR,                  -- 'ai' or 'tfidf'; set by cron_enrich
-  enrichment_error     TEXT,                     -- captured exception when AI failed and fell back to TF-IDF; null on success
+  enrichment_method    VARCHAR,                  -- 'ai' when the LLM produced the keywords; NULL when the
+                                                 -- LLM was off/failed (E16-S8 — no TF-IDF fallback anymore;
+                                                 -- 'tfidf' survives on legacy rows only)
+  enrichment_error     TEXT,                     -- captured exception when the LLM call failed; null on success
   enrichment_model     VARCHAR,                  -- E10-S2: OpenRouter model id on AI success (e.g. 'google/gemma-4-28b');
-                                                 -- NULL on TF-IDF (native or fallback). Powers the score-debug bottom sheet.
+                                                 -- NULL when AI was unavailable. Powers the score-debug bottom sheet.
   embedding            VECTOR(1024),             -- E16: semantic embedding of title + summary_executive
                                                  -- (Qwen3-Embedding-0.6B, L2-normalised, document mode).
                                                  -- Requires the pgvector extension. NULL until computed by
-                                                 -- cron_enrich or the backfill CLI; Smart Match falls back
-                                                 -- to the Classic scorer for NULL rows.
+                                                 -- cron_enrich or the backfill CLI; smart_score stays NULL
+                                                 -- for those rows (treated as cold by the feed).
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   UNIQUE (source_id, miniflux_entry_id)          -- same entry may exist for different sources (multi-user)
@@ -134,30 +136,41 @@ CREATE INDEX idx_article_keywords_term ON article_keywords(term);
 ### article_relevance_scores
 ```sql
 CREATE TABLE article_relevance_scores (
-  article_id        UUID NOT NULL REFERENCES articles(id),
-  user_id           UUID NOT NULL REFERENCES users(id),
-  relevance_score   FLOAT NOT NULL CHECK (relevance_score >= 0.0 AND relevance_score <= 1.0),
-                    -- probability the user will enjoy this article.
-                    -- Computed at enrichment time. Classic mode: never
-                    -- recomputed. Smart mode (E16-S3): rows whose article
-                    -- was ingested within SMART_RESCORE_WINDOW_DAYS are
-                    -- re-scored nightly by cron_refresh_weights.
-  scorer            VARCHAR,                     -- 'tfidf' | 'ai_keyword' | 'smart_match' (E16);
-                                                 -- null for legacy rows. Traces which engine
-                                                 -- produced the current score.
-  is_cold_start     BOOLEAN NOT NULL DEFAULT FALSE,
-                    -- E10-S4: true when none of the article's keywords has a row
-                    -- in keyword_weights for this user. Stamped by ScoringService
-                    -- at enrichment time, demoted to false nightly by
-                    -- cron_refresh_weights once a feedback brings a keyword
-                    -- into the user's vocab. Drives the "New" badge on the PWA
-                    -- and the threshold bypass in ranked_query.
+  article_id          UUID NOT NULL REFERENCES articles(id),
+  user_id             UUID NOT NULL REFERENCES users(id),
+  keyword_score       FLOAT CHECK (keyword_score IS NULL OR (keyword_score >= 0.0 AND keyword_score <= 1.0)),
+                      -- E16-S8: AI keywords × user weights. NULL when the
+                      -- article has no keywords (LLM unavailable at
+                      -- enrichment — keyword extraction is LLM-only, the
+                      -- TF-IDF fallback is gone).
+  keyword_cold_start  BOOLEAN NOT NULL DEFAULT FALSE,
+                      -- E10-S4 semantics: true when none of the article's
+                      -- keywords has a row in keyword_weights for this user.
+                      -- Stamped by ScoringService, demoted to false nightly
+                      -- by cron_nightly_refresh once a feedback brings a
+                      -- keyword into the user's vocab.
+  smart_score         FLOAT CHECK (smart_score IS NULL OR (smart_score >= 0.0 AND smart_score <= 1.0)),
+                      -- E16-S8: embedding k-NN (Smart Match formula). NULL
+                      -- when the article has no embedding.
+  smart_cold_start    BOOLEAN NOT NULL DEFAULT FALSE,
+                      -- true when the user has no feedback with value > 0
+                      -- (the smart cold definition). Refreshed by the
+                      -- nightly rescore, not by demote_cold_flags.
 
   PRIMARY KEY (article_id, user_id)
 );
 
-CREATE INDEX idx_relevance_scores_user_id ON article_relevance_scores(user_id, relevance_score DESC);
+CREATE INDEX idx_relevance_scores_user_id ON article_relevance_scores(user_id);
 ```
+
+> **Both scores are always computed together** (at enrichment, then refreshed
+> nightly within `SMART_RESCORE_WINDOW_DAYS` by `cron_nightly_refresh` —
+> E16-S9). `scoring_mode` ('keyword' | 'smart') does NOT gate the computation:
+> it only selects which column drives the feed threshold filter + gravity
+> ranking. An active score that is NULL is treated exactly like cold-start
+> (0.5 baseline, threshold bypass). The legacy `relevance_score`/`scorer`/
+> `is_cold_start` columns were dropped in E16-S8: with TF-IDF gone, the column
+> identity *is* the method.
 
 ---
 
@@ -331,16 +344,18 @@ created (status = pending)
       → status = enriching  (committed in its own short transaction so
                              /stats can surface in-progress counts)
       → content extracted
-      → keywords extracted (salience set, never changes)
-      → relevance_score computed per user (frozen in classic mode;
-        smart mode re-scores the recent window nightly — E16-S3)
-      → embedding computed (E16-S2, both modes; NULL if the optional
-        embeddings extra is missing — Smart Match then falls back to
-        classic for that article)
+      → combined LLM call (summary + keywords; keywords skipped when the
+        LLM is off/failing — keyword extraction is LLM-only since E16-S8)
+      → embedding computed (E16-S2, local model; NULL if the optional
+        embeddings extra is missing)
+      → BOTH scores computed per user (E16-S8): keyword_score (NULL
+        without keywords) + smart_score (NULL without embedding);
+        articles in the rescore window are refreshed nightly — E16-S9
       → enriched_at set
       → status = enriched
   → article surfaced in feed if:
-      relevance_score > SCORE_THRESHOLD
+      active_score >= SCORE_THRESHOLD        -- active = scoring_mode column
+      OR active_cold_start OR active_score IS NULL
       OR random roll < RANDOM_SURFACE_RATE
   → impression recorded when shown
   → user swipes → feedback upserted → keyword_weights updated synchronously
@@ -355,7 +370,9 @@ the article back to 'pending' inline and increments `pipeline_runs.articles_fail
 ## Feed Query (conceptual)
 
 ```sql
--- Articles to surface for a given user
+-- Articles to surface for a given user. The "active" score column is
+-- ars.keyword_score or ars.smart_score depending on scoring_mode (E16-S9);
+-- both are projected so the PWA renders the two chips (E16-S10).
 SELECT
   a.id,
   a.title,
@@ -363,7 +380,8 @@ SELECT
   a.og_image_url,
   a.url,
   a.published_at,
-  ars.relevance_score
+  ars.keyword_score,
+  ars.smart_score
 FROM articles a
 JOIN sources s ON s.id = a.source_id
 JOIN article_relevance_scores ars ON ars.article_id = a.id
@@ -372,9 +390,10 @@ WHERE s.user_id     = :user_id
   AND a.status      = 'enriched'
   AND ai.article_id IS NULL          -- not yet seen
   AND (
-    ars.relevance_score > :threshold
+    <active_score> >= :threshold
+    OR <active_cold_start> OR <active_score> IS NULL
     OR random() < :random_surface_rate
   )
-ORDER BY ars.relevance_score DESC, a.published_at DESC
+ORDER BY <active_score> DESC, a.published_at DESC
 LIMIT :page_size;
 ```

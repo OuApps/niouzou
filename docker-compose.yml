@@ -130,7 +130,8 @@ services:
   # Single always-on service that:
   #   * exposes POST /run for the API's "Run now" admin trigger (E7-S16)
   #   * schedules fetch+enrich every CRON_FETCH_INTERVAL minutes via APScheduler
-  #   * schedules the daily keyword-weight refresh at CRON_REFRESH_WEIGHTS_HOUR
+  #   * schedules the nightly refresh (weights + dual-score rescore) at
+  #     CRON_NIGHTLY_REFRESH_HOUR (renamed in E16-S9)
   # The scheduler shares an asyncio.Lock with /run, so manual + scheduled runs
   # are mutually exclusive — replaces the three one-shot cron containers we had
   # before E8-S6.
@@ -141,7 +142,7 @@ services:
     environment:
       <<: *api-env
       CRON_FETCH_INTERVAL: ${CRON_FETCH_INTERVAL:-15}
-      CRON_REFRESH_WEIGHTS_HOUR: ${CRON_REFRESH_WEIGHTS_HOUR:-3}
+      CRON_NIGHTLY_REFRESH_HOUR: ${CRON_NIGHTLY_REFRESH_HOUR:-3}
       # The API forwards /admin/refresh here.
       REFRESH_WORKER_URL: http://worker:8001
     depends_on:

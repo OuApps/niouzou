@@ -101,8 +101,11 @@ Only returns articles not yet seen (no impression recorded).
 
 **Ranking formula (HN-style):**
 ```
-feed_rank = relevance_score / (age_in_hours + 2) ^ FEED_GRAVITY
+feed_rank = active_score / (age_in_hours + 2) ^ FEED_GRAVITY
 ```
+- `active_score` — `keyword_score` or `smart_score` depending on the
+  instance-wide `scoring_mode` (E16-S9). A cold or NULL active score ranks
+  with a synthetic `0.5` baseline.
 - `age_in_hours` — hours since `published_at`
 - `FEED_GRAVITY` — env var, default `1.5`. Higher = recent articles surface faster. Lower = relevance dominates.
 
@@ -133,10 +136,12 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
         "name": "The Pragmatic Engineer"
       },
       "published_at": "2024-01-15T10:30:00Z",
-      "relevance_score": 0.87,
-      "scorer": "ai_keyword",
+      "keyword_score": 0.87,
+      "keyword_cold_start": false,
+      "smart_score": 0.91,
+      "smart_cold_start": false,
+      "active_method": "keyword",
       "enrichment_model": "google/gemma-4-28b",
-      "is_cold_start": false,
       "keywords": ["rust", "memory safety", "c++"],
       "is_premium": false,
       "reaction": "none",
@@ -151,10 +156,16 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 ```
 
 > `next_cursor` is null when there are no more articles.
-> Cursor encodes the last article's `relevance_score` + `id` to ensure stable pagination.
-> `scorer` is `"tfidf"` or `"ai_keyword"`; null for legacy rows written before the scorer column existed.
-> `enrichment_model` (E10-S2) is the OpenRouter model id used on the AI success path (e.g. `"google/gemma-4-28b"`); null on TF-IDF (native or fallback) and on pre-E10-S2 rows. Same field appears on `GET /saved` and `GET /explore/*`.
-> `is_cold_start` (E10-S4) is per-article and per-user: `true` when none of the article's keywords has a row in the user's `keyword_weights`. Cold articles pass through `score_threshold` unconditionally and are ranked as if their score was `0.5` (between bona-fide good and bad articles). The PWA renders `New` instead of the percentage on the score badge. Demoted nightly by `cron_refresh_weights` once a feedback adds a weight on any of the keywords. Distinct from the per-user `cold_start` flag below.
+> Cursor encodes the last article's `feed_rank` + `id` to ensure stable pagination.
+> **E16-S8/S9/S10** — every row carries BOTH persisted scores. `keyword_score`
+> is null when the article has no keywords (LLM unavailable at enrichment —
+> keyword extraction is LLM-only); `smart_score` is null when it has no
+> embedding. `active_method` (`"keyword"` | `"smart"`, per the instance-wide
+> `scoring_mode`) says which score drove the threshold filter and the ranking
+> for this response — the PWA highlights that chip. The legacy
+> `relevance_score`/`scorer`/`is_cold_start` fields are gone.
+> `enrichment_model` (E10-S2) is the OpenRouter model id used on the AI success path (e.g. `"google/gemma-4-28b"`); null when the LLM was unavailable and on pre-E10-S2 rows. Same field appears on `GET /saved` and `GET /explore/*`.
+> `keyword_cold_start` (E10-S4 semantics) is per-article and per-user: `true` when none of the article's keywords has a row in the user's `keyword_weights`. `smart_cold_start` is `true` while the user has no positive feedback. A cold (or NULL) **active** score passes through `score_threshold` unconditionally and ranks as if it were `0.5`; the PWA renders `–` instead of the percentage on that chip. The keyword flag is demoted nightly by `cron_nightly_refresh` once a feedback adds a weight on any of the keywords. Distinct from the per-user `cold_start` flag below.
 > `keywords` is sorted by salience desc; empty array when the article has none.
 > `cold_start` (response root, distinct from `is_cold_start` per article) is `true` while the user has fewer than `COLD_START_THRESHOLD` feedbacks (default `10`) — in that mode `SCORE_THRESHOLD` (and any `min_score` override) is ignored so the feed isn't empty on day one. The PWA can use this to show a "keep swiping to personalise your feed" hint.
 > **E9-S1** — `reaction`, `is_saved`, `read_full_article` reflect the user's
@@ -238,8 +249,11 @@ Returns full article details. Called when user taps to expand an article before 
   },
   "published_at": "2024-01-15T10:30:00Z",
   "enriched_at": "2024-01-15T10:35:00Z",
-  "relevance_score": 0.87,
-  "scorer": "ai_keyword",
+  "keyword_score": 0.87,
+  "keyword_cold_start": false,
+  "smart_score": 0.91,
+  "smart_cold_start": false,
+  "active_method": "keyword",
   "keywords": ["rust", "memory safety", "c++"],
   "is_premium": false,
   "reaction": "like",
@@ -260,39 +274,27 @@ Returns full article details. Called when user taps to expand an article before 
 ---
 
 ### GET /articles/{id}/score-debug
-**E10-S2** — Explains how the article's `relevance_score` was computed for
-the current user. Used by the score-badge bottom sheet in the PWA. Cross-user
-access returns `403` (never leaks another user's `keyword_weights`).
+**E10-S2, dual since E16-S10** — Explains how BOTH scores were computed for
+the current user: the keyword section (article keywords × learned weights)
+and the Smart Match section (k-NN neighbours + pinned boost) are always
+returned together, whatever the active mode. Used by the score-badge bottom
+sheet in the PWA. Cross-user access returns `403` (never leaks another
+user's `keyword_weights`).
 
 **Response `200`**
 ```json
 {
-  "relevance_score": 0.74,
-  "scorer": "ai_keyword",
+  "keyword_score": 0.74,
+  "keyword_cold_start": false,
+  "smart_score": 0.81,
+  "smart_cold_start": false,
+  "active_method": "keyword",
   "enrichment_model": "google/gemma-4-28b",
   "keywords": [
     { "term": "football", "weight": 1.2 },
     { "term": "fc barcelone", "weight": 0.8 },
     { "term": "ligue des champions", "weight": null }
-  ]
-}
-```
-
-> `keywords` is sorted by salience desc (same order as the article keyword tags).
-> `weight: null` means the user has no row in `keyword_weights` for that term yet
-> — semantically zero, but the PWA renders it as a dash to distinguish "unknown
-> to me" from an explicit neutral.
-> `enrichment_model` is null on TF-IDF (native or fallback).
-> `relevance_score` is null when the article was never scored for this user
-> (rare — happens for articles enriched before the user existed).
-
-**Smart Match articles (E16-S7).** When `scorer` is `"smart_match"`, three
-extra fields explain the k-NN score (they are `null` otherwise — the classic
-payload is unchanged):
-
-```json
-{
-  "scorer": "smart_match",
+  ],
   "liked_neighbors": [
     { "title": "Le XV de France domine l'Irlande", "similarity": 0.81,
       "value": 1.5, "age_days": 3.2, "contribution": 1.18 }
@@ -304,14 +306,22 @@ payload is unchanged):
 }
 ```
 
-> `liked_neighbors` / `disliked_neighbors` are the top-K feedbacked articles
-> most similar to this one, per polarity. `contribution = similarity × |value|
-> × decay(age_days)` — the row's share of S+/S−. `pins` lists the user's
-> pinned keywords present on the article (`contribution = weight × salience`,
-> added inside the sigmoid). Neighbours are recomputed at request time, so
-> they may differ marginally from those that produced the stored score if the
-> user feedbacked since. In Smart Match, the `keywords` weights are
-> indicative only — the PWA replaces the weight list with these sections.
+> `keywords` is sorted by salience desc (same order as the article keyword tags).
+> `weight: null` means the user has no row in `keyword_weights` for that term yet
+> — semantically zero, but the PWA renders it as a dash to distinguish "unknown
+> to me" from an explicit neutral.
+> `enrichment_model` is null when the LLM was unavailable at enrichment.
+> `keyword_score` is null when the article has no keywords; `smart_score` is
+> null when it has no embedding; both are null when the article was never
+> scored for this user (rare — articles enriched before the user existed).
+> `liked_neighbors` / `disliked_neighbors` (E16-S7) are the top-K feedbacked
+> articles most similar to this one, per polarity.
+> `contribution = similarity × |value| × decay(age_days)` — the row's share
+> of S+/S−. `pins` lists the user's pinned keywords present on the article
+> (`contribution = weight × salience`, added inside the sigmoid). Neighbours
+> are recomputed at request time, so they may differ marginally from those
+> that produced the stored score if the user feedbacked since. All three are
+> empty arrays when the article has no embedding.
 
 **Errors**
 - `403 forbidden` — article exists but belongs to another user's source.
@@ -347,8 +357,11 @@ Returns articles the user has saved (Watch Later). Ordered by feedback `updated_
         "name": "The Pragmatic Engineer"
       },
       "published_at": "2024-01-15T10:30:00Z",
-      "relevance_score": 0.87,
-      "scorer": "ai_keyword",
+      "keyword_score": 0.87,
+      "keyword_cold_start": false,
+      "smart_score": 0.91,
+      "smart_cold_start": false,
+      "active_method": "keyword",
       "saved_at": "2024-01-15T10:31:00Z",
       "keywords": ["rust", "memory safety", "c++"],
       "is_premium": false,
@@ -384,7 +397,7 @@ the user can scan the queue without consuming articles from their feed.
 |---|---|---|---|
 | `cursor` | string | No | Opaque cursor; keyset on `(seen_at, id)`. |
 | `limit` | integer | No | Default: `20`, max: `50`. |
-| `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Articles with `relevance_score < min_score` are dropped unless `is_cold_start = true`. Articles without a score row are also dropped when `min_score > 0`. |
+| `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Articles whose **active** score (per `scoring_mode`, E16-S9) is `< min_score` are dropped unless the active cold flag is `true` or the active score is NULL. Articles without a score row are dropped when `min_score > 0`. |
 | `source_ids` | UUID list | No | Repeatable query param (`?source_ids=A&source_ids=B`). Max 20 values. Each UUID must belong to the current user — an unknown / foreign UUID returns `422`. |
 
 **Response `200`**
@@ -401,8 +414,11 @@ the user can scan the queue without consuming articles from their feed.
       "url": "https://example.com/article",
       "source": { "id": "uuid", "name": "The Pragmatic Engineer" },
       "published_at": "2024-01-15T10:30:00Z",
-      "relevance_score": 0.87,
-      "scorer": "ai_keyword",
+      "keyword_score": 0.87,
+      "keyword_cold_start": false,
+      "smart_score": 0.91,
+      "smart_cold_start": false,
+      "active_method": "keyword",
       "keywords": ["rust"],
       "is_premium": false,
       "reaction": "like",
@@ -433,7 +449,7 @@ formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
 |---|---|---|---|
 | `cursor` | string | No | Opaque cursor; keyset on `(feed_rank, id)`. |
 | `limit` | integer | No | Default: `20`, max: `50`. |
-| `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Same semantic as on `/explore/history`: cold-start articles bypass the cap (consistent with E10-S4). |
+| `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Same semantic as on `/explore/history`: filters on the active score; cold-start / NULL active scores bypass the cap (consistent with E10-S4 + E16-S9). |
 | `source_ids` | UUID list | No | Repeatable query param (`?source_ids=A&source_ids=B`). Max 20 values. Each UUID must belong to the current user — an unknown / foreign UUID returns `422`. |
 
 **Response `200`**
@@ -457,7 +473,7 @@ formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
 
 > **E11-S1** — `min_score` and `source_ids` are independent filters. They
 > combine with `AND`: `?min_score=0.5&source_ids=A` returns articles from
-> source A with score ≥ 0.5 (or `is_cold_start`). The cursor format is
+> source A with active score ≥ 0.5 (or cold/NULL). The cursor format is
 > unchanged; the client must drop the cursor when filters change.
 
 ---
@@ -475,13 +491,13 @@ Returns the authenticated user's profile plus aggregate counts.
   "saved_count": 42,
   "keyword_count": 18,
   "source_count": 7,
-  "scoring_mode": "classic"
+  "scoring_mode": "keyword"
 }
 ```
 
 > `is_admin` is always `false` for now — the admin role is not yet implemented.
-> `scoring_mode` (E16-S5) is the instance-wide active engine
-> (`"classic"` | `"smart"`), read-only here — it is set via
+> `scoring_mode` (E16-S5/S9) is the instance-wide active-score selector
+> (`"keyword"` | `"smart"`), read-only here — it is set via
 > `PATCH /admin/config`. The Keywords screen uses it to show the
 > Smart Match banner.
 
@@ -626,7 +642,7 @@ Manually override the weight for a keyword and/or change its pin state.
 
 - Sending `weight` alone pins the keyword (`manually_overridden = true`).
 - Sending `{ "manually_overridden": false }` alone clears the pin without
-  touching the weight value — the next `cron_refresh_weights` run will
+  touching the weight value — the next `cron_nightly_refresh` run will
   recompute it from feedback.
 
 **Response `200`**
@@ -641,7 +657,7 @@ Manually override the weight for a keyword and/or change its pin state.
 }
 ```
 
-> Manual overrides are preserved by `cron_refresh_weights` —
+> Manual overrides are preserved by `cron_nightly_refresh` —
 > the cron skips recomputing weights when `manually_overridden = true`.
 
 ---
@@ -797,16 +813,16 @@ Sensitive fields (API keys) are masked.
   "openrouter_api_key": "sk-...a3f9",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
-  "cron_refresh_weights_hour": 3,
+  "cron_nightly_refresh_hour": 3,
   "score_threshold": 0.0,
-  "scoring_mode": "classic",
+  "scoring_mode": "keyword",
   "embeddings_done": 1240,
   "articles_total": 1312
 }
 ```
 
-> `scoring_mode` (E16-S4): `"classic"` (keyword weights, the default) or
-> `"smart"` (Smart Match — embedding k-NN). `embeddings_done` /
+> `scoring_mode` (E16-S4/S9): `"keyword"` (the default) or `"smart"` —
+> selects which persisted score drives the feed. `embeddings_done` /
 > `articles_total` are instance-wide counts so the admin can judge whether
 > an embedding backfill (`python -m niouzou.tools.backfill_embeddings`)
 > is worth running before switching.
@@ -827,7 +843,7 @@ the next cron run.
   "openrouter_api_key": "sk-...",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
-  "cron_refresh_weights_hour": 3,
+  "cron_nightly_refresh_hour": 3,
   "score_threshold": 0.6,
   "scoring_mode": "smart"
 }
@@ -835,14 +851,15 @@ the next cron run.
 
 > `openrouter_api_key` accepts the full secret key (or empty string to disable AI).
 > `cron_fetch_interval` is in minutes (1–1440).
-> `cron_refresh_weights_hour` is 0–23 (UTC hour).
+> `cron_nightly_refresh_hour` is 0–23 (UTC hour).
 > `score_threshold` is a float in `[0.0, 1.0]`; takes effect on the very next `GET /feed` request (no worker restart needed). The PWA admin screen edits it as a percentage (0–100 %) for parity with the score badge; the wire format stays float.
-> `scoring_mode` (E16-S4) accepts `"classic"` or `"smart"`. `"smart"` is
-> refused with **`422 validation_error`** (explicit message) when the
-> optional `embeddings` extra (sentence-transformers) is not installed or
-> the `vector` Postgres extension is missing. Switching affects *future*
-> scorings only (enrichment + nightly rescoring); existing scores are not
-> recomputed and the response returns in < 1 s.
+> `scoring_mode` (E16-S4/S9) accepts `"keyword"` or `"smart"` (`"classic"`
+> is tolerated as a legacy alias of `"keyword"`). `"smart"` is refused with
+> **`422 validation_error`** (explicit message) when the optional
+> `embeddings` extra (sentence-transformers) is not installed or the
+> `vector` Postgres extension is missing. Both scores are always computed —
+> switching only changes which one filters + ranks the feed, instantly, with
+> no rescore; the response returns in < 1 s.
 
 **Response `200`** — same shape as `GET /admin/config`.
 
@@ -959,7 +976,7 @@ or, if AI is disabled (no OpenRouter API key):
 ### POST /admin/compact-keywords/apply
 Apply a preview generated by the endpoint above. Rewrites
 `article_keywords` (with PK-collision pre-resolution), reruns
-`cron_refresh_weights`, and purges alias orphans from `keyword_weights`.
+`cron_nightly_refresh`, and purges alias orphans from `keyword_weights`.
 Held under the same lock as `POST /admin/refresh` so a pipeline run and an
 apply never race.
 

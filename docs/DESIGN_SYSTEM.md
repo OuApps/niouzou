@@ -174,7 +174,7 @@ The feed is a vertical scroll-snap container; each article fills the screen.
 ```
 ┌────────────────────────────────┐  ← 100dvh (never 100vh — see below)
 │  [og:image blurred bg]         │
-│  source badge      [score %]   │  sticky top
+│  source badge   [#62%] [◎71%]  │  sticky top — two score chips (E16-S10)
 ├────────────────────────────────┤
 │  [og:image hero, rounded]      │
 │  Title (24px / 600)            │
@@ -190,6 +190,27 @@ The feed is a vertical scroll-snap container; each article fills the screen.
 │  👎       🔖       👍          │  sticky bottom, above BottomNav
 └────────────────────────────────┘
 ```
+
+### Score chips (E16-S10)
+
+Every article card (feed slide + list rows) carries **two score chips** side
+by side, one per scoring method — `Hash` for keyword, `Radar` for Smart
+Match — so the user can compare the methods at a glance
+(`components/ScoreBadge.tsx`):
+
+- **Active chip** (the method selected by `scoring_mode`, given by the API's
+  `active_method`): solid accent pill — `background: var(--accent)`,
+  text `#0c1018`, same recipe as the legacy single badge.
+- **Inactive chip**: muted outline — `background: rgba(255,255,255,0.05)`,
+  `border: 1px solid rgba(255,255,255,0.08)`, text `var(--text-secondary)`
+  (the FilterChip inactive recipe).
+- **`–` state**: a chip shows `–` instead of a percentage when its method's
+  score is `null` (no keywords / no embedding for the article) **or** the
+  method is cold-start for this user — a neutral ~50 % would be misleading.
+- Both chips: pill radius 20px, font 11px/600, icon 11px, padding 3px 8px.
+- Tapping the chip group opens the Score breakdown modal, which shows the
+  **two sections** (keyword weights + Smart Match neighbours/pins), each
+  with its percentage; the active method carries a small `ACTIVE` tag.
 
 ### Viewport — `100dvh`, never `100vh`
 
@@ -278,7 +299,7 @@ layout, identical to Saved (`pwa/src/screens/Saved.tsx`):
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  [thumb 64x64]   source · score%                     │
+│  [thumb 64x64]   source · [#62%] [◎71%]              │
 │                  Title (line-clamp 2)                │
 │                  🔖 👍 👎 📖   (History only)        │
 │                  il y a 2h                           │
@@ -351,9 +372,8 @@ Library: **Lucide React** (`lucide-react`) for React components.
 | Profile | `User` |
 | RSS source | `Rss` |
 | Clock / time | `Clock` |
-| Score (TF-IDF) | `Hash` |
-| Score (AI keyword) | `Sparkles` |
-| Score (Smart Match) | `Radar` |
+| Score chip (keyword method) | `Hash` |
+| Score chip (Smart Match method) | `Radar` |
 | Edit keyword | `Pencil` |
 | Menu arrow | `ChevronRight` |
 | Sign out | `LogOut` |

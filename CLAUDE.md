@@ -14,25 +14,27 @@ Niouzou is a self-hostable, mobile-first news aggregator with a TikTok/Tinder-st
 | RSS | Miniflux (external Docker image, REST API only) |
 | LLM | OpenRouter (optional) |
 | Auth | JWT via python-jose + passlib |
-| Scoring | `scoring_mode = classic` (default): TFIDFScorer or AIKeywordScorer (if OPENROUTER_API_KEY). `smart` (E16): Smart Match embedding k-NN |
+| Scoring | Dual persisted scores (E16-S8): `keyword_score` (AI keywords × user weights, LLM-only — no TF-IDF fallback anymore) ⊕ `smart_score` (Smart Match embedding k-NN). `scoring_mode` (`keyword` default \| `smart`) only selects which one drives the feed |
 | Embeddings | Qwen3-Embedding-0.6B local via sentence-transformers (optional extra `embeddings`) — E16 |
 
 ## Concepts to never confuse
 
 - `keyword.salience` — how central a keyword is to an **article** (set once at enrichment)
 - `keyword_weight` — how much a keyword influences a specific **user's** feed (learned from feedback)
-- `article.relevance_score` — probability (0.0–1.0) the user will enjoy the article. Computed at enrichment; never recomputed in classic mode. In smart mode, articles from the last `SMART_RESCORE_WINDOW_DAYS` are re-scored nightly (E16-S3)
-- `article.embedding` — 1024-dim semantic vector (title + summary), set at enrichment in both modes; NULL → Smart Match falls back to classic for that article
+- `keyword_score` / `smart_score` — the TWO persisted probabilities (0.0–1.0) the user will enjoy the article, always computed together at enrichment whatever `scoring_mode` (E16-S8). NULL when the method has no input (no keywords / no embedding) → treated as cold by the feed (0.5 baseline, threshold bypass). Both refreshed nightly for articles in the last `SMART_RESCORE_WINDOW_DAYS` (E16-S9)
+- `scoring_mode` — does NOT gate the computation; it only selects which score filters + ranks the feed (`keyword` | `smart`; flipping is instant, no rescore). `classic` is a legacy alias of `keyword`
+- `article.embedding` — 1024-dim semantic vector (title + summary), set at enrichment whatever the mode; NULL → `smart_score` stays NULL for that article
 
 ## Key rules
 
 - Never put business logic in routers — routers call services
 - Never call DB directly from a router
-- `ScoringPipeline` is the only entry point for the classic scorers — never call them directly. Smart Match (`scoring/smart_match.py`, needs DB) is invoked only via `ScoringService.score_article_for_user`
+- `ScoringPipeline` is the only entry point for the keyword scorers — never call them directly. Smart Match (`scoring/smart_match.py`, needs DB) is invoked only via `ScoringService.score_article_for_user`, which computes and upserts BOTH scores on every pass (E16-S8)
+- Keyword extraction is **LLM-only** (E16-S8): no TF-IDF fallback in `cron_enrich`. `TFIDFScorer` survives for pipeline unit tests only
 - The embedding model is loaded only via `services/embedding_service.py` (lazy, worker process only). **Tests never load the real model** — inject fakes (`tests/fake_embeddings.py`; conftest has a tripwire)
 - `BlobBackground` component must appear on every PWA screen
 - All colors and styles from `docs/DESIGN_SYSTEM.md` — no improvising
-- AI (OpenRouter) is optional — system must work fully without it (Smart Match too: embeddings are local)
+- AI (OpenRouter) is optional — but since E16-S8 "works without AI" means the **smart pathway only** (embeddings are local). Without AI: no keywords → `keyword_score = NULL`, pins/Keywords screen/keyword chip become AI-only; articles still surface
 
 ## Before writing any code
 
@@ -51,8 +53,8 @@ api/niouzou/
   services/     ← all business logic
   models/       ← SQLAlchemy ORM
   schemas/      ← Pydantic
-  scoring/      ← BaseScorer, TFIDFScorer, AIKeywordScorer, ScoringPipeline, smart_match (E16)
-  crons/        ← fetch, enrich, refresh_weights
+  scoring/      ← BaseScorer, TFIDFScorer (tests only), AIKeywordScorer, ScoringPipeline, smart_match (E16)
+  crons/        ← fetch, enrich, nightly_refresh (ex refresh_weights, E16-S9)
   tools/        ← one-shot ops CLIs (backfill_embeddings)
   migrations/   ← Alembic
 
@@ -69,7 +71,7 @@ pwa/src/
 
 See `docs/ARCHITECTURE.md` for the full list.
 Required: `DATABASE_URL`, `MINIFLUX_URL`, `JWT_SECRET`
-Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`, `SCORING_MODE`, `SMART_*` (E16 knobs)
+Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`, `SCORING_MODE` (`keyword`|`smart`), `CRON_NIGHTLY_REFRESH_HOUR` (legacy `CRON_REFRESH_WEIGHTS_HOUR` still read as fallback), `SMART_*` (E16 knobs)
 
 The Miniflux API token is provisioned automatically from Miniflux's own DB
 (`api/niouzou/services/miniflux_bootstrap.py`) — no env var.

@@ -53,13 +53,14 @@ niouzou/
 │       ├── schemas/           ← Pydantic request/response schemas
 │       ├── scoring/
 │       │   ├── base.py        ← BaseScorer
-│       │   ├── tfidf.py       ← TFIDFScorer
+│       │   ├── tfidf.py       ← TFIDFScorer (pipeline unit tests only since E16-S8)
 │       │   ├── ai_keyword.py  ← AIKeywordScorer
-│       │   └── pipeline.py    ← ScoringPipeline
+│       │   ├── pipeline.py    ← ScoringPipeline
+│       │   └── smart_match.py ← Smart Match k-NN (E16, DB-backed)
 │       ├── crons/
 │       │   ├── fetch.py
 │       │   ├── enrich.py
-│       │   └── refresh_weights.py
+│       │   └── nightly_refresh.py  ← weights + dual-score rescore (ex refresh_weights, E16-S9)
 │       └── migrations/        ← Alembic
 └── pwa/
     ├── Dockerfile
@@ -147,13 +148,18 @@ class FeedService:
 
 ### Scoring
 - Always subclass `BaseScorer` for new *pure* scorers (no I/O)
-- `ScoringPipeline` is the only entry point for the classic scorers — never
-  call them directly from services
+- `ScoringPipeline` is the only entry point for the keyword scorers — never
+  call them directly from services. Since E16-S8 the pipeline is only used
+  for the pure relevance maths (Σ salience × weight → sigmoid); keyword
+  *extraction* comes from the combined enrichment LLM call (`TFIDFScorer`
+  survives for pipeline unit tests but is never wired into `cron_enrich`)
 - Scorer output is an unbounded float; normalisation to 0.0–1.0 happens in `ScoringPipeline`
 - **Exception (E16):** `scoring/smart_match.py` needs the DB (the user's
   feedback neighbours) so it lives outside `BaseScorer`. It is only ever
-  invoked through `ScoringService.score_article_for_user`, which branches on
-  `scoring_mode` — never call `smart_score` from a router or another service
+  invoked through `ScoringService.score_article_for_user`, which computes
+  and upserts BOTH `keyword_score` and `smart_score` on every pass (E16-S8,
+  whatever `scoring_mode`) — never call `smart_score` from a router or
+  another service
 - **Embeddings:** the model is loaded only via `services/embedding_service.py`
   (lazy singleton). Tests NEVER load the real model — inject a fake encoder
   (see `tests/fake_embeddings.py` and the conftest tripwire)
