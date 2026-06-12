@@ -342,6 +342,7 @@ score = sigmoid(β·raw + Σ_{pinned kw ∩ keywords(a)} weight·salience)
 | `SMART_BETA` | ❌ | Smart Match: sigmoid steepness on the raw k-NN signal (default: `0.5`) |
 | `SMART_DECAY_HALFLIFE_DAYS` | ❌ | Smart Match: feedback decay half-life in days (default: `90`) |
 | `SMART_RESCORE_WINDOW_DAYS` | ❌ | Smart Match: nightly rescoring window on `articles.created_at` (default: `14`) |
+| `EMBEDDING_NUM_THREADS` | ❌ | Hard cap on the embedding model's torch/OpenMP thread pool (worker only). Unset → auto-detect the cgroup CPU quota, capped at 4. Containers expose the *host* core count to torch (e.g. 48) while the real quota is a few vCPU; oversubscription was measured at ~180× slowdown (142s → 0.8s/embed). Set low (e.g. `3`) to also trim vCPU-seconds billed |
 | `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`) |
 
 ---

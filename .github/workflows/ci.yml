@@ -13,7 +13,10 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17
+        # pgvector image (not plain postgres:17): the E16 migrations run
+        # CREATE EXTENSION vector, which needs the extension control file
+        # shipped only by this image. Mirrors docker-compose.test.yml.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: niouzou
           POSTGRES_PASSWORD: niouzou

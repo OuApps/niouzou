@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # Nightly rescoring window — only articles ingested within the last N days
     # get their relevance score recomputed in smart mode (E16-S3).
     smart_rescore_window_days: int = 14
+    # Hard cap on the PyTorch/OpenMP thread pool used by the embedding model
+    # (E16). Containers (Railway) expose the *host* core count to torch
+    # (os.cpu_count → 48) while the cgroup quota is a handful of vCPU, so torch
+    # spins up far more threads than it has CPU time for — measured ~180×
+    # slowdown (142s vs 0.8s/embed at 48 vs 8 threads). None → auto-detect the
+    # cgroup CPU quota, capped low (4 threads already matches 8 in throughput
+    # — 0.70s vs 0.79s — so more only burns vCPU-seconds for no speed-up). Set
+    # explicitly to override (e.g. EMBEDDING_NUM_THREADS=3 to trim the bill).
+    embedding_num_threads: int | None = None
 
     # Max entries pulled from Miniflux per cron_fetch run.
     miniflux_fetch_batch_size: int = 100

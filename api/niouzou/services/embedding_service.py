@@ -26,6 +26,7 @@ process-wide fake singleton as a safety net.
 
 import importlib.util
 import logging
+import os
 from typing import Any, Protocol
 
 import numpy as np
@@ -39,6 +40,59 @@ EMBEDDING_DIM = 1024
 # The summary path (~100-200 words) is the normal case; this keeps the
 # fallback in the same length ballpark.
 _CONTENT_FALLBACK_CHARS = 1000
+
+# Default upper bound on the embedding thread pool when auto-detecting (see
+# Settings.embedding_num_threads). 4 threads already saturate this model's
+# throughput on the measured hardware; going higher only consumes vCPU.
+_DEFAULT_THREAD_CAP = 4
+
+
+def _cgroup_cpu_quota() -> int | None:
+    """Effective CPU count from the container's cgroup quota, or None.
+
+    Containers expose the *host* core count to ``os.cpu_count()`` (48 on
+    Railway) while the real allowance is the cgroup quota (e.g. 8 vCPU). torch
+    sizes its OpenMP pool off the host count and oversubscribes badly — the
+    whole reason embeddings crawled at ~65-142s instead of <1s.
+    """
+    # cgroup v2: "<quota> <period>" in microseconds, or "max <period>".
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as fh:
+            quota, period = fh.read().split()
+        if quota != "max":
+            return max(1, round(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    # cgroup v1: separate quota / period files.
+    try:
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fh:
+            quota_us = int(fh.read())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fh:
+            period_us = int(fh.read())
+        if quota_us > 0:
+            return max(1, round(quota_us / period_us))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _resolve_thread_count() -> int:
+    """How many threads the embedding model should use.
+
+    Explicit ``EMBEDDING_NUM_THREADS`` wins; otherwise auto-detect the cgroup
+    quota and cap it at ``_DEFAULT_THREAD_CAP`` so we never oversubscribe nor
+    burn vCPU-seconds for no throughput gain.
+    """
+    # Imported here, not at module top, so the web process never pays the
+    # config import cost just to import this module (the model never loads
+    # there). Cheap on the worker path.
+    from niouzou.config import get_settings
+
+    override = get_settings().embedding_num_threads
+    if override and override > 0:
+        return override
+    detected = _cgroup_cpu_quota() or os.cpu_count() or 1
+    return min(detected, _DEFAULT_THREAD_CAP)
 
 
 class Encoder(Protocol):
@@ -60,9 +114,19 @@ def embedding_available() -> bool:
 
 def _load_encoder() -> Encoder:
     """Load the real model. Kept module-level so tests can count calls."""
+    import torch
     from sentence_transformers import SentenceTransformer
 
-    logger.info("embedding: loading %s (first call in this process)", MODEL_ID)
+    # Cap the OpenMP/MKL pool BEFORE the model runs any op. Without this torch
+    # oversubscribes the container (host cores ≫ cgroup quota) and embeddings
+    # crawl (measured 142s → 0.8s/embed once capped).
+    threads = _resolve_thread_count()
+    torch.set_num_threads(threads)
+    logger.info(
+        "embedding: loading %s (first call in this process, torch_threads=%d)",
+        MODEL_ID,
+        threads,
+    )
     # torch_dtype="auto" honours the checkpoint dtype (bf16 for Qwen3) —
     # ~1.2 GB resident instead of ~2.4 GB in fp32. If the target CPU chokes
     # on half precision, an ONNX int8 export is the documented escape hatch.
