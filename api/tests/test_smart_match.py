@@ -18,7 +18,7 @@ from niouzou.services.scoring_service import ScoringService
 from tests.factories import add_keyword, make_article, make_source, make_user
 from tests.fake_embeddings import axis_vector, blend_vector
 
-PARAMS = SmartMatchParams()  # the documented defaults: k=5, λ=0.8, β=0.5, h=90
+PARAMS = SmartMatchParams()  # the documented defaults: k=5, λ=0.8, β=2.0, h=90
 
 
 async def _embedded_article(session, source, vec, *, title="A", age_days=None):

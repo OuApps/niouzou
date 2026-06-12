@@ -60,7 +60,10 @@ class SmartMatchParams:
 
     topk: int = 5
     lambda_: float = 0.8
-    beta: float = 0.5
+    # Sigmoid steepness. Default raised from 0.5 → 2.0 (E16 calibration): the
+    # raw k-NN signal is small on real embeddings, so a gentle β collapses
+    # every score onto ~0.5. See config.Settings.smart_beta.
+    beta: float = 2.0
     decay_halflife_days: float = 90.0
 
 

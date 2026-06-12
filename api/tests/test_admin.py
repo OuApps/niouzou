@@ -230,7 +230,7 @@ async def test_scoring_mode_defaults_to_keyword(db_session):
     # Smart knobs resolve to their documented defaults.
     assert cfg.smart_topk == 5
     assert cfg.smart_lambda == 0.8
-    assert cfg.smart_beta == 0.5
+    assert cfg.smart_beta == 2.0
     assert cfg.smart_decay_halflife_days == 90
     assert cfg.smart_rescore_window_days == 14
 

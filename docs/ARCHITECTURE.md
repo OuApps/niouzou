@@ -339,7 +339,7 @@ score = sigmoid(β·raw + Σ_{pinned kw ∩ keywords(a)} weight·salience)
 | `SCORING_MODE` | ❌ | Active-score selector: `keyword` (default) or `smart` (E16-S9). Both scores are always computed; this picks which one filters + ranks the feed. `classic` accepted as legacy alias of `keyword`. Overridable via `PATCH /admin/config`; `smart` requires the `embeddings` extra + pgvector |
 | `SMART_TOPK` | ❌ | Smart Match: k-NN neighbourhood size per polarity (default: `5`) |
 | `SMART_LAMBDA` | ❌ | Smart Match: weight of the dislike term, `raw = S+ − λ·S−` (default: `0.8`) |
-| `SMART_BETA` | ❌ | Smart Match: sigmoid steepness on the raw k-NN signal (default: `0.5`) |
+| `SMART_BETA` | ❌ | Smart Match: sigmoid steepness on the raw k-NN signal (default: `2.0`). Lower squashes scores onto ~0.5; raised from `0.5` so a threshold stays selective |
 | `SMART_DECAY_HALFLIFE_DAYS` | ❌ | Smart Match: feedback decay half-life in days (default: `90`) |
 | `SMART_RESCORE_WINDOW_DAYS` | ❌ | Smart Match: nightly rescoring window on `articles.created_at` (default: `14`) |
 | `EMBEDDING_NUM_THREADS` | ❌ | Hard cap on the embedding model's torch/OpenMP thread pool (worker only). Unset → auto-detect the cgroup CPU quota, capped at 4. Containers expose the *host* core count to torch (e.g. 48) while the real quota is a few vCPU; oversubscription was measured at ~180× slowdown (142s → 0.8s/embed). Set low (e.g. `3`) to also trim vCPU-seconds billed |

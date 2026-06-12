@@ -56,7 +56,10 @@ interface Filters {
   sourceIds: string[]
 }
 
-const DEFAULT_FILTERS: Filters = { scoreKind: 'gteThreshold', sourceIds: [] }
+// Explore "Nouveaux" is the unfiltered scan of the queue (explore_service:
+// no score gate), so the score chips default to "show everything" (≥ 0). The
+// "≥ seuil" chip stays available for users who want the feed's threshold.
+const DEFAULT_FILTERS: Filters = { scoreKind: 'gte0', sourceIds: [] }
 
 interface TabState {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -263,7 +266,7 @@ export const Explore = () => {
   )
 
   const hasActiveFilters =
-    active.filters.scoreKind !== 'gteThreshold' || active.filters.sourceIds.length > 0
+    active.filters.scoreKind !== 'gte0' || active.filters.sourceIds.length > 0
   // Disabled sources no longer feed articles — don't clutter the filter bar.
   const activeSources = sources?.filter((s) => s.active) ?? null
   // The sources row is suppressed entirely when the user has 0 or 1 source —

@@ -34,6 +34,7 @@ from niouzou.services.ranked_query import (
     build_ranked_query,
     clamp_limit,
     feed_rank_sql,
+    interleave_by_source,
     ranked_columns,
     row_to_article,
 )
@@ -141,15 +142,22 @@ class FeedService:
             has_more = len(rows) > page_size
             rows = rows[:page_size]
 
+        # Keyset cursor is the page's rank-minimum row — capture it BEFORE the
+        # anti-tunnel reorder shuffles the display order (E feed diversity), so
+        # the next page still continues strictly below this rank.
+        cursor_row = rows[-1] if rows else None
+        rows = interleave_by_source(rows)
+
         articles: list[FeedArticle] = []
         if pivot_article is not None:
             articles.append(pivot_article)
         articles.extend(row_to_article(r, scoring_mode) for r in rows)
 
         next_cursor: str | None = None
-        if has_more and rows:
-            last = rows[-1]
-            next_cursor = encode_cursor({"rank": last["feed_rank"], "id": last["id"]})
+        if has_more and cursor_row is not None:
+            next_cursor = encode_cursor(
+                {"rank": cursor_row["feed_rank"], "id": cursor_row["id"]}
+            )
 
         return FeedResponse(
             articles=articles,

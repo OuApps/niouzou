@@ -104,7 +104,7 @@ class EffectiveConfig:
     scoring_mode: str = "keyword"
     smart_topk: int = 5
     smart_lambda: float = 0.8
-    smart_beta: float = 0.5
+    smart_beta: float = 2.0
     smart_decay_halflife_days: int = 90
     smart_rescore_window_days: int = 14
 

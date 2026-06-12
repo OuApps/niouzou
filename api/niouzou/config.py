@@ -68,8 +68,13 @@ class Settings(BaseSettings):
     smart_topk: int = 5
     # Weight of the dislike term: raw = S+ − λ·S−.
     smart_lambda: float = 0.8
-    # Sigmoid steepness on the raw k-NN signal.
-    smart_beta: float = 0.5
+    # Sigmoid steepness on the raw k-NN signal. The raw signal (S+ − λ·S−)
+    # is small in magnitude on real article embeddings (cosines cluster in a
+    # narrow band), so a gentle β squashes every score onto ~0.5 — a measured
+    # prod distribution had median 0.509 / p90 0.572 / max 0.774, i.e. a 0.70
+    # threshold matched almost nothing. β=2.0 stretches the sigmoid so genuine
+    # matches reach 0.8–1.0 and a threshold becomes selective again.
+    smart_beta: float = 2.0
     # Feedback decay half-life: a like this old counts half (0.5^(age/halflife)).
     smart_decay_halflife_days: int = 90
     # Nightly rescoring window — only articles ingested within the last N days

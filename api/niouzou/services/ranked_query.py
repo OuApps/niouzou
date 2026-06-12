@@ -189,6 +189,33 @@ def row_to_article(row, active_method: str) -> FeedArticle:
     )
 
 
+def interleave_by_source(rows: list) -> list:
+    """Reorder a rank-sorted page to avoid long runs from a single source.
+
+    The feed ranks purely by ``feed_rank`` (gravity × score), so a source that
+    publishes a burst of recent articles clumps at the top — the user hits a
+    "tunnel" of one source. This greedy pass keeps the highest-ranked article
+    that *isn't* from the previous row's source, falling back to the plain
+    rank order only when every remaining row shares that source.
+
+    Display-only: the caller still derives the keyset cursor from the page's
+    rank-minimum row (untouched by this reorder), so pagination never overlaps
+    or skips. O(n²) but n ≤ MAX_LIMIT (50).
+    """
+    remaining = list(rows)  # already feed_rank DESC
+    result: list = []
+    last_source = None
+    while remaining:
+        pick = next(
+            (i for i, r in enumerate(remaining) if r["source_id"] != last_source),
+            0,  # all remaining share last_source — take the top-ranked one
+        )
+        row = remaining.pop(pick)
+        result.append(row)
+        last_source = row["source_id"]
+    return result
+
+
 def clamp_limit(limit: int | None) -> int:
     """Clamp a user-supplied page size to the configured range."""
     if limit is None:
