@@ -83,25 +83,47 @@ const EMPTY: TabState = {
 }
 
 // UX — opening an article navigates to the Feed (`/?start=`), which unmounts
-// Explore. This module-level snapshot survives that round-trip so coming back
-// restores the active tab, its filters, the already-loaded rows and the scroll
-// position instead of resetting to a fresh "Nouveaux" scan. Session-scoped:
-// cleared on a full page reload, and overwritten by pull-to-refresh's reset.
+// Explore. This snapshot survives that round-trip so coming back restores the
+// active tab, its filters, the already-loaded rows and the scroll position
+// instead of resetting to a fresh "Nouveaux" scan.
+//
+// It lives in `sessionStorage`, not a module variable: on mobile the back
+// gesture (swipe from the screen edge) frequently triggers a *full document
+// reload* of /explore rather than an SPA popstate, which would wipe any
+// in-memory state. The write happens during the reliable SPA unmount
+// (Explore → Feed), and the read happens on Explore boot — so restoration
+// works whether the user comes back via popstate or a hard reload.
+// Session-scoped: cleared when the tab closes, overwritten by pull-to-refresh.
+const SNAPSHOT_KEY = 'niouzou_explore_snapshot'
+
 interface ExploreSnapshot {
-  // Owner (user email) the snapshot was taken for. Logout doesn't reload the
-  // page, so without this a second user logging in on the same device would
-  // see the previous user's rows. Compared against the current email on
-  // restore; a mismatch is treated as "no snapshot".
+  // Owner (user email) the snapshot was taken for. A second user logging in on
+  // the same tab must not see the previous user's rows; a mismatch is treated
+  // as "no snapshot".
   owner: string | null
   mode: Mode
   tabs: Record<Mode, TabState>
   scrollTop: number
 }
-let snapshot: ExploreSnapshot | null = null
 
-// The snapshot is only usable when it belongs to the current user.
-const restorableSnapshot = (): ExploreSnapshot | null =>
-  snapshot && snapshot.owner === tokens.email() ? snapshot : null
+const readSnapshot = (): ExploreSnapshot | null => {
+  try {
+    const raw = sessionStorage.getItem(SNAPSHOT_KEY)
+    if (!raw) return null
+    const snap = JSON.parse(raw) as ExploreSnapshot
+    return snap.owner === tokens.email() ? snap : null
+  } catch {
+    return null
+  }
+}
+
+const writeSnapshot = (snap: ExploreSnapshot) => {
+  try {
+    sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snap))
+  } catch {
+    // Quota or serialization failure — non-critical, just lose restoration.
+  }
+}
 
 const FETCHERS: Record<Mode, (opts: ExploreOptions) => Promise<{
   articles: (FeedArticle | ExploreHistoryArticle)[]
@@ -133,9 +155,9 @@ const resolveMinScore = (
 
 export const Explore = () => {
   const navigate = useNavigate()
-  const [mode, setMode] = useState<Mode>(() => restorableSnapshot()?.mode ?? 'new')
+  const [mode, setMode] = useState<Mode>(() => readSnapshot()?.mode ?? 'new')
   const [tabs, setTabs] = useState<Record<Mode, TabState>>(
-    () => restorableSnapshot()?.tabs ?? { history: EMPTY, new: EMPTY },
+    () => readSnapshot()?.tabs ?? { history: EMPTY, new: EMPTY },
   )
   const loadingMoreRef = useRef(false)
   // The scroll container — read on unmount and re-applied on remount so the
@@ -161,17 +183,19 @@ export const Explore = () => {
     // useLayoutEffect runs after the cached rows are in the DOM but before
     // paint, so the jump isn't visible.
     const el = scrollRef.current
-    const restored = restorableSnapshot()
+    const restored = readSnapshot()
     if (restored && el) el.scrollTop = restored.scrollTop
     return () => {
       // `el` is the same container node for the component's whole life, so its
-      // scrollTop at cleanup time is the position the user is leaving on.
-      snapshot = {
+      // scrollTop at cleanup time is the position the user is leaving on. This
+      // cleanup runs on the SPA unmount when opening an article, so the
+      // snapshot is persisted before any subsequent reload.
+      writeSnapshot({
         owner: tokens.email(),
         mode: latest.current.mode,
         tabs: latest.current.tabs,
         scrollTop: el?.scrollTop ?? 0,
-      }
+      })
     }
   }, [])
 
