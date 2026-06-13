@@ -2708,14 +2708,19 @@ bouton retour), le composant se remonte à zéro : onglet `Nouveaux`, filtres
 par défaut, scroll en haut. L'utilisateur perd le contexte de navigation qu'il
 avait construit (filtres actifs + position dans la liste).
 
-**Solution** : Un snapshot au niveau module (hors composant, donc survit au
-démontage) capture l'état au démontage et le restaure au remontage — sans
-refetch, donc les rows déjà chargées et la position de scroll sont conservées.
+**Solution** : Un snapshot persisté en `sessionStorage` capture l'état au
+démontage et le restaure au remontage — sans refetch, donc les rows déjà
+chargées et la position de scroll sont conservées. `sessionStorage` (et non
+une variable module) car sur mobile le geste retour déclenche souvent un
+**rechargement complet** de `/explore` plutôt qu'un popstate SPA, ce qui
+effacerait tout état en mémoire. L'écriture a lieu au démontage SPA fiable
+(Explore → article), donc la restauration marche aussi bien via popstate que
+via reload.
 
 **Implémentation** (`pwa/src/screens/Explore.tsx`) :
 
-- `let snapshot: ExploreSnapshot | null` au niveau module — `{ owner, mode,
-  tabs, scrollTop }`.
+- `sessionStorage` clé `niouzou_explore_snapshot` → `{ owner, mode, tabs,
+  scrollTop }`, via helpers `readSnapshot()` / `writeSnapshot()`.
 - États `mode` / `tabs` initialisés en lazy depuis le snapshot (`useState(() =>
   restorableSnapshot()?.… )`).
 - `scrollRef` sur le conteneur scrollable. Un `useLayoutEffect([])` restaure
@@ -2736,9 +2741,11 @@ refetch, donc les rows déjà chargées et la position de scroll sont conservée
   article, puis revenir → onglet, filtres et position de scroll sont restaurés.
 - La liste n'est pas refetchée au retour (pas de spinner, pas de re-tri).
 - Le pull-to-refresh réinitialise bien filtres + scroll.
-- Après logout puis login d'un autre utilisateur, Explore repart propre (pas
-  de fuite des rows/filtres de l'utilisateur précédent).
-- Un rechargement complet de la page (F5) repart sur l'état par défaut.
+- Le retour fonctionne **que le geste retour soit un popstate SPA ou un
+  rechargement complet** de `/explore` (cas fréquent sur mobile).
+- Après logout puis login d'un autre utilisateur dans le même onglet, Explore
+  repart propre (pas de fuite des rows/filtres de l'utilisateur précédent).
+- La fermeture de l'onglet vide le snapshot (`sessionStorage`).
 
 ---
 

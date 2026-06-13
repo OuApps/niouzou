@@ -342,11 +342,15 @@ Sources :  [Toutes✓] [Le Monde] [HN] [Pragmatic Engineer] …
 - Filters are **per-tab** — switching Nouveaux ↔ Lus keeps each side's
   selection.
 - **State survives a round-trip to an article** (E11-S4): opening a row
-  unmounts Explore, so a module-level snapshot in `Explore.tsx` restores the
-  active tab, both tabs' filters, the already-loaded rows and the **scroll
+  unmounts Explore, so a `sessionStorage` snapshot in `Explore.tsx` restores
+  the active tab, both tabs' filters, the already-loaded rows and the **scroll
   position** when the user comes back — no fresh refetch, no jump to the top.
-  The snapshot is keyed to the current user's email (logout doesn't reload the
-  page) and is session-scoped (cleared on a full reload).
+  It lives in `sessionStorage` (not a module variable) because the mobile back
+  gesture often does a full document reload of `/explore` rather than an SPA
+  popstate, which would wipe in-memory state; the write happens on the SPA
+  unmount (Explore → article) so it survives either path. Keyed to the current
+  user's email (a second login in the same tab won't see the previous user's
+  rows).
 - Pull-to-refresh (`BlobBackground.onRefresh`) resets both tabs to the
   default (`Tous` / `Toutes`) before refetching.
 - Empty state with at least one non-default filter shows
