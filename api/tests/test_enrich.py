@@ -17,7 +17,10 @@ from niouzou.services.embedding_service import EmbeddingService
 from niouzou.services.enrichment_service import (
     EnrichmentService,
     _detect_language,
+    _parse_boilerplate_exact,
+    _parse_boilerplate_markers,
     _parse_enrichment,
+    _text_is_boilerplate,
 )
 from niouzou.services.scoring_service import ScoringService
 from tests.factories import make_article, make_source, make_user
@@ -86,6 +89,108 @@ def test_extract_content_falls_back_when_newspaper_text_empty(fake_newspaper):
     svc = EnrichmentService(openrouter_client=None)
     result = svc.extract_content("https://x/a", rss_fallback="plain rss")
     assert result.content == "plain rss"
+
+
+def test_extract_content_falls_back_on_boilerplate(fake_newspaper):
+    """E10-S6 — newspaper returns a paywall footer → RSS teaser used instead."""
+    fake_newspaper.text = _EBRA_BOILERPLATE
+    svc = EnrichmentService(openrouter_client=None)
+    result = svc.extract_content(
+        "https://x/a", rss_fallback="<p>Le vrai extrait gratuit de l'article.</p>"
+    )
+    assert result.content == "Le vrai extrait gratuit de l'article."
+
+
+def test_extract_content_keeps_short_non_boilerplate(fake_newspaper):
+    """A genuine short extraction is kept — no spurious fallback."""
+    fake_newspaper.text = "Un court article tout à fait légitime sur l'actualité locale."
+    svc = EnrichmentService(openrouter_client=None)
+    result = svc.extract_content("https://x/a", rss_fallback="<p>ignored</p>")
+    assert result.content == "Un court article tout à fait légitime sur l'actualité locale."
+
+
+# ── Boilerplate detection (E10-S6) ───────────────────────────────────────────
+
+# Realistic EBRA RGPD footer fragment — what newspaper4k scrapes on paywalled
+# « Le Progrès » articles. The source-specific marker ``dpo@ebra.fr`` is what
+# the built-in detector keys on.
+_EBRA_BOILERPLATE = (
+    "Le Progrès, en tant que responsable de traitement, met en œuvre des "
+    "traitements de données à caractère personnel pour la "
+    "fourniture de ses produits et services. Pour toute question relative à "
+    "vos données, vous pouvez contacter notre Délégué à "
+    "la Protection des Données personnelles (dpo@ebra.fr)."
+)
+
+# A genuine article *about* the RGPD/CNIL/cookies — contains the topic
+# vocabulary but none of the CMS/EBRA source-specific markers.
+_RGPD_ARTICLE = (
+    "La CNIL a infligé une amende record à une entreprise pour "
+    "non-respect du RGPD. Les données personnelles de millions "
+    "d'utilisateurs étaient collectées via des cookies sans "
+    "consentement valable, en violation de la protection des données."
+)
+
+_BUILTIN_MARKERS = (
+    ("dpo@ebra.fr",),
+    ("service relations clients", "abonnements et autres services souscrits"),
+    ("lprventesweb@leprogres.fr",),
+)
+
+
+def test_is_boilerplate_detects_ebra_via_marker():
+    svc = EnrichmentService(openrouter_client=None)
+    assert svc._is_boilerplate(_EBRA_BOILERPLATE) is True
+
+
+def test_is_boilerplate_no_false_positive_on_rgpd_article():
+    """Anti thematic false-positive: an article on RGPD/CNIL/cookies is kept."""
+    svc = EnrichmentService(openrouter_client=None)
+    assert svc._is_boilerplate(_RGPD_ARTICLE) is False
+
+
+def test_is_boilerplate_no_false_positive_on_short_real_extract():
+    svc = EnrichmentService(openrouter_client=None)
+    teaser = (
+        "Un incendie s'est déclaré mardi soir dans un entrepôt "
+        "de la zone industrielle. Les pompiers sont rapidement intervenus."
+    )
+    assert svc._is_boilerplate(teaser) is False
+
+
+def test_is_boilerplate_exact_match_normalizes_whitespace():
+    """Exact template matches even with \\xa0 / collapsed multiple spaces."""
+    template = "By using this site you accept our cookies policy."
+    exact = tuple(_parse_boilerplate_exact(template))
+    noisy = "By using   this site\nyou accept our    cookies policy."
+    assert _text_is_boilerplate(noisy, exact_templates=exact, marker_groups=()) is True
+    assert (
+        _text_is_boilerplate(
+            "An unrelated sentence.", exact_templates=exact, marker_groups=()
+        )
+        is False
+    )
+
+
+def test_is_boilerplate_marker_group_requires_all_substrings():
+    """A two-substring group only trips when BOTH co-occur."""
+    groups = (("service relations clients", "abonnements et autres services souscrits"),)
+    only_one = "Contactez notre Service Relations Clients pour toute demande."
+    both = (
+        "Service Relations Clients pour vos abonnements et autres services "
+        "souscrits auprès du journal."
+    )
+    assert _text_is_boilerplate(only_one, exact_templates=(), marker_groups=groups) is False
+    assert _text_is_boilerplate(both, exact_templates=(), marker_groups=groups) is True
+
+
+def test_parse_boilerplate_markers_splits_groups_and_substrings():
+    groups = _parse_boilerplate_markers("a&&b|||c|||  ")
+    assert groups == [("a", "b"), ("c",)]
+
+
+def test_parse_boilerplate_exact_normalizes_and_drops_empties():
+    assert _parse_boilerplate_exact("Foo Bar|||   |||baz") == ["Foo Bar", "baz"]
 
 
 # ── EnrichmentService.generate_enrichment ────────────────────────────────────

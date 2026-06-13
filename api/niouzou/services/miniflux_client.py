@@ -133,6 +133,19 @@ class MinifluxClient:
         # Defensive cap: never return more than asked, even if a page overshoots.
         return entries[:max_entries]
 
+    async def get_entry_content(self, entry_id: int) -> str | None:
+        """Return an entry's raw RSS ``content`` (HTML), or ``None`` if gone.
+
+        Used by the E10-S6 boilerplate backfill to recover the original RSS
+        teaser after ``article.content`` was overwritten with a paywall footer.
+        A purged/missing entry (404) yields ``None`` so the caller can skip it.
+        """
+        resp = await self._client.get(f"/v1/entries/{entry_id}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json().get("content") or None
+
     async def default_category_id(self) -> int:
         """Return a category id to file new feeds under.
 

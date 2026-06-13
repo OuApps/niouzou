@@ -164,6 +164,29 @@ class FeedService:
   (lazy singleton). Tests NEVER load the real model — inject a fake encoder
   (see `tests/fake_embeddings.py` and the conftest tripwire)
 
+### Content extraction & boilerplate (E10-S6)
+- `EnrichmentService.extract_content` falls back to the RSS body whenever
+  `newspaper4k` fails **or** returns recognised paywall/CGU boilerplate (a
+  site's RGPD footer or cookie-wall). Without this, a non-empty junk footer
+  would be stored as `content`, summarised by the LLM (hallucinated summary),
+  and dodge the `is_premium` length check.
+- The detector (`_is_boilerplate`) is **best-effort and extensible**, two
+  tiers: (1) exact normalized-text match against full known templates
+  (near-zero false positives); (2) marker groups — a group trips only when
+  **all** its substrings co-occur (case-insensitive). Markers must be
+  **source-specific** (emails like `dpo@ebra.fr`, CMS-only phrasings), never
+  generic privacy vocabulary (`RGPD`, `cookies`, `CNIL`) that a legitimate
+  article *about* that topic would contain.
+- Built-in lists live in `enrichment_service.py`; operators extend them
+  without a code change via `ENRICHMENT_BOILERPLATE_EXACT` (templates) and
+  `ENRICHMENT_BOILERPLATE_MARKERS` (groups) — `|||` separates templates/groups,
+  `&&` separates substrings within a group. **Add a new pattern here whenever
+  another paywall source surfaces.**
+- One-shot recovery of already-stored boilerplate rows:
+  `python -m niouzou.tools.backfill_boilerplate_content` (`--all` for the
+  whole corpus) — pulls the original RSS body back from Miniflux and re-runs
+  the normal enrichment.
+
 ---
 
 ## Frontend (React / TypeScript)

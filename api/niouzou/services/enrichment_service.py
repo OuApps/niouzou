@@ -23,11 +23,85 @@ import re
 import time
 from dataclasses import dataclass
 
+from niouzou.config import get_settings
 from niouzou.scoring.base import ScoredKeyword
 from niouzou.scoring.stopwords import is_meaningful_term
 from niouzou.services.openrouter_client import OpenRouterClient
 
 logger = logging.getLogger("niouzou.enrichment")
+
+# ── Boilerplate detection (E10-S6) ───────────────────────────────────────────
+# Some paywalled sources make ``newspaper4k`` return a *non-empty* string that
+# is not the article: the site's RGPD/CGU footer or a cookie-wall message. That
+# junk is long enough (~1kB) to dodge the ``is_premium`` length check, gets fed
+# to the LLM (→ hallucinated summary), and shows up verbatim in the PWA. We
+# detect it at two levels and treat a positive match as an extraction failure
+# so the RSS teaser is used instead.
+#
+# Tier 1 — exact templates: full normalized-text equality against known CMS
+# footers. Near-zero false positives (a real article is never word-for-word a
+# legal footer). Seeded best-effort; operators add verbatim templates via
+# ``ENRICHMENT_BOILERPLATE_EXACT`` when a new one slips through.
+#
+# Tier 2 — marker groups: a group matches only when ALL its substrings co-occur
+# (case-insensitive). To avoid flagging a genuine article *about* the
+# RGPD/CNIL/cookies, every marker is source-specific (an email or a CMS-only
+# phrasing), never generic privacy vocabulary. The built-ins below cover the
+# EBRA group footer observed on « Le Progrès » (present on 190/269 articles).
+_BUILTIN_BOILERPLATE_EXACT: tuple[str, ...] = ()
+_BUILTIN_BOILERPLATE_MARKERS: tuple[tuple[str, ...], ...] = (
+    ("dpo@ebra.fr",),
+    ("service relations clients", "abonnements et autres services souscrits"),
+    ("lprventesweb@leprogres.fr",),
+)
+
+
+def _normalize_boilerplate(text: str) -> str:
+    """Collapse non-breaking + multiple spaces and trim, for exact matching."""
+    return " ".join(text.replace("\xa0", " ").split()).strip()
+
+
+def _parse_boilerplate_exact(raw: str) -> list[str]:
+    """Parse the ``|||``-separated exact-template setting into normalized forms."""
+    return [
+        norm
+        for chunk in raw.split("|||")
+        if (norm := _normalize_boilerplate(chunk))
+    ]
+
+
+def _parse_boilerplate_markers(raw: str) -> list[tuple[str, ...]]:
+    """Parse ``|||``-separated groups, each a ``&&``-separated set of substrings.
+
+    Substrings are lowercased so matching is case-insensitive; empty groups and
+    empty substrings are dropped.
+    """
+    groups: list[tuple[str, ...]] = []
+    for raw_group in raw.split("|||"):
+        subs = tuple(
+            s for part in raw_group.split("&&") if (s := part.strip().lower())
+        )
+        if subs:
+            groups.append(subs)
+    return groups
+
+
+def _text_is_boilerplate(
+    text: str,
+    *,
+    exact_templates: tuple[str, ...],
+    marker_groups: tuple[tuple[str, ...], ...],
+) -> bool:
+    """True if ``text`` exactly matches a template OR fills a whole marker group."""
+    normalized = _normalize_boilerplate(text)
+    if not normalized:
+        return False
+    if normalized in exact_templates:
+        return True
+    haystack = normalized.lower()
+    return any(
+        all(sub in haystack for sub in group) for group in marker_groups
+    )
 
 # E10-S1 — LLM retry policy. The OpenRouter free models routinely return
 # transient errors (rate limit, timeout, malformed JSON) that succeed on the
@@ -154,6 +228,27 @@ class EnrichmentService:
         # ``set_system_prompt``. Stays sync-readable so ``generate_enrichment``
         # (called inside ``asyncio.to_thread``) doesn't need to await.
         self._system_prompt = _ENRICHMENT_SYSTEM_FALLBACK
+        # E10-S6 — boilerplate signatures: built-ins merged once with the
+        # operator-supplied config (parsed here so a paywall footer can be
+        # added without a code change). Read at construction so the lists are
+        # sync-available inside ``extract_content``.
+        settings = get_settings()
+        self._boilerplate_exact: tuple[str, ...] = (
+            *_BUILTIN_BOILERPLATE_EXACT,
+            *_parse_boilerplate_exact(settings.enrichment_boilerplate_exact),
+        )
+        self._boilerplate_markers: tuple[tuple[str, ...], ...] = (
+            *_BUILTIN_BOILERPLATE_MARKERS,
+            *_parse_boilerplate_markers(settings.enrichment_boilerplate_markers),
+        )
+
+    def _is_boilerplate(self, text: str) -> bool:
+        """True if ``text`` is a known paywall/CGU footer rather than article."""
+        return _text_is_boilerplate(
+            text,
+            exact_templates=self._boilerplate_exact,
+            marker_groups=self._boilerplate_markers,
+        )
 
     def set_system_prompt(self, body: str) -> None:
         self._system_prompt = body
@@ -191,7 +286,16 @@ class EnrichmentService:
             parsed.download()
             parsed.parse()
             text = (parsed.text or "").strip()
-            if text:
+            if text and self._is_boilerplate(text):
+                # E10-S6 — extraction "succeeded" but returned a paywall/CGU
+                # footer, not the article. Treat it as a failure so the RSS
+                # teaser is used: this both keeps junk out of the summary/LLM
+                # and shrinks ``content`` below ``premium_content_max_chars``
+                # so the 🔒 premium flag fires correctly.
+                logger.info(
+                    "enrich: newspaper returned boilerplate for %s, using RSS", url
+                )
+            elif text:
                 image = parsed.top_image or None
                 if not image:
                     # newspaper occasionally misses og:image even when the page has
@@ -201,7 +305,10 @@ class EnrichmentService:
                     content=text,
                     og_image_url=image,
                 )
-            logger.info("enrich: newspaper returned empty text for %s, using RSS", url)
+            else:
+                logger.info(
+                    "enrich: newspaper returned empty text for %s, using RSS", url
+                )
         except Exception as exc:  # noqa: BLE001 — any fetch/parse failure → RSS
             logger.info("enrich: content extraction failed for %s (%s), using RSS", url, exc)
 

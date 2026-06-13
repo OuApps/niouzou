@@ -45,6 +45,11 @@ Niouzou is a self-hostable, mobile-first news aggregator with a TikTok/Tinder-st
 5. Read `docs/DESIGN_SYSTEM.md` (if touching frontend)
 6. Read `docs/CONVENTIONS.md` for naming, structure, and patterns
 
+## After finishing dev work
+
+- If the work corresponds to a story in `docs/EPICS.md`, tick its checkbox (`[ ]` → `[x]`)
+- Update any other `/docs` file impacted by the change (`ARCHITECTURE.md`, `DATA_MODEL.md`, `API_SPEC.md`, `CONVENTIONS.md`, `DESIGN_SYSTEM.md`) so they stay in sync with the code
+
 ## Repo structure
 
 ```
@@ -98,6 +103,20 @@ The Miniflux API token is provisioned automatically from Miniflux's own DB
   `miniflux_bootstrap._cached_key` so `SourcesService` / `cron_fetch` never
   try to open the sibling `miniflux` database. Miniflux HTTP is mocked with
   respx — leave that pattern alone.
+
+## Deployed environment (Railway)
+
+When the maintainer asks about the "state of niouzou" or what's currently happening, this refers to the **deployed Railway environment**, not the local dev setup. The `railway` CLI (v5.12.1) is installed and authenticated — use it freely for read-only inspection, log review, and SQL debugging against the deployed DB.
+
+- Project `niouzou` (workspace `fregogui's Projects`), single environment: `production`
+- Services: `api`, `pwa`, `miniflux`, `refresh-worker`, plus a `Postgres` database (`ghcr.io/railwayapp-templates/postgres-ssl:18`)
+- Public URLs: api → `https://api-production-1eb1.up.railway.app`, pwa → `https://pwa-production-98c2.up.railway.app`, miniflux → `https://miniflux-production-a749.up.railway.app`
+- `railway status` — services, deployment status, DB volume usage
+- `railway logs --service <api|pwa|miniflux|refresh-worker>` — build/deploy/HTTP logs
+- `railway connect Postgres` — opens a `psql` shell on the production DB for ad-hoc SQL (e.g. inspecting `articles`, `keyword_weight`, scores)
+- `railway run --service <name> -- <cmd>` — run a one-off command with that service's env vars
+
+This is the **live production database** — `SELECT` queries are fine for debugging, but never run `UPDATE`/`DELETE`/DDL against it without explicit confirmation from the maintainer.
 
 ## Licence
 

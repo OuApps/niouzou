@@ -2378,6 +2378,135 @@ agrégats historiques.
 
 ---
 
+#### [x] E10-S6 — Détection du contenu boilerplate (paywall/CGU) & fallback RSS
+
+**Problème adressé** :
+
+Pour les sources fortement paywallées, ``newspaper4k`` renvoie parfois un
+texte **non-vide** mais qui n'est pas l'article : le footer RGPD/CGU du
+site, ou un message de cookie-wall. Ce texte poubelle :
+
+- est stocké dans ``article.content`` et affiché tel quel dans la PWA
+  (sous le résumé IA, ``FeedArticleSlide.tsx``) ;
+- est envoyé au LLM pour générer ``summary_executive`` → résumé
+  **halluciné**, cohérent avec le titre (présent dans le prompt) mais sans
+  rapport avec le contenu réellement fourni ;
+- échappe au détecteur ``is_premium`` (``content < premium_content_max_chars``
+  = 800) car le pavé RGPD fait ~1000 caractères → pas d'icône 🔒 alors que
+  le contenu est inutilisable.
+
+Constaté en prod sur la source **Le Progrès** (``edition-lyon-villeurbanne/rss``) :
+**190 / 269 articles (71 %)** ont exactement le même pavé RGPD de 1002
+caractères (texte fixe du groupe EBRA — ``"Le Progrès, en tant que
+responsable de traitement... Délégué à la Protection des Données
+personnelles (dpo@ebra.fr)..."``) comme ``content``, et les 269 ont un
+``summary_executive`` généré.
+
+Le ``<description>`` du flux RSS contient déjà, pour ces mêmes articles,
+l'extrait gratuit réel de la page (~150-300 caractères, identique au texte
+de la div ``preview``/``non-paywall2`` côté site) — mais il n'est utilisé
+comme ``rss_fallback`` que si ``newspaper4k`` renvoie un texte **vide** ou
+lève une exception (``enrichment_service.py:193-213``). Ici l'extraction
+« réussit » avec du contenu poubelle, donc le fallback RSS n'est jamais
+déclenché et l'extrait utile est jeté.
+
+**Décision produit** : ne pas couper la source — 29 % des articles « Le
+Progrès » ont un vrai contenu exploitable (galeries « En images », infos
+trafic...). On corrige l'extraction pour ces 71 % d'articles paywall.
+
+**Implémentation** :
+
+Détection à **deux niveaux**, pour limiter le risque de faux positif sur un
+article dont le *sujet* serait justement le RGPD, la CNIL ou les cookies
+(ex. un article sur une sanction CNIL ne doit pas être traité comme du
+boilerplate juste parce qu'il contient le mot « RGPD ») :
+
+1. **Match exact** (texte normalisé : ``\xa0``/espaces multiples collapsés,
+   trim) contre une liste de **templates complets connus** — couvre le pavé
+   RGPD EBRA (1002 car., identique sur 190/269 articles « Le Progrès ») et
+   le message cookie-wall. Risque de faux positif quasi nul : un article
+   réel n'est jamais mot-pour-mot identique à un footer CMS/RGPD.
+2. **Marqueurs spécifiques** (substrings, insensibles à la casse, **tous**
+   requis dans un même groupe) — filet de sécurité pour des variantes
+   tronquées du même template. On n'utilise **aucun mot générique lié au
+   thème** (``"RGPD"``, ``"protection des données"``, ``"cookies"``...) qui
+   pourrait apparaître dans un vrai article traitant de ce sujet. Seules des
+   chaînes **propres au template CMS/EBRA**, improbables dans une prose
+   journalistique : ``"dpo@ebra.fr"`` ; ou le groupe
+   (``"Service Relations Clients"`` ET ``"abonnements et autres services
+   souscrits"``) ; ou ``"lprventesweb@leprogres.fr"``.
+
+**Config extensible** (``config.py``) — deux nouveaux settings, chaînes
+avec séparateur ``|||`` (peu probable dans du texte FR, facile à saisir
+dans Railway), fusionnées avec les listes intégrées par défaut :
+
+```python
+# Pipe-separated (|||) extra boilerplate signatures (E10-S6), merged with
+# the built-in EBRA/cookie-wall lists in enrichment_service.py. Lets an
+# operator add a new paywall/CGU signature without a code change when one
+# slips through. `_exact` = full normalized-text match (near-zero false
+# positives). `_markers` = groups of substrings that must ALL co-occur —
+# avoid generic RGPD/cookies vocabulary that could appear in a legitimate
+# article about that topic; prefer source-specific strings (emails,
+# CMS-only phrasings). Groups within `_markers` are separated by `|||`,
+# substrings within a group by `&&`.
+enrichment_boilerplate_exact: str = ""
+enrichment_boilerplate_markers: str = ""
+```
+
+``_is_boilerplate(text: str) -> bool`` (dans ``enrichment_service.py``)
+combine les listes intégrées (codées en dur) avec ces deux settings parsés
+au chargement, et renvoie ``True`` si le texte matche un template exact OU
+si tous les marqueurs d'un même groupe sont présents.
+
+- Dans ``extract_content`` : si ``parsed.text`` est non-vide **mais**
+  ``_is_boilerplate(text)`` est vrai, traiter comme un échec d'extraction
+  (même branche que texte vide / exception) → fallback sur
+  ``rss_fallback`` via ``_strip_html``.
+- Effet de bord recherché : ``content`` devient l'extrait RSS
+  (~150-300 car.), donc ``< premium_content_max_chars`` (800) →
+  ``is_premium`` se déclenche correctement (icône 🔒 affichée).
+
+**Backfill** : nouveau script one-shot ``api/niouzou/tools/backfill_boilerplate_content.py``
+(même pattern que ``tools/backfill_embeddings.py``) — pour chaque article
+dont ``content`` matche ``_is_boilerplate``, ré-extraire via
+``EnrichmentService.extract_content`` (avec le ``content`` Miniflux brut
+comme ``rss_fallback``), puis ré-enrichir (``generate_enrichment``) et
+recalculer l'embedding. Limité aux articles dans
+``SMART_RESCORE_WINDOW_DAYS`` ou via un flag ``--all``.
+
+**Tests** :
+
+- ``_is_boilerplate`` détecte le pavé RGPD EBRA exact (match exact normalisé)
+  et la variante cookie-wall ; ne faux-positive pas sur un extrait d'article
+  réel court (ex. les contenus de 263-450 car. observés sur « Le Progrès »).
+- **Anti faux-positif thématique** : un article réel *sur* le RGPD/CNIL/les
+  cookies (texte journalistique contenant les mots « RGPD », « protection
+  des données », « cookies », « CNIL »... mais sans les marqueurs
+  CMS/EBRA et sans match exact) → ``_is_boilerplate`` renvoie ``False``,
+  le contenu est conservé tel quel.
+- Marqueurs config (``enrichment_boilerplate_markers``) : un groupe ne
+  matche que si **toutes** ses sous-chaînes sont présentes — un texte ne
+  contenant qu'une seule des deux ne déclenche pas le filtre.
+- ``extract_content`` : ``newspaper4k`` renvoie le pavé RGPD →
+  ``rss_fallback`` est utilisé, pas le pavé.
+- ``extract_content`` : ``newspaper4k`` renvoie un vrai texte court (non
+  boilerplate) → conservé tel quel (pas de fallback intempestif).
+- ``generate_enrichment`` reçoit l'extrait RSS comme ``content`` (test
+  avec fake LLM — vérifie que le bon texte est passé en input du prompt).
+
+**Acceptance criteria** :
+
+- Nouveaux articles « Le Progrès » paywallés : ``content`` = extrait RSS
+  (pas le pavé RGPD/cookie-wall), ``is_premium=true``,
+  ``summary_executive`` cohérent avec cet extrait.
+- Backfill exécuté sur les ~190 articles existants concernés.
+- ``docs/CONVENTIONS.md`` documente le détecteur de boilerplate et son
+  caractère best-effort/extensible (liste de patterns à enrichir si
+  d'autres sources paywall sont ajoutées).
+
+---
+
 ## EPIC 11 — Filtres Explore
 
 **Objectif** : Permettre à l'utilisateur de restreindre la vue Explore par score minimum et par source, via une barre de filtres permanente sous les tabs (2 lignes de chips scrollables).

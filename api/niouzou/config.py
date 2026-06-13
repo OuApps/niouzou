@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     # partial / premium (E7-S21). Paywalled feeds typically give a short
     # teaser; full articles are several kilobytes. Tune per deployment.
     premium_content_max_chars: int = 800
+    # Pipe-separated (|||) extra boilerplate signatures (E10-S6), merged with
+    # the built-in EBRA/cookie-wall lists in enrichment_service.py. Lets an
+    # operator add a new paywall/CGU signature without a code change when one
+    # slips through. `_exact` = full normalized-text match (near-zero false
+    # positives). `_markers` = groups of substrings that must ALL co-occur —
+    # avoid generic RGPD/cookies vocabulary that could appear in a legitimate
+    # article about that topic; prefer source-specific strings (emails,
+    # CMS-only phrasings). Groups within `_markers` are separated by `|||`,
+    # substrings within a group by `&&`.
+    enrichment_boilerplate_exact: str = ""
+    enrichment_boilerplate_markers: str = ""
     cron_fetch_interval: int = 15
     cron_enrich_interval: int = 30
     # UTC hour for the nightly refresh: keyword-weight recompute + rescore of
