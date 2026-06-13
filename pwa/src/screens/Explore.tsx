@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Compass } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
@@ -18,6 +18,7 @@ import {
   type ExploreHistoryArticle,
   type ExploreOptions,
 } from '../api'
+import { tokens } from '../api/http'
 import type { FeedArticle, SourceFull } from '../types/api'
 
 const PAGE_SIZE = 20
@@ -81,6 +82,27 @@ const EMPTY: TabState = {
   filters: DEFAULT_FILTERS,
 }
 
+// UX — opening an article navigates to the Feed (`/?start=`), which unmounts
+// Explore. This module-level snapshot survives that round-trip so coming back
+// restores the active tab, its filters, the already-loaded rows and the scroll
+// position instead of resetting to a fresh "Nouveaux" scan. Session-scoped:
+// cleared on a full page reload, and overwritten by pull-to-refresh's reset.
+interface ExploreSnapshot {
+  // Owner (user email) the snapshot was taken for. Logout doesn't reload the
+  // page, so without this a second user logging in on the same device would
+  // see the previous user's rows. Compared against the current email on
+  // restore; a mismatch is treated as "no snapshot".
+  owner: string | null
+  mode: Mode
+  tabs: Record<Mode, TabState>
+  scrollTop: number
+}
+let snapshot: ExploreSnapshot | null = null
+
+// The snapshot is only usable when it belongs to the current user.
+const restorableSnapshot = (): ExploreSnapshot | null =>
+  snapshot && snapshot.owner === tokens.email() ? snapshot : null
+
 const FETCHERS: Record<Mode, (opts: ExploreOptions) => Promise<{
   articles: (FeedArticle | ExploreHistoryArticle)[]
   next_cursor: string | null
@@ -111,12 +133,14 @@ const resolveMinScore = (
 
 export const Explore = () => {
   const navigate = useNavigate()
-  const [mode, setMode] = useState<Mode>('new')
-  const [tabs, setTabs] = useState<Record<Mode, TabState>>({
-    history: EMPTY,
-    new: EMPTY,
-  })
+  const [mode, setMode] = useState<Mode>(() => restorableSnapshot()?.mode ?? 'new')
+  const [tabs, setTabs] = useState<Record<Mode, TabState>>(
+    () => restorableSnapshot()?.tabs ?? { history: EMPTY, new: EMPTY },
+  )
   const loadingMoreRef = useRef(false)
+  // The scroll container — read on unmount and re-applied on remount so the
+  // user lands back where they left off after opening an article.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
 
   // Sources + score threshold are mount-time fetches kept on refs so the
   // chip bar renders even before /stats has resolved (chip simply hides).
@@ -124,6 +148,32 @@ export const Explore = () => {
   const [scoreThreshold, setScoreThreshold] = useState<number | null>(null)
 
   const active = tabs[mode]
+
+  // Keep the latest state reachable from the unmount cleanup below without
+  // re-running the effect (which would clobber the restored scroll position).
+  const latest = useRef({ mode, tabs })
+  useEffect(() => {
+    latest.current = { mode, tabs }
+  })
+
+  useLayoutEffect(() => {
+    // Restore the scroll position captured before navigating to an article.
+    // useLayoutEffect runs after the cached rows are in the DOM but before
+    // paint, so the jump isn't visible.
+    const el = scrollRef.current
+    const restored = restorableSnapshot()
+    if (restored && el) el.scrollTop = restored.scrollTop
+    return () => {
+      // `el` is the same container node for the component's whole life, so its
+      // scrollTop at cleanup time is the position the user is leaving on.
+      snapshot = {
+        owner: tokens.email(),
+        mode: latest.current.mode,
+        tabs: latest.current.tabs,
+        scrollTop: el?.scrollTop ?? 0,
+      }
+    }
+  }, [])
 
   const patch = useCallback((target: Mode, change: Partial<TabState>) => {
     setTabs((prev) => ({ ...prev, [target]: { ...prev[target], ...change } }))
@@ -275,7 +325,7 @@ export const Explore = () => {
   const showThresholdChip = scoreThreshold !== null && scoreThreshold > 0
 
   return (
-    <div className="flex flex-col h-dvh overflow-y-auto relative">
+    <div ref={scrollRef} className="flex flex-col h-dvh overflow-y-auto relative">
       <BlobBackground onRefresh={reload} />
 
       <header

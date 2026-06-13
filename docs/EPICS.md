@@ -2700,6 +2700,48 @@ Le empty state existant (sans filtres) reste inchangé.
 
 ---
 
+#### [x] E11-S4 — Frontend : conserver filtres + scroll au retour d'un article
+
+**Problème** : Taper un article depuis Explore navigue vers le Feed
+(`/?start=<id>`), ce qui **démonte** `Explore.tsx`. Au retour (tab Explore ou
+bouton retour), le composant se remonte à zéro : onglet `Nouveaux`, filtres
+par défaut, scroll en haut. L'utilisateur perd le contexte de navigation qu'il
+avait construit (filtres actifs + position dans la liste).
+
+**Solution** : Un snapshot au niveau module (hors composant, donc survit au
+démontage) capture l'état au démontage et le restaure au remontage — sans
+refetch, donc les rows déjà chargées et la position de scroll sont conservées.
+
+**Implémentation** (`pwa/src/screens/Explore.tsx`) :
+
+- `let snapshot: ExploreSnapshot | null` au niveau module — `{ owner, mode,
+  tabs, scrollTop }`.
+- États `mode` / `tabs` initialisés en lazy depuis le snapshot (`useState(() =>
+  restorableSnapshot()?.… )`).
+- `scrollRef` sur le conteneur scrollable. Un `useLayoutEffect([])` restaure
+  `scrollTop` au montage (avant paint, donc pas de saut visible) et écrit le
+  snapshot dans son cleanup de démontage. Le dernier `{ mode, tabs }` est tenu
+  dans un ref (`latest`) mis à jour via un `useEffect` passif pour rester
+  lisible depuis le cleanup sans relancer l'effet.
+- **Isolation par utilisateur** : `owner = tokens.email()`. Le logout ne
+  recharge pas la page, donc sans cette clé un second utilisateur verrait les
+  rows du précédent. `restorableSnapshot()` renvoie `null` si l'owner ne
+  correspond pas à l'email courant.
+- Le pull-to-refresh continue de réinitialiser les onglets ; le snapshot
+  reflètera l'état rafraîchi au prochain démontage.
+
+**Acceptance criteria** :
+
+- Depuis Explore, scroller, activer des filtres (score / sources), ouvrir un
+  article, puis revenir → onglet, filtres et position de scroll sont restaurés.
+- La liste n'est pas refetchée au retour (pas de spinner, pas de re-tri).
+- Le pull-to-refresh réinitialise bien filtres + scroll.
+- Après logout puis login d'un autre utilisateur, Explore repart propre (pas
+  de fuite des rows/filtres de l'utilisateur précédent).
+- Un rechargement complet de la page (F5) repart sur l'état par défaut.
+
+---
+
 ## EPIC 12 — Robustesse des keywords ⛔ REMPLACÉE PAR EPIC 16
 
 > **Statut (2026-06-10) : abandonnée avant implémentation, remplacée par EPIC 16 (Smart Match).**

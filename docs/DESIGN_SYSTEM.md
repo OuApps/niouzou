@@ -341,6 +341,12 @@ Sources :  [Toutes✓] [Le Monde] [HN] [Pragmatic Engineer] …
   is hidden when the user has 0 or 1 source.
 - Filters are **per-tab** — switching Nouveaux ↔ Lus keeps each side's
   selection.
+- **State survives a round-trip to an article** (E11-S4): opening a row
+  unmounts Explore, so a module-level snapshot in `Explore.tsx` restores the
+  active tab, both tabs' filters, the already-loaded rows and the **scroll
+  position** when the user comes back — no fresh refetch, no jump to the top.
+  The snapshot is keyed to the current user's email (logout doesn't reload the
+  page) and is session-scoped (cleared on a full reload).
 - Pull-to-refresh (`BlobBackground.onRefresh`) resets both tabs to the
   default (`Tous` / `Toutes`) before refetching.
 - Empty state with at least one non-default filter shows
