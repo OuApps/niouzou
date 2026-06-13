@@ -88,8 +88,13 @@ External:
 - E16 — the enrichment path also computes the article embedding. The model
   (~1.2 GB in fp16) loads lazily in the worker process on the first embed;
   budget ~1.5 GB extra RAM for the worker. The web API process never loads it.
-- One-shot ops CLI: `python -m niouzou.tools.backfill_embeddings` embeds
-  legacy articles (batch 50, newest first, idempotent/resumable).
+- One-shot ops CLIs:
+  - `python -m niouzou.tools.backfill_embeddings` embeds legacy articles
+    (batch 50, newest first, idempotent/resumable).
+  - `python -m niouzou.tools.backfill_boilerplate_content` (`--all` for the
+    whole corpus) re-enriches rows whose `content` is a paywall/CGU footer
+    (E10-S6) — recovers the original RSS body from Miniflux, re-runs the
+    normal enrichment, idempotent.
 
 ---
 
@@ -110,6 +115,8 @@ cron_enrich picks articles with status = "pending"
   Content extraction:
   → newspaper4k fetches and extracts clean article content from URL
   → fallback to RSS content if fetch fails (paywall, block, etc.)
+    OR returns recognised paywall/CGU boilerplate (E10-S6) — the RSS
+    teaser then becomes content, which also trips is_premium correctly
 
   Summarization + keyword extraction (LLM-only since E16-S8):
   if OPENROUTER_API_KEY is set:
