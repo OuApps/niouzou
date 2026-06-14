@@ -305,6 +305,10 @@ score = sigmoid(β·raw + Σ_{pinned kw ∩ keywords(a)} weight·salience)
   - **Startup reaper**: before the scheduler starts, `UPDATE articles SET status='pending' WHERE status='enriching'` recovers any article left mid-flight by a previous worker crash.
   - **LLM retry**: the enrichment service retries a failing LLM call twice (backoff 1s, 3s) before giving up — transient OpenRouter blips don't leave articles without keywords (`keyword_score = NULL`) needlessly.
   - The old "Feed may be stalled" heuristic (based on the latest article's `created_at`) is gone; staleness is now driven by `pipeline_runs.completed_at` vs `cron_fetch_interval`, so a healthy cron tick producing nothing new no longer triggers a false alert.
+- **OpenRouter cost tracking (E10-S7, 2026-06-14)**:
+  - Every successful enrichment chat completion (`cron_enrich`/refresh worker, via `enrichment_resources`) appends a row to `llm_usage_log` with the $ cost and token counts.
+  - The $ cost isn't on the chat-completion response in the installed OpenRouter SDK, so `OpenRouterClient` does a best-effort follow-up call to OpenRouter's `/generation` endpoint right after each completion; a lookup failure is logged at debug and never affects enrichment.
+  - `GET /stats` sums `llm_usage_log.cost_usd` over 1h/6h/24h in its global `llm_cost` block — shown in the System panel as "Coût OpenRouter". Admin keyword-compaction LLM calls are out of scope (not routed through `enrichment_resources`).
 - **Service count**: Reduced from 6 to 4 services (`api`, `pwa`, `refresh-worker`, PostgreSQL).
 
 ### Docker Compose (self-hosted)

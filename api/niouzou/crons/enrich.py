@@ -47,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from niouzou.config import get_settings
 from niouzou.db import session_scope
-from niouzou.models import Article, ArticleKeyword, Source
+from niouzou.models import Article, ArticleKeyword, LLMUsageLog, Source
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.scoring import ScoringPipeline
 from niouzou.scoring.smart_match import SmartMatchParams
@@ -186,7 +186,29 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
         )
     finally:
         if client is not None:
+            await _flush_usage_log(client)
             client.close()
+
+
+async def _flush_usage_log(client: OpenRouterClient) -> None:
+    """Persist this run's OpenRouter usage records to ``llm_usage_log`` (E10-S7).
+
+    One row per successful completion made through ``client`` during the
+    run — ``/stats`` sums ``cost_usd`` over 1h/6h/24h for the System panel.
+    """
+    if not client.usage_log:
+        return
+    async with session_scope() as session:
+        for record in client.usage_log:
+            session.add(
+                LLMUsageLog(
+                    model=record.model,
+                    cost_usd=record.cost_usd,
+                    prompt_tokens=record.prompt_tokens,
+                    completion_tokens=record.completion_tokens,
+                )
+            )
+    client.usage_log.clear()
 
 
 async def enrich_article(

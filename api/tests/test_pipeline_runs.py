@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from niouzou.models import Article, PipelineRun
+from niouzou.models import Article, LLMUsageLog, PipelineRun
 from niouzou.models.article import STATUS_ENRICHED, STATUS_ENRICHING, STATUS_PENDING
 from niouzou.models.pipeline_run import (
     STATUS_COMPLETED,
@@ -409,6 +409,60 @@ async def test_stats_pipeline_window_validation_rejects_unknown_value():
         assert resp.status_code == 422
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
+
+# ── /stats — OpenRouter cost aggregates (E10-S7) ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stats_llm_cost_windows_sum_by_age(db_session):
+    """Rows at various ages contribute to the windows that contain them."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    now = datetime.now(timezone.utc)
+    db_session.add_all(
+        [
+            LLMUsageLog(
+                created_at=now - timedelta(minutes=30),
+                model="m",
+                cost_usd=0.001,
+            ),
+            LLMUsageLog(
+                created_at=now - timedelta(hours=3),
+                model="m",
+                cost_usd=0.01,
+            ),
+            LLMUsageLog(
+                created_at=now - timedelta(hours=12),
+                model="m",
+                cost_usd=0.1,
+            ),
+            LLMUsageLog(
+                created_at=now - timedelta(hours=30),
+                model="m",
+                cost_usd=1.0,
+            ),
+        ]
+    )
+    await db_session.commit()
+    stats = await StatsService(db_session).get(user.id)
+    by_window = {w.window_hours: w.cost_usd for w in stats.llm_cost.windows}
+    assert by_window[1] == pytest.approx(0.001)
+    assert by_window[6] == pytest.approx(0.001 + 0.01)
+    assert by_window[24] == pytest.approx(0.001 + 0.01 + 0.1)
+
+
+@pytest.mark.asyncio
+async def test_stats_llm_cost_windows_zero_when_no_rows(db_session):
+    """Empty llm_usage_log → all windows at 0."""
+    from niouzou.services.stats_service import StatsService
+
+    user = await make_user(db_session)
+    await db_session.commit()
+    stats = await StatsService(db_session).get(user.id)
+    assert [w.cost_usd for w in stats.llm_cost.windows] == [0.0, 0.0, 0.0]
+    assert [w.window_hours for w in stats.llm_cost.windows] == [1, 6, 24]
 
 
 # ── Refresh worker — pipeline_runs lifecycle end-to-end ─────────────────────

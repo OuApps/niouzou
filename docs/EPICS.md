@@ -2507,6 +2507,82 @@ recalculer l'embedding. Limité aux articles dans
 
 ---
 
+#### [x] E10-S7 — System panel : suivi du coût OpenRouter (1h/6h/24h)
+
+**Problème adressé** :
+
+Aucun suivi de la facture OpenRouter — l'admin ne sait pas combien coûte
+l'enrichissement sans aller consulter le dashboard OpenRouter externe.
+
+**Décisions actées** :
+
+- Affichage **$ seul** (pas de tokens, pas de nombre d'appels) — un chiffre
+  simple par fenêtre.
+- Périmètre : appels LLM d'**enrichissement uniquement**
+  (``cron_enrich`` / refresh worker, via ``enrichment_resources``) — pas les
+  appels de compaction admin (E10-S3).
+- Les 3 fenêtres ``1h | 6h | 24h`` sont affichées **ensemble**, sans picker
+  (contrairement à E10-S5) — pas besoin de toggle pour 3 nombres.
+
+**Implémentation** :
+
+Le SDK OpenRouter installé (v0.9.1) ne renseigne pas ``usage.cost`` sur la
+réponse de chat completion (champ absent du modèle Pydantic ``ChatUsage``).
+Le coût réel est récupéré via un appel best-effort à l'endpoint
+``/generation`` (``client.generations.get_generation(id=response.id)`` →
+``data.total_cost``), juste après chaque ``complete()`` réussi
+(``OpenRouterClient._record_usage``). Un échec de ce lookup (404 transitoire
+pendant qu'OpenRouter finalise ses stats) est juste loggé en debug — n'affecte
+jamais l'enrichissement.
+
+Nouvelle table ``llm_usage_log`` (une ligne par completion réussie — modèle,
+``cost_usd``, ``prompt_tokens``, ``completion_tokens``, ``created_at``).
+``OpenRouterClient`` accumule les ``UsageRecord`` dans ``self.usage_log``
+pendant un run ; ``enrichment_resources`` (chokepoint unique du cycle de vie
+du client pour ``cron_enrich`` et le refresh worker) flush cette liste vers
+``llm_usage_log`` dans son ``finally``, après chaque run.
+
+``GET /stats`` gagne un bloc ``llm_cost.windows`` — somme de
+``llm_usage_log.cost_usd`` sur 1h/6h/24h via une seule requête à agrégation
+conditionnelle (``CASE WHEN ... THEN cost_usd END``, même pattern que
+``_pipeline_aggregates`` de E10-S5).
+
+**PWA — System panel** :
+
+Nouveau bloc sous les agrégats pipeline :
+
+```
+Coût OpenRouter
+1h · $0.0042   6h · $0.0218   24h · $0.0871
+```
+
+Affiché sans condition (même quand AI est désactivée — montre alors
+``$0`` partout). 4 décimales pour garder visibles les montants
+sub-centimes typiques d'un run d'enrichissement.
+
+**Tests** :
+
+- ``OpenRouterClient.complete()`` : un appel réussi avec
+  ``generations.get_generation`` qui répond → ``usage_log`` contient un
+  ``UsageRecord`` avec le bon ``cost_usd``/tokens.
+- ``OpenRouterClient.complete()`` : le lookup ``/generation`` lève une
+  exception → ``usage_log`` reste vide, ``complete()`` ne lève pas.
+- ``stats_service`` : des lignes ``llm_usage_log`` à différents âges (30 min,
+  3h, 12h, 30h) → ``stats.llm_cost.windows`` somme correctement pour
+  1h/6h/24h ; table vide → toutes les fenêtres à ``0``.
+
+**Acceptance criteria** :
+
+- Le System panel affiche le coût OpenRouter cumulé sur 1h/6h/24h,
+  rafraîchi à chaque chargement de ``/stats``.
+- Le coût ne couvre que les appels d'enrichissement (pas la compaction admin).
+- Un échec du lookup ``/generation`` n'interrompt jamais
+  ``cron_enrich``/le refresh worker.
+- Docs mises à jour : ``docs/DATA_MODEL.md`` (table ``llm_usage_log``),
+  ``docs/API_SPEC.md`` (champ ``llm_cost`` dans ``/stats``).
+
+---
+
 ## EPIC 11 — Filtres Explore
 
 **Objectif** : Permettre à l'utilisateur de restreindre la vue Explore par score minimum et par source, via une barre de filtres permanente sous les tabs (2 lignes de chips scrollables).

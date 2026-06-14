@@ -400,6 +400,14 @@ function aiStatus(enrichment: Stats['enrichment']): AiStatus {
   return new Date(last_error_at) >= new Date(last_enriched_at) ? 'failed' : 'working'
 }
 
+// E10-S7 — OpenRouter costs are typically fractions of a cent; 4 decimals
+// keeps small-but-nonzero amounts visible instead of rounding to "$0.00".
+function formatCost(usd: number): string {
+  if (usd === 0) return '$0'
+  if (usd < 0.0001) return '< $0.0001'
+  return `$${usd.toFixed(4)}`
+}
+
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`
   const mins = Math.floor(seconds / 60)
@@ -534,6 +542,9 @@ const SystemPanel = ({
         onSelect={onPipelineWindowChange}
         disabled={loading}
       />
+
+      {/* OpenRouter bill over 1h/6h/24h (E10-S7). */}
+      <LlmCostBlock windows={stats.llm_cost.windows} />
 
       {stale && (
         <Warning>
@@ -757,6 +768,35 @@ const PipelineAggregatesBlock = ({
           <span>~{formatDuration(aggregates.avg_s_per_article)}/article</span>
         </>
       )}
+    </div>
+  </div>
+)
+
+const LlmCostBlock = ({ windows }: { windows: Stats['llm_cost']['windows'] }) => (
+  <div
+    style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      paddingTop: 4,
+      borderTop: '1px solid rgba(255,255,255,0.06)',
+    }}
+  >
+    <span style={{ color: 'var(--text-tertiary)' }}>Coût OpenRouter</span>
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '4px 12px',
+        fontSize: 11,
+        color: 'var(--text-secondary)',
+      }}
+    >
+      {windows.map((w) => (
+        <span key={w.window_hours}>
+          {w.window_hours}h · {formatCost(w.cost_usd)}
+        </span>
+      ))}
     </div>
   </div>
 )

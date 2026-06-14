@@ -17,6 +17,7 @@ from niouzou.models import (
     ArticleKeyword,
     CompactionRun,
     KeywordWeight,
+    LLMUsageLog,
     PipelineRun,
     Source,
 )
@@ -27,6 +28,8 @@ from niouzou.schemas.stats import (
     ArticlesStats,
     EnrichmentStats,
     KeywordsStats,
+    LLMCostStats,
+    LLMCostWindow,
     PipelineAggregates,
     PipelineProgress,
     PipelineStats,
@@ -183,6 +186,9 @@ class StatsService:
         # ── Pipeline (global, E10-S1 + E10-S5 windowed aggregates) ────────
         pipeline = await self._latest_pipeline(pipeline_window)
 
+        # ── OpenRouter cost (global, E10-S7) ──────────────────────────────
+        llm_cost = await self._llm_cost_aggregates()
+
         return Stats(
             cron_fetch_interval_minutes=int(fetch_interval or 15),
             score_threshold=float(score_threshold or 0.0),
@@ -213,6 +219,43 @@ class StatsService:
                 last_error_at=last_err_row.enriched_at if last_err_row else None,
             ),
             pipeline=pipeline,
+            llm_cost=llm_cost,
+        )
+
+    async def _llm_cost_aggregates(self) -> LLMCostStats:
+        """Sum ``llm_usage_log.cost_usd`` over 1h/6h/24h (E10-S7).
+
+        All three windows in one query via conditional aggregation — cheaper
+        than three round trips, and the table is append-only/small (one row
+        per LLM call).
+        """
+        row = (
+            await self.session.execute(
+                select(
+                    *(
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (
+                                        LLMUsageLog.created_at
+                                        > func.now() - text(f"interval '{hours} hours'"),
+                                        LLMUsageLog.cost_usd,
+                                    )
+                                )
+                            ),
+                            0,
+                        ).label(f"cost_{hours}h")
+                        for hours in (1, 6, 24)
+                    )
+                )
+            )
+        ).one()
+        return LLMCostStats(
+            windows=[
+                LLMCostWindow(window_hours=1, cost_usd=float(row.cost_1h)),
+                LLMCostWindow(window_hours=6, cost_usd=float(row.cost_6h)),
+                LLMCostWindow(window_hours=24, cost_usd=float(row.cost_24h)),
+            ]
         )
 
     async def _latest_pipeline(self, window: str) -> PipelineStats:

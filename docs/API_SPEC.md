@@ -731,6 +731,13 @@ across the instance.
       "articles_failed": 5,
       "avg_s_per_article": 28.7
     }
+  },
+  "llm_cost": {
+    "windows": [
+      { "window_hours": 1, "cost_usd": 0.0042 },
+      { "window_hours": 6, "cost_usd": 0.0218 },
+      { "window_hours": 24, "cost_usd": 0.0871 }
+    ]
   }
 }
 ```
@@ -770,6 +777,14 @@ across the instance.
 > `compaction_runs`. `keywords.pending_compaction_id` is the most recent
 > preview that hasn't been applied or rejected, or null. These power the
 > Keywords section of the admin panel.
+
+> **E10-S7** — `llm_cost.windows` is the global OpenRouter bill summed over
+> 1h/6h/24h from `llm_usage_log`. One row is appended per successful
+> enrichment chat completion (cron_enrich / refresh worker); the $ amount is
+> read back via OpenRouter's `/generation` endpoint right after the
+> completion and is best-effort — a lookup failure just skips that row, it
+> never affects enrichment. Drives the System panel's "Coût OpenRouter"
+> display, shown unconditionally (all three windows together).
 
 > **E11-S1** — `score_threshold` is the effective `SCORE_THRESHOLD` (DB
 > override else env default), a float in `[0.0, 1.0]`. The PWA reads it

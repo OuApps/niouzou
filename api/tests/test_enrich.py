@@ -588,6 +588,7 @@ async def test_run_closes_openrouter_client(monkeypatch):
     class _ClosableClient:
         def __init__(self):
             self.closed = False
+            self.usage_log = []
 
         def close(self):
             self.closed = True

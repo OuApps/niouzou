@@ -304,6 +304,16 @@ export interface PipelineStats {
 // backend rejects anything else with 422.
 export type PipelineWindow = '1h' | '6h' | '24h'
 
+// E10-S7 — OpenRouter bill, summed over trailing windows.
+export interface LLMCostWindow {
+  window_hours: number
+  cost_usd: number
+}
+
+export interface LLMCostStats {
+  windows: LLMCostWindow[]
+}
+
 export interface Stats {
   // E8-S3: surfaced so the PWA can render "Next run" against the live
   // setting rather than a hardcoded constant.
@@ -336,6 +346,8 @@ export interface Stats {
   }
   // Global pipeline telemetry (E10-S1) — drives the System panel.
   pipeline: PipelineStats
+  // Global OpenRouter cost over 1h/6h/24h (E10-S7) — drives the System panel.
+  llm_cost: LLMCostStats
 }
 
 export function getStats(pipelineWindow: PipelineWindow = '6h'): Promise<Stats> {

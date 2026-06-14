@@ -100,6 +100,24 @@ class PipelineStats(BaseModel):
     aggregates: PipelineAggregates
 
 
+class LLMCostWindow(BaseModel):
+    """Total OpenRouter cost over a trailing window (E10-S7)."""
+
+    window_hours: int
+    cost_usd: float
+
+
+class LLMCostStats(BaseModel):
+    """OpenRouter bill over 1h/6h/24h, for the System panel (E10-S7).
+
+    Global — sums ``llm_usage_log``, populated by ``enrichment_resources``
+    (cron_enrich / refresh worker) regardless of which user's articles were
+    enriched.
+    """
+
+    windows: list[LLMCostWindow]
+
+
 class Stats(BaseModel):
     # Surfaced so the PWA can render the "Next run" countdown
     # against the live setting rather than a hardcoded number. Tracks
@@ -115,3 +133,6 @@ class Stats(BaseModel):
     enrichment: EnrichmentStats
     # Global pipeline telemetry — drives the PWA System panel (E10-S1).
     pipeline: PipelineStats
+    # Global OpenRouter cost over 1h/6h/24h — drives the PWA System panel
+    # (E10-S7).
+    llm_cost: LLMCostStats

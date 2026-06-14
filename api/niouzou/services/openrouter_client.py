@@ -15,7 +15,9 @@ Uses the official OpenRouter Python SDK (v0.9+).
 """
 
 import json
+import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import httpx
@@ -25,6 +27,8 @@ from niouzou.config import get_settings
 
 T = TypeVar("T")
 
+logger = logging.getLogger("niouzou.openrouter_client")
+
 
 class OpenRouterError(RuntimeError):
     """Raised when an OpenRouter call ultimately fails (transport or parsing).
@@ -32,6 +36,16 @@ class OpenRouterError(RuntimeError):
     The enrichment cron catches this and falls back to TF-IDF, so a flaky LLM
     never blocks the pipeline.
     """
+
+
+@dataclass(slots=True)
+class UsageRecord:
+    """Cost/token snapshot for one successful chat completion (E10-S7)."""
+
+    model: str
+    cost_usd: float
+    prompt_tokens: int
+    completion_tokens: int
 
 
 class OpenRouterClient:
@@ -50,6 +64,10 @@ class OpenRouterClient:
             x_open_router_title="Niouzou",
             timeout_ms=int(timeout * 1000),
         )
+        # E10-S7 — cost/token records for every successful completion made
+        # through this client. ``enrichment_resources`` flushes this to
+        # ``llm_usage_log`` once per cron run.
+        self.usage_log: list[UsageRecord] = []
 
     @classmethod
     def from_settings(cls) -> "OpenRouterClient | None":
@@ -111,11 +129,39 @@ class OpenRouterClient:
             content = response.choices[0].message.content
             if not isinstance(content, str):
                 raise OpenRouterError(f"Unexpected content type: {type(content)}")
+            self._record_usage(response.id)
             return content
         except OpenRouterError:
             raise
         except Exception as exc:
             raise OpenRouterError(f"OpenRouter call failed: {exc}") from exc
+
+    def _record_usage(self, generation_id: str) -> None:
+        """Best-effort: append the cost/tokens for ``generation_id`` to ``usage_log``.
+
+        The chat-completion response's ``usage`` field doesn't carry ``cost``
+        in this SDK version, so the actual $ cost is fetched via OpenRouter's
+        ``/generation`` endpoint. This is purely for the System panel's cost
+        display — a lookup failure (e.g. transient 404 while OpenRouter is
+        still finalising stats) must never affect enrichment.
+        """
+        try:
+            generation = self._client.generations.get_generation(id=generation_id)
+            data = generation.data
+            self.usage_log.append(
+                UsageRecord(
+                    model=self._model,
+                    cost_usd=data.total_cost or 0.0,
+                    prompt_tokens=data.tokens_prompt or 0,
+                    completion_tokens=data.tokens_completion or 0,
+                )
+            )
+        except Exception:
+            logger.debug(
+                "OpenRouter usage lookup failed for generation %s",
+                generation_id,
+                exc_info=True,
+            )
 
     def complete_json(
         self,
