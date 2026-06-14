@@ -450,7 +450,7 @@ const SCORING_ENGINES = [
   {
     id: 'smart' as const,
     label: 'Smart Match',
-    subtitle: 'Semantic similarity to your liked articles (beta)',
+    subtitle: 'Semantic similarity to your liked articles',
   },
 ]
 
