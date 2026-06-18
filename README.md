@@ -7,7 +7,7 @@ relevance score (0–100%) that updates from your likes and dislikes — your
 feed gets smarter as you swipe.
 
 [![CI](https://github.com/OuApps/niouzou/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OuApps/niouzou/actions/workflows/ci.yml)
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/OuApps/niouzou)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/niouzou?referralCode=bGgJYu)
 ![Licence](https://img.shields.io/badge/licence-Apache%202.0%20%2B%20Commons%20Clause-blue)
 
 ![Python](https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white)
@@ -21,12 +21,12 @@ feed gets smarter as you swipe.
 
 | | | | |
 |---|---|---|---|
-| ![Feed](docs/assets/screen_1.png) | ![Article detail](docs/assets/screen_2.png) | ![Saved](docs/assets/screen_3.png) | ![Keywords](docs/assets/screen_4.png) |
+| ![Feed](docs/assets/screen_1.png) | ![Explore & search](docs/assets/screen_2.png) | ![Saved](docs/assets/screen_3.png) | ![Keywords](docs/assets/screen_4.png) |
 
 - 🔒 **Your data, your server** — runs anywhere Docker runs
 - 🧠 **Learns from your swipes** — keyword weights you can inspect and edit
 - 📱 **Installable PWA** — swipe, save for later, no app store
-- ⚡ **AI optional** — TF-IDF works fine; add an OpenRouter key for LLM summaries
+- ⚡ **AI optional** — semantic Smart Match scoring runs on a local model; add an OpenRouter key for LLM summaries + keyword scoring
 
 ---
 
@@ -35,7 +35,7 @@ feed gets smarter as you swipe.
 You need Docker. That's it.
 
 ```bash
-git clone https://github.com/yourname/niouzou.git && cd niouzou
+git clone https://github.com/OuApps/niouzou.git && cd niouzou
 cp .env.example .env && $EDITOR .env       # set JWT_SECRET + POSTGRES_PASSWORD
 docker-compose up -d
 ```
@@ -44,11 +44,12 @@ Open **http://localhost:3000**, create your account, add an RSS feed, start
 swiping. Database migrations, the Miniflux admin user, and Miniflux's API key
 are all provisioned automatically on the first boot — no UI step.
 
-> **RAM note (Smart Match).** The optional Smart Match scoring engine embeds
-> articles with a local model (Qwen3-Embedding-0.6B) inside the refresh
-> worker — budget **~1.5 GB of additional RAM** for that container when you
-> enable it. The model loads lazily on the first enrichment, never in the
-> API process. Classic mode (the default) needs nothing extra.
+> **RAM note (Smart Match).** Smart Match embeds articles with a local model
+> (Qwen3-Embedding-0.6B) inside the refresh worker — budget **~1.5 GB of
+> additional RAM** for that container when the `embeddings` extra is installed.
+> The model loads lazily on the first enrichment, never in the API process, and
+> unloads between runs. Leave the extra out and the feed still works on keyword
+> scoring alone.
 >
 > **Upgrading an existing install to the pgvector image:** the Postgres
 > image changed from `postgres:17-alpine` to `pgvector/pgvector:pg17`
@@ -60,41 +61,28 @@ are all provisioned automatically on the first boot — no UI step.
 
 ## Deploy on Railway
 
-Click the button above. You need `JWT_SECRET` (use `openssl rand -hex 32`).
-`OPENROUTER_API_KEY` is optional and enables AI summaries. Niouzou provisions
-its Miniflux access token on its own (see "How Miniflux integration works"
-below) — no manual key step.
+Click the button above. It deploys the whole stack in one shot — **5 services**:
+`api`, `pwa`, `miniflux`, `refresh-worker` and `Postgres`. Railway generates
+`JWT_SECRET` for you at deploy time; the only optional input is
+`OPENROUTER_API_KEY` (enables LLM summaries + keyword scoring). Niouzou
+provisions its own Miniflux access token on first boot — no manual key step
+(see "How Miniflux integration works" below).
 
-**Services to create** (8 total):
-- 1× **Postgres** (Railway template)
-- 1× **miniflux** — Docker image `miniflux/miniflux:2.1.0`
-- 6× from this repo (`OuApps/niouzou`): `api`, `pwa`, `refresh-worker`,
-  `cron-fetch`, `cron-enrich`, `cron-refresh-weights`. Each must have its
-  **Root Directory** set in Settings → Source:
-  - `api`, `refresh-worker`, `cron-*` → `/api`
-  - `pwa` → `/pwa`
-
-  Each service uses a different `railway.toml`; set `RAILWAY_CONFIG_FILE` on
-  each to its config file (`refresh-worker.railway.toml`,
-  `cron-fetch.railway.toml`, `cron-enrich.railway.toml`,
-  `cron-refresh-weights.railway.toml`) so Railway picks the right start
-  command and schedule.
-
-**Database setup.** The API and Miniflux share **one** Postgres service but
-sit in **two databases** on it (the API's default DB and `miniflux`) so
-their `users` tables don't collide. The API's `preDeployCommand` creates
-the `miniflux` database automatically on first boot, then runs Alembic.
-You just need to point the Miniflux service's `DATABASE_URL` at it:
+**Shared Postgres, two databases.** The API and Miniflux share **one** Postgres
+service but sit in **two databases** on it (the API's default DB and `miniflux`)
+so their `users` tables don't collide. The API's `preDeployCommand` creates the
+`miniflux` database and runs Alembic on first boot; the template points
+Miniflux's `DATABASE_URL` at the `miniflux` database:
 
 ```
 postgres://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:${{Postgres.PGPORT}}/miniflux?sslmode=disable
 ```
 
-The API keeps Railway's default `${{Postgres.DATABASE_URL}}` — it points at
-the default database, which is where Alembic runs.
+The API keeps Railway's default `${{Postgres.DATABASE_URL}}` — it points at the
+default database, which is where Alembic runs.
 
 **How Miniflux integration works.** Because both apps share the same Postgres,
-the API/crons read (or create) a Miniflux access token directly from its
+the API/worker read (or create) a Miniflux access token directly from its
 `api_keys` table on first call — see `api/niouzou/services/miniflux_bootstrap.py`.
 The token is generated with `secrets.token_hex(32)`, INSERTed with
 `description='niouzou'` (`ON CONFLICT DO UPDATE`), and cached in memory.
@@ -104,10 +92,19 @@ Idempotent across deploys.
 
 ## How the scoring works
 
-1. Each article is enriched with weighted keywords (LLM or TF-IDF).
-2. Every like/dislike updates your personal keyword weights in real time.
-3. New articles are scored against your weights before they hit your feed.
-4. A small % of low-score articles surfaces randomly — no filter bubble.
+Niouzou keeps **two independent relevance scores** for every article, both
+computed when the article is ingested:
+
+1. **Keyword score** — an LLM enriches each article with weighted keywords.
+   Every like/dislike updates your personal keyword weights in real time, and
+   new articles are scored against them before they reach your feed.
+2. **Smart Match score** — a local embedding model places each article in
+   semantic space and scores it by similarity to what you've liked (k-NN). No
+   keywords, no AI key required.
+
+You choose which score drives the feed with `SCORING_MODE` (`keyword` — the
+default — or `smart`); flipping it is instant, no re-scoring. A small % of
+low-score articles surfaces randomly either way — no filter bubble.
 
 No black box. Inspect and edit every keyword weight in the Keywords tab.
 
@@ -123,6 +120,7 @@ The values you actually edit in `.env`:
 | `POSTGRES_PASSWORD` | `niouzou` | App database password — change it. |
 | `MINIFLUX_ADMIN_PASSWORD` | `adminpassword` | RSS admin password — change it. |
 | `OPENROUTER_API_KEY` | — | Set to enable LLM summaries + keyword extraction. |
+| `SCORING_MODE` | `keyword` | Which score drives the feed: `keyword` or `smart` (Smart Match). |
 | `SCORE_THRESHOLD` | `0.0` | Minimum relevance score required to surface an article. |
 | `RANDOM_SURFACE_RATE` | `0.05` | Share of random low-score articles (anti-bubble). |
 | `FEED_GRAVITY` | `1.5` | How fast older articles drop in ranking. |
@@ -165,13 +163,16 @@ Conscious trade-offs, not bugs — most are harmless for single-user self-hostin
 
 ## Roadmap
 
-See [`docs/EPICS.md`](docs/EPICS.md) for the full breakdown.
+**Shipped:** swipe feed with live keyword learning · installable PWA · RSS
+ingestion via Miniflux · LLM enrichment (summaries + keywords) · dual scoring
+(keyword weights + local Smart Match embeddings) · admin panel · full-text
+Explore search · per-user recommendation reset · one-click Railway deploy.
 
-- [x] EPIC 1–5 — PWA, ingestion, API, scoring, AI enrichment
-- [x] EPIC 6 — Packaging & open source
-- [x] EPIC 7 — PWA polish & follow-up
-- [ ] EPIC 8 — Admin panel
-- [ ] EPIC 9 — Article history
+**Exploring:** revocable sessions · re-scoring older articles for users who join
+late · richer source management.
+
+The detailed build history lives in the internal development log,
+[`docs/EPICS.md`](docs/EPICS.md) — a decision record, not required reading.
 
 ---
 
