@@ -574,7 +574,10 @@ Returns all RSS sources for the authenticated user.
       "name": "The Pragmatic Engineer",
       "url": "https://newsletter.pragmaticengineer.com/feed",
       "created_at": "2024-01-01T00:00:00Z",
-      "fetch_full_content": false
+      "fetch_full_content": false,
+      "active": true,
+      "article_count_total": 128,
+      "article_count_24h": 4
     }
   ]
 }
@@ -584,6 +587,10 @@ Returns all RSS sources for the authenticated user.
 > Miniflux fetches the full article HTML instead of relying on the RSS payload.
 > The flag lives on the shared Miniflux feed, so changes are visible to every
 > user subscribed to the same URL.
+>
+> `article_count_total` / `article_count_24h` (E17-S6) count every ingested
+> article for the source (status-agnostic, keyed on `created_at` for the 24h
+> window). Reported for paused sources too.
 
 ---
 

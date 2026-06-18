@@ -19,6 +19,9 @@ export interface SourceFull {
   created_at: string
   fetch_full_content: boolean
   active: boolean
+  // E17-S6 — article volume for this source (total + last 24h).
+  article_count_total: number
+  article_count_24h: number
 }
 
 // E16-S9 — the two persisted scoring methods; `scoring_mode` selects which

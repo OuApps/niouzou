@@ -1,5 +1,13 @@
 # Epics — Niouzou
 
+> **Internal development log / decision record.** This file is the project's
+> chronological build log — the design decisions, trade-offs and acceptance
+> notes behind each story. It is *not* the public roadmap: for what Niouzou does
+> today and where it's going, see the **Roadmap** section of the
+> [README](../README.md). Contributors only need the focused docs in this
+> folder (`ARCHITECTURE`, `API_SPEC`, `DATA_MODEL`, `CONVENTIONS`); this log is
+> here for history, not as required reading.
+
 ## Overview
 
 | Epic | Title | Depends on |
@@ -3902,6 +3910,7 @@ serveur, et remise à zéro du moteur de reco.
 - [x] **E17-S3** — Recherche textuelle dans la vue Explore
 - [x] **E17-S4** — Réduire la conso serveur Railway (décharge modèle entre runs + intervalle 15→30)
 - [x] **E17-S5** — Reset de l'historique de feedback (moteur de reco vierge)
+- [x] **E17-S6** — Retours round 2 : coût replié dans « Pipeline · Last », recherche (filtres masqués dès la frappe + reset au navigate sauf retour article), compteurs d'articles par source
 
 ---
 
@@ -4076,3 +4085,168 @@ lus restent lus). Reset par utilisateur.
 **Acceptance** : depuis Profile, l'utilisateur peut réinitialiser sa reco après confirmation ;
 le feed/scoring repart d'un état neutre ; tests sur le service de purge ; docs `DATA_MODEL.md` /
 `API_SPEC.md` mises à jour.
+
+---
+
+#### [x] E17-S6 — Retours round 2
+
+Trois retours d'usage tranchés après E17-S1/S3/S4 :
+
+1. **Coût OpenRouter replié dans « Pipeline · Last »** — plus de bloc séparé `LlmCostBlock`. Le
+   coût de la fenêtre **sélectionnée** (1h/6h/24h) s'affiche en ligne dans les agrégats pipeline ;
+   le même picker pilote tout. Backend inchangé (`/stats` renvoyait déjà les trois fenêtres).
+   `formatCost` bascule en `$X.XX` au-dessus de 1 $ (les centimes restent pour les fractions
+   réelles) — un coût de 2 $ lit « $2.00 » et non « 200.00 ¢ ». La capture du coût est exacte
+   (`cost_usd` = `total_cost` OpenRouter, en USD).
+2. **Recherche Explore** — la recherche **n'a jamais dépendu des filtres** (score/source) : `ILIKE`
+   sur titre + résumé de tous les articles enrichis. Les onglets + barre de filtres sont désormais
+   masqués **dès le 1er caractère** (`typing`), plus seulement à partir de `MIN_SEARCH_CHARS`. Le
+   champ de recherche est **réinitialisé au navigate** (bottom-nav), **sauf** au retour d'un article
+   ouvert (snapshot conservé uniquement via `openingArticleRef`).
+3. **Compteurs d'articles par source** — `GET /sources` renvoie `article_count_total` +
+   `article_count_24h` (une requête groupée, `created_at` pour la fenêtre 24h), affichés sur la
+   page Manage Sources pour les sources actives **et** en pause.
+
+> Conso Railway (suite E17-S4) : pas de levier utile côté Postgres — Railway facture l'usage réel,
+> le PG est petit au repos (~0,4 / 4,9 GB de volume), aucune RAM à « réserver » à réduire. Le gros
+> poste (modèle d'embedding du worker) est déjà déchargé entre les runs.
+
+**Acceptance** : coût lisible et piloté par le picker ; recherche découplée des filtres et champ
+remis à zéro hors retour-article ; volumétrie par source visible ; tests (`test_sources_service`,
+`test_explore_search`) verts ; `API_SPEC.md` à jour. ✅
+
+---
+
+## EPIC 18 — Open source launch (juin 2026)
+
+**Objectif** : rendre le repo présentable pour une publication open source — README à jour et
+juste, vrai déploiement Railway en **1-click**, clarification du statut du dev-log interne, et
+captures d'écran réelles de l'app. **Aucun changement de comportement applicatif** : doc,
+packaging et assets uniquement.
+
+**Contexte** : le code et l'archi sont prêts. Ce qui n'est pas prêt, c'est la *surface publique* :
+le README décrit un état révolu (TF-IDF, « Classic mode », 8 services Railway dont des `cron-*`
+qui n'existent plus), le bouton Railway pointe sur une URL de template inventée, le repo mélange
+deux noms (`yourname/niouzou` vs `OuApps/niouzou`), la « Roadmap » renvoie le lecteur vers un
+décision-log de 4000 lignes, et les screenshots datent.
+
+**Décisions actées (avec le mainteneur)** :
+- Repo public canonique : **`OuApps/niouzou`** (remplace toutes les occurrences `yourname/niouzou`).
+- Railway : **vrai 1-click via Template** généré depuis le projet prod (dashboard, côté mainteneur) ;
+  je câble tout le reste du repo.
+- Périmètre : **doc + Railway + dev-log + screenshots** (pas de fichiers de gouvernance
+  CONTRIBUTING/SECURITY/CoC pour ce lot).
+- `EPICS.md` : **conservé** (historique de valeur) mais étiqueté **dev-log interne** ; la roadmap
+  publique vit dans le README, pas ici.
+- Tags `E\d+-S\d+` dans le code : **laissés tels quels** (ancres de changelog, comme des refs de
+  tickets). `CLAUDE.md` à la racine : **conservé** (signal positif « contributeur-IA friendly »).
+
+### Stories
+
+- [ ] **E18-S1** — Réécriture du README (corriger les références périmées : TF-IDF, Classic, repo, scoring)
+- [ ] **E18-S2** — Déploiement Railway en 1-click (vrai Template + section réécrite, 5 services réels)
+- [ ] **E18-S3** — Statut du dev-log interne (header EPICS + roadmap publique) + politique tags/CLAUDE.md
+- [ ] **E18-S4** — Captures d'écran réelles de l'app (MCP Firefox, viewport mobile, login mainteneur)
+
+---
+
+#### [ ] E18-S1 — Réécriture du README
+
+**Problème adressé** :
+
+Le README décrit un état révolu et trompeur :
+- Mentionne **TF-IDF** comme fallback de scoring (« TF-IDF works fine », « LLM or TF-IDF »,
+  « run fully without AI (TF-IDF scoring) ») — or l'extraction est **LLM-only** depuis E16-S8 ;
+  sans IA il n'y a plus de keywords, pas de TF-IDF.
+- Parle de « **Classic mode** (the default) » — les modes sont `keyword` (défaut) / `smart`,
+  `classic` n'est qu'un alias legacy.
+- URL de clone `github.com/yourname/niouzou` incohérente avec les badges/bouton (`OuApps/niouzou`).
+- Commentaire identique à corriger dans `.env.example` (« run fully without AI (TF-IDF scoring) »).
+
+**Approche** :
+
+1. Remplacer toutes les occurrences `yourname/niouzou` → `OuApps/niouzou` (clone, liens).
+2. Réécrire le bloc « How the scoring works » et les bullets : double score persistant
+   `keyword_score` ⊕ `smart_score`, extraction **LLM-only**, IA optionnelle = « pathway smart
+   uniquement » (les embeddings sont locaux), pas de TF-IDF.
+3. Corriger la note RAM/Smart Match et le tableau Configuration si nécessaire (cohérence
+   `SCORING_MODE` `keyword|smart`).
+4. Corriger le commentaire `.env.example`.
+5. Remplacer la section « Roadmap » (lien direct vers EPICS) par une roadmap **publique concise**
+   (cf. E18-S3).
+
+**Acceptance** : aucune mention TF-IDF/Classic trompeuse dans README ni `.env.example` ; un seul
+repo canonique partout ; un lecteur comprend le scoring sans ouvrir `EPICS.md`.
+
+---
+
+#### [ ] E18-S2 — Déploiement Railway en 1-click (vrai Template)
+
+**Problème adressé** :
+
+La section « Deploy on Railway » est **périmée et cassée** :
+- Décrit **8 services** dont `cron-fetch`, `cron-enrich`, `cron-refresh-weights` (et des
+  `*.railway.toml` correspondants) qui **n'existent plus** — la prod tourne **5 services** :
+  `api`, `pwa`, `miniflux`, `refresh-worker`, `Postgres` (le worker fait fetch+enrich+refresh
+  nocturne en interne via APScheduler).
+- Le bouton « Deploy on Railway » pointe sur `railway.app/new/template?template=…github…`, une
+  **URL inventée** qui ne déploie rien.
+
+**Approche** (le vrai 1-click Railway = un **Template publié** généré depuis le projet prod) :
+
+1. *(repo, moi)* Auditer/nettoyer les `railway.toml` des 5 services réels pour qu'ils soient
+   reproductibles et auto-suffisants ; documenter les variables requises (`JWT_SECRET` →
+   `secret()` côté template, `OPENROUTER_API_KEY` optionnelle) et les références cross-service
+   (le `DATABASE_URL` de Miniflux pointe sur la base `miniflux`, l'API garde la base par défaut).
+2. *(dashboard, mainteneur)* Projet prod → Settings → **Generate Template from Project** →
+   copier l'**URL de template stable** et me la transmettre.
+3. *(repo, moi)* Pointer le bouton « Deploy on Railway » sur la vraie URL + réécrire la section
+   avec le **nombre de services correct (5)** et la note sur la base `miniflux` partagée.
+
+**Acceptance** : le bouton mène à un déploiement Railway réel ; `JWT_SECRET` auto-généré au
+déploiement ; la doc décrit l'état réel (5 services, pas de `cron-*`).
+
+**Statut** : étapes repo réalisables tout de suite ; le wiring final du bouton **attend l'URL de
+template** générée par le mainteneur au dashboard.
+
+---
+
+#### [ ] E18-S3 — Statut du dev-log interne + politique tags/CLAUDE.md
+
+**Problème adressé** :
+
+`docs/EPICS.md` (4000+ lignes, FR, logs de décision) est lié depuis le README sous « Roadmap » :
+un contributeur clique et tombe sur un décision-log interne. Ça brouille la surface publique.
+
+**Décision actée** :
+- **Garder** `EPICS.md` (historique de valeur) ; ajouter un **en-tête en haut du fichier** le
+  désignant comme *journal de développement interne / registre de décisions*, renvoyant vers le
+  README pour la roadmap publique.
+- Le README expose une **roadmap publique courte** (features livrées / à venir) au lieu du lien
+  direct (recoupe E18-S1).
+- Tags `E\d+-S\d+` dans le code : **laissés** (ancres de changelog ; churn git non justifié).
+- `CLAUDE.md` racine : **conservé**.
+
+**Acceptance** : la roadmap publique ne renvoie plus le lecteur vers le décision-log ; `EPICS.md`
+porte un en-tête « dev-log interne » sans ambiguïté ; aucun tag epic touché dans le code.
+
+---
+
+#### [ ] E18-S4 — Captures d'écran réelles de l'app
+
+**Problème adressé** :
+
+Le README affiche `docs/assets/screen_1..4.png`. Pour une publication soignée, on veut des
+captures **réelles, récentes et belles** des écrans clés (feed, détail d'article, saved/explore,
+keywords) sur l'app **déployée** (PWA Railway), en rendu **mobile-first**.
+
+**Approche** :
+- Piloter la PWA déployée (`https://pwa-production-98c2.up.railway.app`) via le **MCP Firefox**,
+  viewport mobile (≈ 390×844).
+- **Login mainteneur** : le mainteneur saisira son mot de passe au moment voulu (jamais stocké ni
+  loggé). Naviguer les écrans clés et capturer chacun.
+- Remplacer les `docs/assets/screen_*.png` par les nouvelles captures (mêmes chemins → README
+  inchangé côté liens).
+
+**Acceptance** : 4 captures réelles, propres et cohérentes (mêmes dimensions mobiles) dans
+`docs/assets/` ; le README rend les nouvelles images.

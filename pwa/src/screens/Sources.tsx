@@ -209,6 +209,15 @@ export const Sources = () => {
                     >
                       {source.url}
                     </p>
+                    {/* E17-S6 — article volume: total + last 24h. */}
+                    <p style={{ fontSize: 10, color: 'var(--text-secondary)', marginTop: 2 }}>
+                      {source.article_count_total} article{source.article_count_total === 1 ? '' : 's'}
+                      {source.article_count_24h > 0 && (
+                        <span style={{ color: 'var(--accent-text)' }}>
+                          {' · '}+{source.article_count_24h} / 24h
+                        </span>
+                      )}
+                    </p>
                   </div>
                   <label
                     className="flex items-center"

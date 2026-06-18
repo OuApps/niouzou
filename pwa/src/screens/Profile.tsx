@@ -552,11 +552,26 @@ function aiStatus(enrichment: Stats['enrichment']): AiStatus {
 
 // E17-S1 — OpenRouter costs are fractions of a cent per call, so we display in
 // cents: a 24h total reads as e.g. "7.42 ¢" instead of rounding to "$0".
+// E17-S6 — but above $1 the cents reading gets unwieldy ("200.00 ¢"), so we
+// switch to dollars there.
 function formatCost(usd: number): string {
+  if (usd >= 1) return `$${usd.toFixed(2)}`
   const cents = usd * 100
   if (cents === 0) return '0 ¢'
   if (cents < 0.01) return '< 0.01 ¢'
   return `${cents.toFixed(2)} ¢`
+}
+
+// E17-S6 — pick the LLM cost for the currently selected pipeline window so the
+// 1h/6h/24h picker drives both the aggregates and the bill in one place.
+const WINDOW_HOURS: Record<PipelineWindow, number> = { '1h': 1, '6h': 6, '24h': 24 }
+
+function costForWindow(
+  llmCost: Stats['llm_cost'],
+  window: PipelineWindow,
+): number | null {
+  const hours = WINDOW_HOURS[window]
+  return llmCost.windows.find((w) => w.window_hours === hours)?.cost_usd ?? null
 }
 
 function formatDuration(seconds: number): string {
@@ -686,16 +701,16 @@ const SystemPanel = ({
       )}
 
       {/* Windowed aggregates (E10-S5) — replaces the old single-run
-          summary so a 1-2 article cycle no longer dominates the panel. */}
+          summary so a 1-2 article cycle no longer dominates the panel. The
+          OpenRouter bill for the same window is folded in (E17-S6), driven by
+          the same 1h/6h/24h picker. */}
       <PipelineAggregatesBlock
         aggregates={pipeline.aggregates}
         selected={pipelineWindow}
         onSelect={onPipelineWindowChange}
         disabled={loading}
+        cost={costForWindow(stats.llm_cost, pipelineWindow)}
       />
-
-      {/* OpenRouter bill over 1h/6h/24h (E10-S7). */}
-      <LlmCostBlock windows={stats.llm_cost.windows} />
 
       {stale && (
         <Warning>
@@ -833,11 +848,14 @@ const PipelineAggregatesBlock = ({
   selected,
   onSelect,
   disabled,
+  cost,
 }: {
   aggregates: Stats['pipeline']['aggregates']
   selected: PipelineWindow
   onSelect: (next: PipelineWindow) => void
   disabled: boolean
+  // E17-S6 — OpenRouter bill for the selected window (null when unavailable).
+  cost: number | null
 }) => (
   <div
     style={{
@@ -919,35 +937,12 @@ const PipelineAggregatesBlock = ({
           <span>~{formatDuration(aggregates.avg_s_per_article)}/article</span>
         </>
       )}
-    </div>
-  </div>
-)
-
-const LlmCostBlock = ({ windows }: { windows: Stats['llm_cost']['windows'] }) => (
-  <div
-    style={{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 6,
-      paddingTop: 4,
-      borderTop: '1px solid rgba(255,255,255,0.06)',
-    }}
-  >
-    <span style={{ color: 'var(--text-tertiary)' }}>Coût OpenRouter</span>
-    <div
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '4px 12px',
-        fontSize: 11,
-        color: 'var(--text-secondary)',
-      }}
-    >
-      {windows.map((w) => (
-        <span key={w.window_hours}>
-          {w.window_hours}h · {formatCost(w.cost_usd)}
-        </span>
-      ))}
+      {cost !== null && (
+        <>
+          <span>·</span>
+          <span style={{ color: 'var(--accent-text)' }}>{formatCost(cost)}</span>
+        </>
+      )}
     </div>
   </div>
 )

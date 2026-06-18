@@ -173,10 +173,18 @@ export const Explore = () => {
   // Bumped to force the search effect to re-run on retry (same query string).
   const [searchNonce, setSearchNonce] = useState(0)
   const searching = searchQuery.trim().length >= MIN_SEARCH_CHARS
+  // E17-S6 — search ignores the Explore filters entirely (no score/source
+  // gate), so we hide the tabs + filter bar as soon as the user starts typing,
+  // not only once the query is long enough to actually run (MIN_SEARCH_CHARS).
+  const typing = searchQuery.trim().length > 0
   const loadingMoreRef = useRef(false)
   // The scroll container — read on unmount and re-applied on remount so the
   // user lands back where they left off after opening an article.
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  // E17-S6 — the search query is only carried across the unmount when the user
+  // is opening an article (so returning keeps them in their search). Leaving
+  // Explore any other way (bottom-nav to Feed/Saved) clears the field.
+  const openingArticleRef = useRef(false)
 
   // Sources + score threshold are mount-time fetches kept on refs so the
   // chip bar renders even before /stats has resolved (chip simply hides).
@@ -209,7 +217,9 @@ export const Explore = () => {
         mode: latest.current.mode,
         tabs: latest.current.tabs,
         scrollTop: el?.scrollTop ?? 0,
-        query: latest.current.query,
+        // Only preserve the search across an article round-trip; any other exit
+        // (bottom-nav) drops it so Explore reopens on a clean field.
+        query: openingArticleRef.current ? latest.current.query : undefined,
       })
     }
   }, [])
@@ -414,6 +424,9 @@ export const Explore = () => {
 
   const openArticle = useCallback(
     (id: string) => {
+      // Flag the impending unmount as an article open so the cleanup keeps the
+      // search query in the snapshot (see openingArticleRef).
+      openingArticleRef.current = true
       navigate(`/?start=${encodeURIComponent(id)}`)
     },
     [navigate],
@@ -447,10 +460,10 @@ export const Explore = () => {
           onChange={setSearchQuery}
           onClear={() => setSearchQuery('')}
         />
-        {!searching && <Tabs mode={mode} onChange={setMode} />}
+        {!typing && <Tabs mode={mode} onChange={setMode} />}
       </header>
 
-      {!searching && (
+      {!typing && (
       <div
         className="relative z-10"
         style={{ padding: '8px 0 4px', display: 'flex', flexDirection: 'column', gap: 6 }}

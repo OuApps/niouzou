@@ -41,6 +41,11 @@ class SourceOut(BaseModel):
     fetch_full_content: bool = False
     # E13-S5: derived from ``Source.deleted_at`` (None → active).
     active: bool = True
+    # E17-S6 — article volume for this source (total + last 24h), populated by
+    # SourcesService. Shown on the Manage Sources screen for active and paused
+    # sources alike.
+    article_count_total: int = 0
+    article_count_24h: int = 0
 
 
 class SourcesListResponse(BaseModel):

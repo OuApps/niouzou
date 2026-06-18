@@ -3,6 +3,8 @@
 Miniflux HTTP is mocked with respx; the DB is the real local Postgres.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 import respx
@@ -407,6 +409,30 @@ async def test_list_sources_surfaces_crawler_state(db_session):
     by_id = {s.id: s for s in listed.sources}
     assert by_id[s1.id].fetch_full_content is True
     assert by_id[s2.id].fetch_full_content is False
+
+
+@respx.mock
+async def test_list_sources_reports_article_counts(db_session):
+    # E17-S6 — total + last-24h article counts, on active and paused sources.
+    respx.get(f"{BASE}/v1/feeds").mock(return_value=httpx.Response(200, json=[]))
+    user = await make_user(db_session)
+    s1 = await make_source(db_session, user, feed_id=1, name="A")
+    s2 = await make_source(db_session, user, feed_id=2, name="B")
+    # s1: two fresh + one backdated past the 24h window → total 3, 24h 2.
+    await make_article(db_session, s1, title="fresh-1")
+    await make_article(db_session, s1, title="fresh-2")
+    old = await make_article(db_session, s1, title="old")
+    old.created_at = datetime.now(timezone.utc) - timedelta(hours=30)
+    # s2: no articles at all → both counts zero (absent from the grouped map).
+    await db_session.commit()
+
+    listed = await SourcesService(db_session).list_sources(user.id)
+
+    by_id = {s.id: s for s in listed.sources}
+    assert by_id[s1.id].article_count_total == 3
+    assert by_id[s1.id].article_count_24h == 2
+    assert by_id[s2.id].article_count_total == 0
+    assert by_id[s2.id].article_count_24h == 0
 
 
 @respx.mock

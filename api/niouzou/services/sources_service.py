@@ -2,16 +2,16 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.errors import bad_request, conflict, not_found
-from niouzou.models import Source
+from niouzou.models import Article, Source
 from niouzou.schemas.sources import SourceOut, SourcesListResponse
 from niouzou.services.miniflux_bootstrap import get_miniflux_token
 from niouzou.services.miniflux_client import MinifluxClient
@@ -47,13 +47,45 @@ class SourcesService:
         # feed list once and join client-side rather than N requests.
         crawler_by_feed = await self._crawler_state_map()
 
+        # E17-S6 — article volume per source (total + last 24h), one grouped
+        # query rather than N counts.
+        counts = await self._article_counts([s.id for s in rows])
+
         sources: list[SourceOut] = []
         for s in rows:
             out = SourceOut.model_validate(s)
             out.fetch_full_content = crawler_by_feed.get(s.miniflux_feed_id, False)
             out.active = s.deleted_at is None
+            total, last_24h = counts.get(s.id, (0, 0))
+            out.article_count_total = total
+            out.article_count_24h = last_24h
             sources.append(out)
         return SourcesListResponse(sources=sources)
+
+    async def _article_counts(
+        self, source_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, tuple[int, int]]:
+        """Map source id → (total articles, articles ingested in last 24h).
+
+        Counts every ingested article (status-agnostic) — a source's raw
+        output — keyed on ``created_at`` for the rolling window. Sources with
+        no articles are absent from the map; callers default to ``(0, 0)``.
+        """
+        if not source_ids:
+            return {}
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        rows = (
+            await self.session.execute(
+                select(
+                    Article.source_id,
+                    func.count().label("total"),
+                    func.count(case((Article.created_at > cutoff, 1))).label("last_24h"),
+                )
+                .where(Article.source_id.in_(source_ids))
+                .group_by(Article.source_id)
+            )
+        ).all()
+        return {r.source_id: (r.total, r.last_24h) for r in rows}
 
     async def _crawler_state_map(self) -> dict[int, bool]:
         """Map of Miniflux feed id → current ``crawler`` flag.
