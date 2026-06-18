@@ -1,10 +1,12 @@
 # Niouzou
 
-**Take back control of your feed.**
+**Your news feed, self-hosted and yours to tune.**
 
-A self-hostable news reader with a swipe interface. Every article gets a
-relevance score (0–100%) that updates from your likes and dislikes — your
-feed gets smarter as you swipe.
+A swipe-based news reader that scores every article 0–100% on how likely *you*
+are to care, and learns from each like/dislike. Two scoring engines run side by
+side — LLM-extracted keyword weights and semantic k-NN over local embeddings —
+and you pick which one drives the feed. No telemetry, no cloud lock-in, no black
+box: inspect and edit every weight, swap the LLM, or run with no AI key at all.
 
 [![CI](https://github.com/OuApps/niouzou/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OuApps/niouzou/actions/workflows/ci.yml)
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/niouzou?referralCode=bGgJYu)
@@ -19,10 +21,29 @@ feed gets smarter as you swipe.
 |---|---|---|---|
 | ![Feed](docs/assets/screen_1.png) | ![Explore & search](docs/assets/screen_2.png) | ![Saved](docs/assets/screen_3.png) | ![Keywords](docs/assets/screen_4.png) |
 
-- 🔒 **Your data, your server** — runs anywhere Docker runs
-- 🧠 **Learns from your swipes** — keyword weights you can inspect and edit
-- 📱 **Installable PWA** — swipe, save for later, no app store
-- ⚡ **AI optional** — semantic Smart Match scoring runs on a local model; add an OpenRouter key for LLM summaries + keyword scoring
+- 🔒 **100% self-hosted** — Docker or one-click Railway; your data never leaves your box, zero telemetry
+- 🧠 **Two scoring engines** — learned keyword weights ⊕ semantic k-NN over `pgvector`; pick which drives the feed, flip instantly
+- 🤖 **Local-first AI** — embeddings run on-device (Qwen3-Embedding-0.6B); LLM enrichment is optional and pluggable via any OpenRouter model
+- 🔍 **No black box** — every keyword weight is visible and editable; a tunable random-surface rate keeps you out of the filter bubble
+- 📱 **Installable PWA** — swipe, save for later, full-text search, no app store
+
+---
+
+## Under the hood
+
+| Layer | What runs |
+|---|---|
+| **API** | Python 3.13 · FastAPI · SQLAlchemy 2.0 (async) · Pydantic · JWT auth |
+| **PWA** | React · TypeScript · Vite · Tailwind — installable, mobile-first |
+| **Storage** | PostgreSQL 17 + `pgvector` (1024-dim article embeddings, k-NN) |
+| **Ingestion** | Miniflux (RSS/Atom), bootstrapped over its REST API |
+| **Embeddings** | Qwen3-Embedding-0.6B via `sentence-transformers`, in the worker, lazy-loaded |
+| **LLM** | any OpenRouter model (`OPENROUTER_MODEL`) — summaries + keyword extraction, fully optional |
+
+Routers stay thin and delegate to services; scoring goes through a single
+pipeline; the embedding model never loads in the API process. The deep dives
+live in [`docs/`](docs/) (`ARCHITECTURE`, `DATA_MODEL`, `API_SPEC`,
+`CONVENTIONS`).
 
 ---
 
@@ -88,21 +109,23 @@ Idempotent across deploys.
 
 ## How the scoring works
 
-Niouzou keeps **two independent relevance scores** for every article, both
-computed when the article is ingested:
+Two independent relevance scores per article, both computed at ingestion and
+persisted side by side (`article_relevance_scores`):
 
-1. **Keyword score** — an LLM enriches each article with weighted keywords.
-   Every like/dislike updates your personal keyword weights in real time, and
-   new articles are scored against them before they reach your feed.
-2. **Smart Match score** — a local embedding model places each article in
-   semantic space and scores it by similarity to what you've liked (k-NN). No
-   keywords, no AI key required.
+1. **Keyword score** — an LLM (via OpenRouter) extracts weighted keywords from
+   each article. Every like/dislike updates your personal keyword weights in
+   real time (with decay), and new articles are scored against them before they
+   reach your feed.
+2. **Smart Match score** — a local embedding model maps each article to a
+   1024-dim vector in `pgvector`; the score is a k-NN vote over your liked and
+   disliked history. No keywords, no API key.
 
-You choose which score drives the feed with `SCORING_MODE` (`keyword` — the
-default — or `smart`); flipping it is instant, no re-scoring. A small % of
-low-score articles surfaces randomly either way — no filter bubble.
+`SCORING_MODE` (`keyword` — the default — or `smart`) picks which score filters
+and ranks the feed; flipping is instant, no re-scoring. `RANDOM_SURFACE_RATE`
+injects a few low-score articles so you never fully seal the bubble.
 
-No black box. Inspect and edit every keyword weight in the Keywords tab.
+Nothing is hidden: open the Keywords tab to read and edit every weight, or pin
+keywords to bias either engine.
 
 ---
 
@@ -116,6 +139,7 @@ The values you actually edit in `.env`:
 | `POSTGRES_PASSWORD` | `niouzou` | App database password — change it. |
 | `MINIFLUX_ADMIN_PASSWORD` | `adminpassword` | RSS admin password — change it. |
 | `OPENROUTER_API_KEY` | — | Set to enable LLM summaries + keyword extraction. |
+| `OPENROUTER_MODEL` | a free model | Any OpenRouter model id — swap it freely. |
 | `SCORING_MODE` | `keyword` | Which score drives the feed: `keyword` or `smart` (Smart Match). |
 | `SCORE_THRESHOLD` | `0.0` | Minimum relevance score required to surface an article. |
 | `RANDOM_SURFACE_RATE` | `0.05` | Share of random low-score articles (anti-bubble). |
