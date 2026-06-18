@@ -16,6 +16,7 @@ Uses the official OpenRouter Python SDK (v0.9+).
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
@@ -64,10 +65,16 @@ class OpenRouterClient:
             x_open_router_title="Niouzou",
             timeout_ms=int(timeout * 1000),
         )
-        # E10-S7 — cost/token records for every successful completion made
-        # through this client. ``enrichment_resources`` flushes this to
-        # ``llm_usage_log`` once per cron run.
+        # E10-S7 / E17-S1 — cost/token records for every successful completion
+        # made through this client. The actual $ cost is resolved lazily at
+        # end of run (``resolve_pending_usage``) and flushed to ``llm_usage_log``
+        # by ``_flush_usage_log``. ``_pending_generations`` holds the generation
+        # ids awaiting a cost lookup.
         self.usage_log: list[UsageRecord] = []
+        self._pending_generations: list[str] = []
+        # Stragglers' ``/generation`` stats may still be finalising at flush
+        # time; we retry the unresolved ids once after this pause.
+        self._usage_retry_delay_s: float = 2.0
 
     @classmethod
     def from_settings(cls) -> "OpenRouterClient | None":
@@ -129,22 +136,40 @@ class OpenRouterClient:
             content = response.choices[0].message.content
             if not isinstance(content, str):
                 raise OpenRouterError(f"Unexpected content type: {type(content)}")
-            self._record_usage(response.id)
+            if response.id is not None:
+                self._pending_generations.append(response.id)
             return content
         except OpenRouterError:
             raise
         except Exception as exc:
             raise OpenRouterError(f"OpenRouter call failed: {exc}") from exc
 
-    def _record_usage(self, generation_id: str) -> None:
-        """Best-effort: append the cost/tokens for ``generation_id`` to ``usage_log``.
+    def resolve_pending_usage(self) -> None:
+        """Resolve cost/tokens for this run's completions into ``usage_log``.
 
-        The chat-completion response's ``usage`` field doesn't carry ``cost``
-        in this SDK version, so the actual $ cost is fetched via OpenRouter's
-        ``/generation`` endpoint. This is purely for the System panel's cost
-        display — a lookup failure (e.g. transient 404 while OpenRouter is
-        still finalising stats) must never affect enrichment.
+        OpenRouter's ``/generation`` endpoint 404s for a few seconds after a
+        completion while it finalises stats. Looking up cost inline (right
+        after each ``complete()``) therefore failed for *every* call in
+        production — the lookup always hit the 404 window, ``llm_usage_log``
+        stayed empty, and the System panel showed ``$0`` (E17-S1). We instead
+        defer every lookup to the end of the run (called from
+        ``_flush_usage_log``), by which point the earliest generations are
+        minutes old; a single retry pass after a short pause mops up the last
+        few stragglers. Best-effort throughout: an id that never resolves is
+        logged at debug and simply omitted.
         """
+        if not self._pending_generations:
+            return
+        pending = self._pending_generations
+        self._pending_generations = []
+        unresolved = [gen_id for gen_id in pending if not self._resolve_one(gen_id)]
+        if unresolved and self._usage_retry_delay_s > 0:
+            time.sleep(self._usage_retry_delay_s)
+        for gen_id in unresolved:
+            self._resolve_one(gen_id)
+
+    def _resolve_one(self, generation_id: str) -> bool:
+        """Look up one generation's cost; append to ``usage_log`` on success."""
         try:
             generation = self._client.generations.get_generation(id=generation_id)
             data = generation.data
@@ -156,12 +181,14 @@ class OpenRouterClient:
                     completion_tokens=data.tokens_completion or 0,
                 )
             )
+            return True
         except Exception:
             logger.debug(
                 "OpenRouter usage lookup failed for generation %s",
                 generation_id,
                 exc_info=True,
             )
+            return False
 
     def complete_json(
         self,

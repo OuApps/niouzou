@@ -16,10 +16,13 @@ from niouzou.deps import SessionDep
 from niouzou.errors import APIError
 from niouzou.models import Source
 from niouzou.pagination import decode_cursor, encode_cursor
+from niouzou.models.article import STATUS_ENRICHED
 from niouzou.schemas.explore import (
     ExploreHistoryArticle,
     ExploreHistoryResponse,
     ExploreNewResponse,
+    ExploreSearchArticle,
+    ExploreSearchResponse,
 )
 from niouzou.schemas.feed import SourceRef
 from niouzou.services.ranked_query import (
@@ -29,6 +32,9 @@ from niouzou.services.ranked_query import (
     row_to_article,
 )
 from niouzou.services.settings_service import SettingsService
+
+# E17-S3 — below this many characters a search is too broad to be useful.
+MIN_SEARCH_CHARS = 2
 
 
 class ExploreService:
@@ -291,5 +297,140 @@ class ExploreService:
             next_cursor = encode_cursor({"rank": last["feed_rank"], "id": last["id"]})
 
         return ExploreNewResponse(
+            articles=articles, next_cursor=next_cursor, has_more=has_more
+        )
+
+    async def search(
+        self,
+        user_id: uuid.UUID,
+        query_text: str,
+        cursor: str | None,
+        limit: int | None,
+    ) -> ExploreSearchResponse:
+        """Full-text-ish search over ALL the user's enriched articles (E17-S3).
+
+        Case-insensitive ``ILIKE`` on title + executive summary, spanning both
+        seen and unseen articles. Newest first; keyset on
+        ``(COALESCE(published_at, created_at), id)`` so pages never overlap.
+        A query shorter than ``MIN_SEARCH_CHARS`` returns nothing — too broad
+        to be useful and cheap to short-circuit.
+        """
+        term = query_text.strip()
+        if len(term) < MIN_SEARCH_CHARS:
+            return ExploreSearchResponse(articles=[], next_cursor=None, has_more=False)
+
+        page_size = clamp_limit(limit)
+        # Escape LIKE wildcards in user input so '%' / '_' are literal.
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params: dict = {
+            "user_id": user_id,
+            "limit": page_size + 1,
+            "pattern": f"%{escaped}%",
+            "premium_max_chars": get_settings().premium_content_max_chars,
+        }
+
+        scoring_mode = str(await SettingsService(self.session).get("scoring_mode"))
+
+        keyset = ""
+        if cursor:
+            decoded = decode_cursor(cursor)
+            params["cursor_sort_ts"] = datetime.fromisoformat(str(decoded["sort_ts"]))
+            params["cursor_id"] = uuid.UUID(str(decoded["id"]))
+            keyset = (
+                "AND (COALESCE(a.published_at, a.created_at), a.id) "
+                "< (:cursor_sort_ts, :cursor_id)"
+            )
+
+        query = text(
+            f"""
+            SELECT
+                a.id AS id,
+                a.title AS title,
+                a.summary_short AS summary_short,
+                a.summary_executive AS summary_executive,
+                a.content AS content,
+                a.og_image_url AS og_image_url,
+                a.url AS url,
+                a.published_at AS published_at,
+                COALESCE(a.published_at, a.created_at) AS sort_ts,
+                s.id AS source_id,
+                s.name AS source_name,
+                ars.keyword_score AS keyword_score,
+                COALESCE(ars.keyword_cold_start, FALSE) AS keyword_cold_start,
+                ars.smart_score AS smart_score,
+                COALESCE(ars.smart_cold_start, FALSE) AS smart_cold_start,
+                a.enrichment_model AS enrichment_model,
+                (a.content IS NOT NULL
+                 AND char_length(a.content) < :premium_max_chars
+                ) AS is_premium,
+                COALESCE(fb.reaction, 'none') AS reaction,
+                COALESCE(fb.is_saved, false) AS is_saved,
+                COALESCE(fb.read_full_article, false) AS read_full_article,
+                ai.seen_at AS seen_at,
+                COALESCE(
+                    (SELECT array_agg(ak.term ORDER BY ak.salience DESC, ak.term ASC)
+                     FROM article_keywords ak WHERE ak.article_id = a.id),
+                    ARRAY[]::text[]
+                ) AS keywords
+            FROM articles a
+            JOIN sources s ON s.id = a.source_id
+            LEFT JOIN article_relevance_scores ars
+                ON ars.article_id = a.id AND ars.user_id = :user_id
+            LEFT JOIN article_feedbacks fb
+                ON fb.article_id = a.id AND fb.user_id = :user_id
+            LEFT JOIN article_impressions ai
+                ON ai.article_id = a.id AND ai.user_id = :user_id
+            WHERE s.user_id = :user_id
+                AND s.deleted_at IS NULL
+                AND a.status = '{STATUS_ENRICHED}'
+                AND (
+                    a.title ILIKE :pattern ESCAPE '\\'
+                    OR a.summary_executive ILIKE :pattern ESCAPE '\\'
+                )
+                {keyset}
+            ORDER BY COALESCE(a.published_at, a.created_at) DESC, a.id DESC
+            LIMIT :limit
+            """
+        )
+
+        rows = (await self.session.execute(query, params)).mappings().all()
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
+
+        articles = [
+            ExploreSearchArticle(
+                id=r["id"],
+                title=r["title"],
+                summary_short=r["summary_short"],
+                summary_executive=r["summary_executive"],
+                content=r["content"],
+                og_image_url=r["og_image_url"],
+                url=r["url"],
+                source=SourceRef(id=r["source_id"], name=r["source_name"]),
+                published_at=r["published_at"],
+                keyword_score=r["keyword_score"],
+                keyword_cold_start=bool(r["keyword_cold_start"]),
+                smart_score=r["smart_score"],
+                smart_cold_start=bool(r["smart_cold_start"]),
+                active_method=scoring_mode,
+                enrichment_model=r["enrichment_model"],
+                keywords=list(r["keywords"] or []),
+                is_premium=bool(r["is_premium"]),
+                reaction=r["reaction"],
+                is_saved=bool(r["is_saved"]),
+                read_full_article=bool(r["read_full_article"]),
+                seen_at=r["seen_at"],
+            )
+            for r in rows
+        ]
+
+        next_cursor: str | None = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = encode_cursor(
+                {"sort_ts": last["sort_ts"].isoformat(), "id": str(last["id"])}
+            )
+
+        return ExploreSearchResponse(
             articles=articles, next_cursor=next_cursor, has_more=has_more
         )

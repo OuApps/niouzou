@@ -156,11 +156,26 @@ class EmbeddingService:
         # None → the real model, loaded lazily on first use. Tests always
         # inject a deterministic fake here.
         self._encoder = encoder
+        # Injected encoders (tests) are never dropped by unload() — discarding
+        # a fake would force a real model load (and trip conftest's tripwire).
+        self._injected = encoder is not None
 
     def _get_encoder(self) -> Encoder:
         if self._encoder is None:
             self._encoder = _load_encoder()
         return self._encoder
+
+    def unload(self) -> bool:
+        """Drop a lazily-loaded model so its RAM can be reclaimed (E17-S4).
+
+        Returns True when an actual model was released. No-op for injected
+        encoders (tests) and when nothing has been loaded yet. The next embed
+        call reloads lazily.
+        """
+        if self._injected or self._encoder is None:
+            return False
+        self._encoder = None
+        return True
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch (one encoder call) and L2-normalise each vector.
@@ -194,3 +209,19 @@ def get_embedding_service() -> EmbeddingService:
     if _service is None:
         _service = EmbeddingService()
     return _service
+
+
+def unload_embedding_model() -> None:
+    """Release the resident embedding model (~1.2 GB) between worker runs (E17-S4).
+
+    The refresh worker is always-on; without this the model sits in RAM 24/7.
+    Called after each fetch+enrich cycle — it reloads lazily on the next run.
+    A small cold-start cost per run in exchange for near-zero idle RAM.
+    """
+    if _service is None:
+        return
+    if _service.unload():
+        import gc
+
+        gc.collect()
+        logger.info("embedding: model unloaded, RAM released until next run")

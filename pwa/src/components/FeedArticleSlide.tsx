@@ -29,6 +29,9 @@ interface Props {
   onReact: (next: Reaction) => void
   onToggleSave: () => void
   onMarkRead: () => void
+  /** E17-S2 — signals the user is leaving to read the article on its site, so
+   *  the feed can keep its position instead of refetching when they return. */
+  onOpenExternal?: () => void
 }
 
 // Threshold below which we skip the "Lire plus" toggle entirely — short
@@ -54,6 +57,7 @@ export const FeedArticleSlide = ({
   onReact,
   onToggleSave,
   onMarkRead,
+  onOpenExternal,
 }: Props) => {
   // Per-slide subscription: this slide only re-renders when its own overlay
   // changes — not when any other article's feedback flips.
@@ -159,6 +163,7 @@ export const FeedArticleSlide = ({
 
   const handleOpenArticle = () => {
     onMarkRead()
+    onOpenExternal?.()
     window.open(article.url, '_blank', 'noopener,noreferrer')
   }
 

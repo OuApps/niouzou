@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Compass } from 'lucide-react'
+import { Compass, Search, X } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { ArticleListRow } from '../components/ArticleListRow'
@@ -13,6 +13,7 @@ import {
   ApiError,
   getExploreHistory,
   getExploreNew,
+  getExploreSearch,
   getSources,
   getStats,
   type ExploreHistoryArticle,
@@ -22,6 +23,9 @@ import { tokens } from '../api/http'
 import type { FeedArticle, SourceFull } from '../types/api'
 
 const PAGE_SIZE = 20
+// E17-S3 — search below this many characters is too broad (mirrors the API).
+const MIN_SEARCH_CHARS = 2
+const SEARCH_DEBOUNCE_MS = 300
 
 type Mode = 'history' | 'new'
 
@@ -104,6 +108,9 @@ interface ExploreSnapshot {
   mode: Mode
   tabs: Record<Mode, TabState>
   scrollTop: number
+  // E17-S3 — active search query, so opening a result and coming back keeps
+  // the user in their search rather than dropping them on the tabs.
+  query?: string
 }
 
 const readSnapshot = (): ExploreSnapshot | null => {
@@ -159,6 +166,13 @@ export const Explore = () => {
   const [tabs, setTabs] = useState<Record<Mode, TabState>>(
     () => readSnapshot()?.tabs ?? { history: EMPTY, new: EMPTY },
   )
+  // E17-S3 — text search. When the query reaches MIN_SEARCH_CHARS the results
+  // replace the tab view (tabs + filters are hidden while searching).
+  const [searchQuery, setSearchQuery] = useState(() => readSnapshot()?.query ?? '')
+  const [search, setSearch] = useState<TabState>(EMPTY)
+  // Bumped to force the search effect to re-run on retry (same query string).
+  const [searchNonce, setSearchNonce] = useState(0)
+  const searching = searchQuery.trim().length >= MIN_SEARCH_CHARS
   const loadingMoreRef = useRef(false)
   // The scroll container — read on unmount and re-applied on remount so the
   // user lands back where they left off after opening an article.
@@ -173,9 +187,9 @@ export const Explore = () => {
 
   // Keep the latest state reachable from the unmount cleanup below without
   // re-running the effect (which would clobber the restored scroll position).
-  const latest = useRef({ mode, tabs })
+  const latest = useRef({ mode, tabs, query: searchQuery })
   useEffect(() => {
-    latest.current = { mode, tabs }
+    latest.current = { mode, tabs, query: searchQuery }
   })
 
   useLayoutEffect(() => {
@@ -195,6 +209,7 @@ export const Explore = () => {
         mode: latest.current.mode,
         tabs: latest.current.tabs,
         scrollTop: el?.scrollTop ?? 0,
+        query: latest.current.query,
       })
     }
   }, [])
@@ -326,10 +341,75 @@ export const Explore = () => {
     }
   }, [active.cursor, active.filters, active.hasMore, mode, patch, scoreThreshold])
 
+  // E17-S3 — debounced search. Refetches the first page whenever the (trimmed)
+  // query changes; a query under MIN_SEARCH_CHARS resets to the idle tab view.
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (q.length < MIN_SEARCH_CHARS) {
+      setSearch(EMPTY)
+      return
+    }
+    let cancelled = false
+    setSearch((s) => ({ ...s, status: 'loading' }))
+    const timer = setTimeout(async () => {
+      try {
+        const page = await getExploreSearch(q, undefined, PAGE_SIZE)
+        if (cancelled) return
+        setSearch({
+          status: 'ready',
+          articles: page.articles as Row[],
+          cursor: page.next_cursor,
+          hasMore: page.has_more,
+          loadingMore: false,
+          errorMsg: '',
+          filters: DEFAULT_FILTERS,
+        })
+      } catch (e) {
+        if (cancelled) return
+        setSearch((s) => ({
+          ...s,
+          status: 'error',
+          errorMsg: e instanceof ApiError ? e.message : 'La recherche a échoué.',
+        }))
+      }
+    }, SEARCH_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [searchQuery, searchNonce])
+
+  const searchLoadMore = useCallback(async () => {
+    if (loadingMoreRef.current || !search.hasMore || !search.cursor) return
+    loadingMoreRef.current = true
+    setSearch((s) => ({ ...s, loadingMore: true }))
+    try {
+      const page = await getExploreSearch(
+        searchQuery.trim(),
+        search.cursor,
+        PAGE_SIZE,
+      )
+      setSearch((s) => ({
+        ...s,
+        articles: [...s.articles, ...(page.articles as Row[])],
+        cursor: page.next_cursor,
+        hasMore: page.has_more,
+        loadingMore: false,
+      }))
+    } catch {
+      setSearch((s) => ({ ...s, loadingMore: false }))
+    } finally {
+      loadingMoreRef.current = false
+    }
+  }, [search.cursor, search.hasMore, searchQuery])
+
+  // The view actually rendered: search results take over when searching.
+  const view = searching ? search : active
+
   const sentinelRef = useInfiniteScroll({
-    hasMore: active.hasMore,
-    enabled: active.status === 'ready',
-    onLoadMore: loadMore,
+    hasMore: view.hasMore,
+    enabled: view.status === 'ready',
+    onLoadMore: searching ? searchLoadMore : loadMore,
   })
 
   const openArticle = useCallback(
@@ -362,9 +442,15 @@ export const Explore = () => {
         <h1 style={{ fontSize: 19, fontWeight: 600, color: 'var(--text-primary)' }}>
           Explore
         </h1>
-        <Tabs mode={mode} onChange={setMode} />
+        <SearchBox
+          value={searchQuery}
+          onChange={setSearchQuery}
+          onClear={() => setSearchQuery('')}
+        />
+        {!searching && <Tabs mode={mode} onChange={setMode} />}
       </header>
 
+      {!searching && (
       <div
         className="relative z-10"
         style={{ padding: '8px 0 4px', display: 'flex', flexDirection: 'column', gap: 6 }}
@@ -400,16 +486,26 @@ export const Explore = () => {
           </ChipRow>
         )}
       </div>
+      )}
 
       <div className="relative z-10 flex-1" style={{ padding: '8px 16px 90px' }}>
-        {active.status === 'loading' || active.status === 'idle' ? (
+        {view.status === 'loading' || view.status === 'idle' ? (
           <div className="flex justify-center" style={{ paddingTop: 60 }}>
             <Spinner size={30} />
           </div>
-        ) : active.status === 'error' ? (
-          <ErrorState message={active.errorMsg} onRetry={reload} />
-        ) : active.articles.length === 0 ? (
-          hasActiveFilters ? (
+        ) : view.status === 'error' ? (
+          <ErrorState
+            message={view.errorMsg}
+            onRetry={searching ? () => setSearchNonce((n) => n + 1) : reload}
+          />
+        ) : view.articles.length === 0 ? (
+          searching ? (
+            <EmptyState
+              icon={Search}
+              title="Aucun résultat"
+              description={`Aucun article ne correspond à « ${searchQuery.trim()} ».`}
+            />
+          ) : hasActiveFilters ? (
             <FilteredEmptyState
               onReset={() => applyFilters(DEFAULT_FILTERS)}
             />
@@ -426,28 +522,26 @@ export const Explore = () => {
           )
         ) : (
           <div className="flex flex-col gap-3">
-            {active.articles.map((article) => (
+            {view.articles.map((article) => (
               <ArticleListRow
                 key={article.id}
                 article={article}
                 timestamp={
-                  mode === 'history' && article.seen_at
-                    ? article.seen_at
-                    : article.published_at
+                  article.seen_at ? article.seen_at : article.published_at
                 }
                 onClick={() => openArticle(article.id)}
-                // History reflects per-article state; New is always default,
-                // so we hide the icon row to keep the visual lighter.
-                showState={mode === 'history'}
+                // History + search reflect per-article state; New is always
+                // default, so we hide the icon row to keep the visual lighter.
+                showState={searching || mode === 'history'}
               />
             ))}
-            {active.hasMore && (
+            {view.hasMore && (
               <div
                 ref={sentinelRef}
                 className="flex justify-center"
                 style={{ padding: '8px 0 24px' }}
               >
-                {active.loadingMore && <Spinner size={22} />}
+                {view.loadingMore && <Spinner size={22} />}
               </div>
             )}
           </div>
@@ -458,6 +552,70 @@ export const Explore = () => {
     </div>
   )
 }
+
+// E17-S3 — full-width search field under the title. Glass-styled to match the
+// filter chips; shows a clear (×) button once there's text.
+const SearchBox = ({
+  value,
+  onChange,
+  onClear,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onClear: () => void
+}) => (
+  <div
+    className="flex items-center"
+    style={{
+      width: '100%',
+      gap: 8,
+      padding: '0 12px',
+      height: 38,
+      borderRadius: 20,
+      background: 'rgba(255,255,255,0.05)',
+      border: '1px solid rgba(255,255,255,0.08)',
+    }}
+  >
+    <Search size={15} style={{ color: 'var(--text-tertiary)', flex: '0 0 auto' }} />
+    <input
+      type="search"
+      inputMode="search"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="Rechercher un article…"
+      aria-label="Rechercher un article"
+      style={{
+        flex: '1 1 auto',
+        minWidth: 0,
+        border: 'none',
+        outline: 'none',
+        background: 'transparent',
+        color: 'var(--text-primary)',
+        fontSize: 13,
+      }}
+    />
+    {value.length > 0 && (
+      <button
+        type="button"
+        onClick={onClear}
+        aria-label="Effacer la recherche"
+        style={{
+          flex: '0 0 auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          border: 'none',
+          background: 'transparent',
+          color: 'var(--text-tertiary)',
+          cursor: 'pointer',
+          padding: 2,
+        }}
+      >
+        <X size={15} />
+      </button>
+    )}
+  </div>
+)
 
 const Tabs = ({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) => (
   <div

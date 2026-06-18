@@ -89,6 +89,15 @@ export interface ExploreNewPage extends Page {
   articles: FeedArticle[]
 }
 
+// E17-S3 — text search spans seen + unseen, so seen_at is optional.
+export interface ExploreSearchArticle extends FeedArticle {
+  seen_at: string | null
+}
+
+export interface ExploreSearchPage extends Page {
+  articles: ExploreSearchArticle[]
+}
+
 export interface ExploreOptions {
   cursor?: string
   limit?: number
@@ -126,6 +135,17 @@ export function getExploreNew(
   })
 }
 
+// E17-S3 — text search over all the user's enriched articles.
+export function getExploreSearch(
+  q: string,
+  cursor?: string,
+  limit = 20,
+): Promise<ExploreSearchPage> {
+  return request<ExploreSearchPage>('/explore/search', {
+    query: { q, cursor, limit },
+  })
+}
+
 // ── Feedback (E9-S1 partial update) ─────────────────────────────────────────
 
 export interface FeedbackUpdate {
@@ -142,6 +162,12 @@ export interface FeedbackResponse extends FeedbackState {
   updated_at: string
 }
 
+// E17-S5 — counts returned by POST /feedback/reset.
+export interface RecoResetResponse {
+  reactions_cleared: number
+  weights_deleted: number
+}
+
 export function postFeedback(
   articleId: string,
   update: FeedbackUpdate,
@@ -150,6 +176,12 @@ export function postFeedback(
     method: 'POST',
     body: { article_id: articleId, ...update },
   })
+}
+
+// E17-S5 — wipe the user's learned reco signal (reactions + learned weights).
+// Saved articles, read flags and pinned keywords are preserved server-side.
+export function resetReco(): Promise<RecoResetResponse> {
+  return request<RecoResetResponse>('/feedback/reset', { method: 'POST' })
 }
 
 // ── Articles ─────────────────────────────────────────────────────────────────

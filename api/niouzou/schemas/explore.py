@@ -26,3 +26,16 @@ class ExploreNewResponse(BaseModel):
     articles: list[FeedArticle]
     next_cursor: str | None
     has_more: bool
+
+
+class ExploreSearchArticle(FeedArticle):
+    """A text-search hit (E17-S3). Spans seen and unseen articles, so
+    ``seen_at`` is present only when the user has already impressed it."""
+
+    seen_at: datetime | None = None
+
+
+class ExploreSearchResponse(BaseModel):
+    articles: list[ExploreSearchArticle]
+    next_cursor: str | None
+    has_more: bool

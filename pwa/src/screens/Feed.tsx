@@ -120,6 +120,11 @@ export const Feed = () => {
   // recorded server-side as the user scrolls, but the in-memory deck doesn't
   // know that — without this, switching to another app and back keeps showing
   // the same already-read articles at the top of the list.
+  //
+  // E17-S2 — exception: when the user left to read the current article on its
+  // site (``onOpenExternal``), returning must keep them on that article, not
+  // advance the feed. We skip exactly one refetch after such a departure.
+  const openedExternalRef = useRef(false)
   useEffect(() => {
     let hiddenAt: number | null =
       document.visibilityState === 'hidden' ? Date.now() : null
@@ -131,6 +136,11 @@ export const Feed = () => {
       if (hiddenAt === null) return
       const elapsed = Date.now() - hiddenAt
       hiddenAt = null
+      if (openedExternalRef.current) {
+        // Returning from "read on site" — keep position, consume the flag.
+        openedExternalRef.current = false
+        return
+      }
       if (elapsed >= VISIBILITY_REFETCH_AFTER_MS) refresh()
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -415,6 +425,9 @@ export const Feed = () => {
             onReact={(reaction) => onReact(article, reaction)}
             onToggleSave={() => onToggleSave(article)}
             onMarkRead={() => onMarkRead(article)}
+            onOpenExternal={() => {
+              openedExternalRef.current = true
+            }}
           />
         ))}
 

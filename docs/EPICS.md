@@ -3883,3 +3883,196 @@ La colonne `kind` n'aurait plus rien à distinguer.
 **Évolutions futures hors scope** : index HNSW si le corpus dépasse ~100k articles ; centroïdes
 multi-clusters (HDBSCAN, similarité max) si le k-NN devient coûteux ; "similar articles" dans
 l'UI détail article (gratuit avec pgvector, une story d'une autre epic).
+
+---
+
+## EPIC 17 — Follow-ups (juin 2026)
+
+**Objectif** : lot de retours d'usage post-déploiement Railway — lisibilité du suivi de coût,
+navigation au retour d'un article, recherche textuelle dans Explore, réduction de la conso
+serveur, et remise à zéro du moteur de reco.
+
+> Chaque story porte une **décision ouverte** à trancher avec le mainteneur avant dev (cf.
+> "Questions ouvertes"). Statut initial : ⛔ en attente d'arbitrage, sauf indication.
+
+### Stories
+
+- [x] **E17-S1** — Suivi de coût OpenRouter : afficher des centimes (+ vérifier la capture en prod)
+- [x] **E17-S2** — Retour d'un article ouvert : rester sur l'article, ne pas avancer le feed
+- [x] **E17-S3** — Recherche textuelle dans la vue Explore
+- [x] **E17-S4** — Réduire la conso serveur Railway (décharge modèle entre runs + intervalle 15→30)
+- [x] **E17-S5** — Reset de l'historique de feedback (moteur de reco vierge)
+
+---
+
+#### [x] E17-S1 — Suivi de coût OpenRouter : afficher des centimes
+
+**Problème adressé** :
+
+Le System panel affiche `1h · $0   6h · $0   24h · $0`. `Profile.tsx:formatCost` rend `$0`
+dès que la valeur vaut exactement 0, et 4 décimales sinon. Voir partout `$0` (et non `$0.0000`)
+signifie que les fenêtres remontent **exactement 0** → soit le coût réel est nul, soit la
+capture est cassée en prod (le lookup best-effort `/generation` de `OpenRouterClient._record_usage`
+échoue systématiquement sur Railway → `cost_usd = 0` pour chaque ligne). Reformater en centimes
+ne corrige pas ce second cas.
+
+**Approche proposée** :
+
+1. **Diagnostic d'abord** : interroger `llm_usage_log` en prod (`sum(cost_usd)`, `max(cost_usd)`,
+   nb de lignes récentes). Si tout est à 0 alors qu'il y a eu de l'enrichissement → la capture
+   est le vrai bug (corriger le lookup `/generation`, ou récupérer `usage.cost` autrement).
+2. **Affichage** : exprimer en centimes (`¢`/centimes €) avec assez de décimales pour rendre
+   visibles les montants sub-cent d'un run typique, au lieu de retomber sur `$0`.
+
+**Questions ouvertes** : la valeur prod est-elle réellement 0 (→ bug de capture prioritaire) ou
+juste mal formatée ? Unité voulue : centimes de dollar (`¢`) ou centimes d'euro ?
+
+**Acceptance** : le panel rend un montant lisible en centimes ; si la capture était cassée, les
+nouveaux runs loguent un `cost_usd` non nul. Docs touchées : `docs/API_SPEC.md` si le format de
+`/stats.llm_cost` change.
+
+---
+
+#### [x] E17-S2 — Retour d'un article ouvert : rester sur l'article
+
+**Problème adressé** :
+
+Depuis Explore (Lus/Nouveaux) ou Saved, ouvrir un article fait `navigate('/?start=id')` → le
+Feed se positionne sur l'article (E9-S3). En revenant (retour navigateur / edge-swipe, ou retour
+au PWA après ouverture du lien externe via `window.open`), le feed n'est plus sur l'article
+ouvert : le `visibilitychange` de `Feed.tsx:119-138` relance `refresh()` après un délai, ce qui
+recharge le deck depuis le haut → effet "next". L'attendu : revenir **sur l'article**.
+
+**Approche proposée** (à confirmer selon le scénario retenu) :
+
+- Si scénario = retour au PWA après `window.open` du lien externe : ne pas déclencher le refetch
+  de visibilité quand l'absence vient d'une ouverture d'article (flag/timestamp posé à
+  l'ouverture), ou restaurer la position (scroll vers l'article actif) après refetch.
+- Si scénario = back navigation Explore→Feed : préserver/rétablir l'article courant (mémoriser
+  l'id actif, re-pivoter dessus au retour). Cohérent avec le pattern sessionStorage déjà utilisé
+  pour Explore (cf. note edge-swipe = full reload, pas popstate SPA).
+
+**Décision actée** : couvrir **les deux** chemins. (a) Retour au PWA après ouverture du lien
+externe : ne pas relancer le refetch de visibilité lorsque l'absence vient d'une ouverture
+d'article. (b) Back Explore→Feed : préserver/rétablir l'article courant pour ne pas afficher le
+suivant.
+
+**Acceptance** : après ouverture d'un article puis retour, l'utilisateur retrouve ce même
+article (pas l'article suivant ni le haut du feed).
+
+---
+
+#### [x] E17-S3 — Recherche textuelle dans Explore
+
+**Problème adressé** :
+
+Aucun moyen de retrouver un article par mot-clé : Explore n'offre que les tabs Lus/Nouveaux +
+filtres score/source. Besoin d'une recherche plein texte sur l'ensemble des articles.
+
+**Approche proposée** :
+
+- Backend : nouvel endpoint (ou query param `q=`) de recherche sur `articles`, scoping aux
+  articles visibles de l'utilisateur. Champs candidats : `title`, `summary_executive`,
+  `content`. Implémentation : `ILIKE` simple d'abord, ou full-text Postgres (`tsvector` +
+  `websearch_to_tsquery`) si on veut du ranking/stemming. Réutiliser la pagination cursor
+  d'Explore.
+- Frontend : champ de recherche dans le header Explore ; débounce ; réutilise `ArticleListRow`.
+  Interaction avec les tabs/filtres à définir.
+
+**Décision actée** : recherche serveur **`ILIKE` simple** sur `title` + `summary_executive`,
+sur **tous les articles de l'utilisateur** (Lus + Nouveaux confondus). Pas de full-text/tsvector
+pour cette story. Champ de recherche dans le header Explore (débounce), réutilise `ArticleListRow`
+et la pagination cursor.
+
+**Acceptance** : taper une requête dans Explore filtre la liste sur les articles correspondants ;
+résultats paginés ; doc `docs/API_SPEC.md` mise à jour.
+
+---
+
+#### [x] E17-S4 — Réduire la conso serveur Railway
+
+**Problème adressé** :
+
+Coût/conso Railway jugés trop élevés. Deux pistes évoquées : passer en "serverless", et/ou
+réduire la fréquence des fetchs.
+
+**Nature** : **analyse + décision avant tout code.** "Serverless" n'est pas trivial sur cette
+stack — l'API FastAPI peut tolérer le scale-to-zero, mais le `refresh-worker` (cron fetch/enrich
++ modèle d'embedding ~1,2 Go chargé en lazy) est un process long/stateful mal adapté au
+serverless ; Miniflux et Postgres sont des services persistants. La piste la plus rentable et
+sûre à court terme est probablement **espacer les crons** (intervalle fetch/enrich) et **ajuster
+les ressources/replicas**, pas une réécriture serverless.
+
+**Approche proposée** : produire d'abord un constat (où part la conso : web idle vs worker vs
+DB ; relire `railway status` + métriques + intervalles cron actuels), puis livrer le(s) quick
+win(s) validés (ex. augmenter l'intervalle entre fetchs via les env `CRON_*`).
+
+**Décision actée** : **analyse + quick wins low-risk uniquement** (pas de scale-to-zero, pas de
+migration serverless pour l'instant). Livrable : note d'analyse de la conso (web/worker/DB +
+intervalles cron actuels) puis ajustement des intervalles de cron fetch/enrich via env `CRON_*`
+si la fraîcheur le permet.
+
+**Analyse (juin 2026)** :
+
+État Railway : 5 services Online — `api`, `pwa`, `miniflux`, `refresh-worker`, `Postgres`
+(volume 0,4/4,9 Go). Le poste de conso dominant est le **`refresh-worker`** : il exécute le cycle
+fetch + enrich (extraction contenu + appel LLM d'enrichissement + calcul d'embedding local
+Qwen3-0.6B) **toutes les 15 min** (`CRON_FETCH_INTERVAL=15`), soit ~96 runs/jour. Le modèle
+d'embedding (~1,2 Go) reste chargé en RAM dans le process worker entre les runs (lazy, chargé une
+fois) ; le CPU n'est sollicité qu'au moment des runs. Threads déjà plafonnés
+(`EMBEDDING_NUM_THREADS=3`, `OMP_NUM_THREADS=3`, cf. note "Railway worker threading"). L'`api` et
+le `pwa` sont peu coûteux (web idle). Le refresh nocturne (`CRON_REFRESH_WEIGHTS_HOUR=3`) est
+ponctuel.
+
+**Quick win recommandé** : porter `CRON_FETCH_INTERVAL` de **15 → 30 min** (voire 60) sur le
+service `refresh-worker`. Effet : ~2× (resp. 4×) moins de runs d'enrichissement/embedding → la
+principale source de CPU baisse d'autant. Coût : fraîcheur du feed un peu moins immédiate
+(articles visibles avec ~15-45 min de retard supplémentaire au pire). Aucun changement de code —
+juste une variable d'env. **À appliquer après validation du mainteneur** (impacte la fraîcheur,
+config production) : `railway variables --service refresh-worker --set CRON_FETCH_INTERVAL=30`.
+
+**Serverless Railway — investigué, écarté pour ce worker** : le vrai poste de conso est le
+**modèle d'embedding (~1,2 Go) résident en RAM 24/7**. L'**App Sleeping** Railway ne convient pas :
+d'après la doc, un service s'endort après 10 min **sans trafic sortant** (le pool Postgres ouvert
+le maintient éveillé) et se **réveille sur requête entrante** — or le planning du worker est
+*interne* (APScheduler), donc s'il s'endormait, rien ne le relancerait sur le créneau →
+l'enrichissement s'arrêterait. Le primitif correct serait **Railway Cron Jobs** (run-to-completion,
+vrai scale-to-zero) mais il impose une re-archi lourde (entrypoint one-shot, **verrou advisory
+Postgres** pour remplacer le lock in-process partagé avec `POST /admin/refresh`, modèle embarqué
+dans l'image pour éviter un re-téléchargement de 1,2 Go par run, cold-start par run) → reporté en
+epic dédiée si besoin.
+
+**Solution retenue (réalisée)** : **décharger le modèle entre les runs** + **espacer l'intervalle**.
+- `embedding_service.unload_embedding_model()` libère le modèle (`gc.collect()`) après chaque cycle ;
+  no-op pour les encodeurs injectés (tests). Appelé dans le `finally` de `_guarded_run`
+  (`refresh_worker`), exécuté en thread. Rechargement lazy au run suivant (petit cold-start contre
+  RAM idle quasi nulle). Archi inchangée : verrou + bouton admin préservés.
+- `CRON_FETCH_INTERVAL` porté de 15 → **30 min** sur `refresh-worker` (appliqué en prod).
+
+**Acceptance** : note d'analyse livrée ; RAM idle du worker libérée entre les runs (modèle déchargé) ;
+intervalle de fetch espacé en prod. ✅
+
+---
+
+#### [x] E17-S5 — Reset de l'historique de feedback (moteur de reco vierge)
+
+**Problème adressé** :
+
+Pouvoir repartir d'un moteur de reco vierge : effacer l'historique des likes/dislikes/etc. pour
+ré-entraîner les préférences de zéro.
+
+**Approche proposée** :
+
+- Service (jamais dans le router) qui purge, pour l'utilisateur courant, les données de
+  préférence apprises. À cadrer précisément (cf. questions) : événements de `feedback`,
+  `keyword_weight`, et éventuellement les scores persistés / `seen` impressions.
+- Endpoint dédié (POST, idempotent) + bouton dans Profile avec **confirmation** (action
+  destructive, irréversible).
+
+**Décision actée** : purge **feedback + `keyword_weight`** pour l'utilisateur courant → reco
+vraiment vierge immédiatement. Le statut "lu"/impressions n'est **pas** effacé (les articles déjà
+lus restent lus). Reset par utilisateur.
+
+**Acceptance** : depuis Profile, l'utilisateur peut réinitialiser sa reco après confirmation ;
+le feed/scoring repart d'un état neutre ; tests sur le service de purge ; docs `DATA_MODEL.md` /
+`API_SPEC.md` mises à jour.

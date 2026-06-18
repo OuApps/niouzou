@@ -195,7 +195,14 @@ async def _flush_usage_log(client: OpenRouterClient) -> None:
 
     One row per successful completion made through ``client`` during the
     run — ``/stats`` sums ``cost_usd`` over 1h/6h/24h for the System panel.
+
+    Cost lookups are resolved here, at end of run, rather than inline after
+    each completion: OpenRouter's ``/generation`` endpoint 404s for a few
+    seconds while it finalises stats, so inline lookups always missed and the
+    table stayed empty (E17-S1). Run in a thread — the lookups are blocking
+    HTTP + a short retry sleep.
     """
+    await asyncio.to_thread(client.resolve_pending_usage)
     if not client.usage_log:
         return
     async with session_scope() as session:

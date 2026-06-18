@@ -48,3 +48,16 @@ class FeedbackState(BaseModel):
 class FeedbackResponse(FeedbackState):
     article_id: uuid.UUID
     updated_at: datetime
+
+
+class RecoResetResponse(BaseModel):
+    """Result of resetting the user's recommendation engine (E17-S5).
+
+    ``reactions_cleared`` = like/dislike reactions removed (pure-reaction rows
+    deleted, reactions on saved/read rows neutralised). ``weights_deleted`` =
+    learned ``keyword_weights`` rows dropped. Pinned keywords, saved articles,
+    read flags and impressions are preserved.
+    """
+
+    reactions_cleared: int
+    weights_deleted: int

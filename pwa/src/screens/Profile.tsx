@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Tags,
+  RotateCcw,
 } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
@@ -20,6 +21,7 @@ import { formatTimeAgo } from '../hooks/useTimeAgo'
 import {
   getMe,
   getStats,
+  resetReco,
   triggerRefresh,
   type PipelineWindow,
   type Stats,
@@ -41,6 +43,26 @@ export const Profile = () => {
   // email is only a fallback while the request is in flight.
   const { data: me, loading, reload: reloadMe } = useApiData(getMe, [])
   const email = me?.email ?? storedEmail ?? 'user@example.com'
+
+  // ── Reset recommendations (E17-S5) ───────────────────────────────────────
+  const [confirmResetReco, setConfirmResetReco] = useState(false)
+  const [resettingReco, setResettingReco] = useState(false)
+  const [resetRecoDone, setResetRecoDone] = useState(false)
+
+  const doResetReco = async () => {
+    setResettingReco(true)
+    try {
+      await resetReco()
+      setConfirmResetReco(false)
+      setResetRecoDone(true)
+      // Learned weights drove the keyword count shown on this screen.
+      reloadMe()
+    } catch {
+      // Keep the modal open; the user can retry.
+    } finally {
+      setResettingReco(false)
+    }
+  }
 
   // ── System section (E7-S15) ─────────────────────────────────────────────
   const [systemOpen, setSystemOpen] = useState(false)
@@ -331,6 +353,45 @@ export const Profile = () => {
             )}
           </div>
 
+          {/* Reset recommendations (E17-S5) — destructive, gated behind a
+              confirmation modal. Sits just above Sign out, grouped with the
+              other irreversible action. */}
+          <button
+            onClick={() => {
+              setResetRecoDone(false)
+              setConfirmResetReco(true)
+            }}
+            className="glass-sm flex items-center gap-3 w-full"
+            style={{
+              borderRadius: 16,
+              padding: '14px 16px',
+              cursor: 'pointer',
+              border: '1px solid rgba(255,255,255,0.10)',
+              background: 'var(--glass-bg)',
+              color: 'var(--text-primary)',
+              fontSize: 14,
+            }}
+          >
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                background: 'rgba(248, 113, 113, 0.10)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--action-dislike)',
+              }}
+            >
+              <RotateCcw size={16} />
+            </div>
+            <span className="flex-1 text-left">
+              {resetRecoDone ? 'Recommendations reset ✓' : 'Reset recommendations'}
+            </span>
+            <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
+          </button>
+
           {/* Sign out lives at the very bottom of the Profile menu so it
               never sits between non-destructive options (E10-S2 UX pass). */}
           <button
@@ -366,6 +427,95 @@ export const Profile = () => {
         </div>
       </div>
 
+      {/* Reset-recommendations confirmation modal (E17-S5). */}
+      {confirmResetReco && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => !resettingReco && setConfirmResetReco(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 50,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+          }}
+        >
+          <div
+            className="glass"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              borderRadius: 20,
+              padding: 20,
+              maxWidth: 320,
+              width: '100%',
+              background: 'var(--bg-elevated, rgba(20,24,34,0.95))',
+            }}
+          >
+            <h3
+              style={{
+                fontSize: 16,
+                fontWeight: 600,
+                margin: '0 0 8px',
+                color: 'var(--text-primary)',
+              }}
+            >
+              Reset recommendations?
+            </h3>
+            <p
+              style={{
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: 'var(--text-secondary)',
+                margin: '0 0 16px',
+              }}
+            >
+              This clears your likes and dislikes and the preferences learned
+              from them, so your feed starts fresh. Your saved articles and
+              pinned keywords are kept. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmResetReco(false)}
+                disabled={resettingReco}
+                style={{
+                  padding: '8px 14px',
+                  borderRadius: 10,
+                  border: '1px solid var(--divider)',
+                  background: 'transparent',
+                  color: 'var(--text-secondary)',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={doResetReco}
+                disabled={resettingReco}
+                style={{
+                  padding: '8px 14px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: 'var(--action-dislike)',
+                  color: '#fff',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  opacity: resettingReco ? 0.7 : 1,
+                }}
+              >
+                {resettingReco ? 'Resetting…' : 'Reset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <BottomNav />
     </div>
   )
@@ -400,12 +550,13 @@ function aiStatus(enrichment: Stats['enrichment']): AiStatus {
   return new Date(last_error_at) >= new Date(last_enriched_at) ? 'failed' : 'working'
 }
 
-// E10-S7 — OpenRouter costs are typically fractions of a cent; 4 decimals
-// keeps small-but-nonzero amounts visible instead of rounding to "$0.00".
+// E17-S1 — OpenRouter costs are fractions of a cent per call, so we display in
+// cents: a 24h total reads as e.g. "7.42 ¢" instead of rounding to "$0".
 function formatCost(usd: number): string {
-  if (usd === 0) return '$0'
-  if (usd < 0.0001) return '< $0.0001'
-  return `$${usd.toFixed(4)}`
+  const cents = usd * 100
+  if (cents === 0) return '0 ¢'
+  if (cents < 0.01) return '< 0.01 ¢'
+  return `${cents.toFixed(2)} ¢`
 }
 
 function formatDuration(seconds: number): string {

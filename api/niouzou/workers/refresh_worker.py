@@ -75,6 +75,7 @@ from niouzou.models.pipeline_run import (
 from niouzou.models import CompactionRun
 from niouzou.models.compaction_run import STATUS_PREVIEW as _COMPACT_PREVIEW
 from niouzou.services.compaction_service import CompactionService
+from niouzou.services.embedding_service import unload_embedding_model
 from niouzou.services.openrouter_client import OpenRouterClient
 from niouzou.services.settings_service import SettingsService
 
@@ -372,7 +373,13 @@ async def _guarded_run() -> None:
         logger.info("refresh_worker: scheduled run skipped — already running")
         return
     async with _lock:
-        await _run_pipeline()
+        try:
+            await _run_pipeline()
+        finally:
+            # E17-S4 — the worker is always-on; release the ~1.2 GB embedding
+            # model between runs so idle RAM stays near zero. Reloads lazily on
+            # the next run. Run off-loop: unload + gc can briefly block.
+            await asyncio.to_thread(unload_embedding_model)
 
 
 async def _nightly_refresh_job() -> None:

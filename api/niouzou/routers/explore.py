@@ -6,7 +6,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from niouzou.deps import CurrentUser
-from niouzou.schemas.explore import ExploreHistoryResponse, ExploreNewResponse
+from niouzou.schemas.explore import (
+    ExploreHistoryResponse,
+    ExploreNewResponse,
+    ExploreSearchResponse,
+)
 from niouzou.services.explore_service import ExploreService
 
 router = APIRouter(prefix="/explore", tags=["explore"])
@@ -56,3 +60,15 @@ async def list_new(
         min_score=min_score,
         source_ids=source_ids,
     )
+
+
+@router.get("/search", response_model=ExploreSearchResponse)
+async def search(
+    user: CurrentUser,
+    service: ExploreServiceDep,
+    q: Annotated[str, Query(min_length=1, max_length=200)],
+    cursor: str | None = None,
+    limit: Annotated[int | None, Query(ge=1, le=50)] = None,
+) -> ExploreSearchResponse:
+    """E17-S3 — text search across all the user's enriched articles."""
+    return await service.search(user.id, q, cursor=cursor, limit=limit)

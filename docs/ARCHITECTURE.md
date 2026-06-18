@@ -88,6 +88,10 @@ External:
 - E16 — the enrichment path also computes the article embedding. The model
   (~1.2 GB in fp16) loads lazily in the worker process on the first embed;
   budget ~1.5 GB extra RAM for the worker. The web API process never loads it.
+  E17-S4 — the always-on worker now **unloads the model after each run**
+  (`embedding_service.unload_embedding_model()` in `_guarded_run`'s `finally`)
+  so idle RAM stays near zero; it reloads lazily on the next run (small
+  cold-start). `CRON_FETCH_INTERVAL` defaults to 30 min in prod.
 - One-shot ops CLIs:
   - `python -m niouzou.tools.backfill_embeddings` embeds legacy articles
     (batch 50, newest first, idempotent/resumable).

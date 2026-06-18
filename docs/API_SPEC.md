@@ -228,6 +228,29 @@ a synchronous recompute of `keyword_weights` for the article's keywords.
 
 ---
 
+### POST /feedback/reset
+Reset the current user's recommendation engine (**E17-S5**). Wipes the learned
+signal so the feed re-learns from zero: clears like/dislike reactions
+(pure-reaction rows are deleted, reactions on saved/read rows are neutralised to
+`"none"`) and deletes learned `keyword_weights`. **Preserved**: saved articles
+(the Saved library), `read_full_article` flags, impressions/seen state, and
+pinned keywords (`manually_overridden = true`). Persisted scores are not
+recomputed inline — the nightly refresh rescores within its window.
+
+Destructive and irreversible; clients should gate it behind a confirmation.
+
+**Request** — empty body.
+
+**Response `200`** — counts of what was cleared:
+```json
+{
+  "reactions_cleared": 42,
+  "weights_deleted": 17
+}
+```
+
+---
+
 ## Articles
 
 ### GET /articles/{id}
@@ -475,6 +498,40 @@ formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
 > combine with `AND`: `?min_score=0.5&source_ids=A` returns articles from
 > source A with active score ≥ 0.5 (or cold/NULL). The cursor format is
 > unchanged; the client must drop the cursor when filters change.
+
+---
+
+### GET /explore/search
+
+Full-text-ish search across **all** the current user's enriched articles
+(**E17-S3**) — both seen and unseen. Case-insensitive `ILIKE` on `title` +
+`summary_executive`; LIKE wildcards in the query are escaped (treated as
+literals). Newest first; keyset on `(COALESCE(published_at, created_at), id)`.
+
+**Query parameters**
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `q` | string | **Yes** | Search query (1–200 chars). A trimmed query shorter than 2 chars returns an empty result set (too broad). |
+| `cursor` | string | No | Opaque cursor; keyset on `(sort_ts, id)`. |
+| `limit` | integer | No | Default: `20`, max: `50`. |
+
+**Response `200`** — same article shape as `GET /feed`, plus `seen_at`
+(`null` when the article hasn't been impressed yet):
+```json
+{
+  "articles": [
+    {
+      "id": "uuid",
+      "title": "Why Rust is eating C++",
+      "...": "same fields as GET /feed",
+      "seen_at": "2024-01-15T10:31:00Z"
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false
+}
+```
 
 ---
 
