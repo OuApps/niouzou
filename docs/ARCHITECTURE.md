@@ -262,6 +262,21 @@ score = sigmoid(β·raw + Σ_{pinned kw ∩ keywords(a)} weight·salience)
 - All data scoped to `user_id` — multi-user by design
 - User management UI out of scope for MVP
 
+### Known accepted advisories
+
+Two transitive dependencies carry open CVEs with **no upstream fix released**.
+Both are unreachable in Niouzou's configuration and are accepted (dismiss the
+Dependabot alert as "not affected" — re-evaluate when a patched release ships):
+
+- **`ecdsa` — CVE-2024-23342** (Minerva timing attack on ECDSA P-256). Pulled
+  in by `python-jose`. We sign/verify JWTs with **HS256** (symmetric HMAC), so
+  the `ecdsa` code path is never executed. python-jose hard-depends on the
+  package, so it cannot be dropped without replacing the auth library; upstream
+  considers the pure-Python timing leak unfixable.
+- **`nltk` — CVE-2026-54293** (URL-encoded path traversal in
+  `nltk.data.load()`). Pulled in by `newspaper4k`. We never pass untrusted
+  paths to `nltk.data.load()`; latest release (3.9.4) is still unpatched.
+
 ---
 
 ## Technology Choices
