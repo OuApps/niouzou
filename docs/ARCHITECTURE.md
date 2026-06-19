@@ -260,7 +260,14 @@ score = sigmoid(β·raw + Σ_{pinned kw ∩ keywords(a)} weight·salience)
 - JWT-based authentication via `python-jose` + `passlib`
 - Email + password login
 - All data scoped to `user_id` — multi-user by design
-- User management UI out of scope for MVP
+- **First user is admin** — the first account registered on a fresh instance is
+  promoted to admin (`AuthService.register`: `is_admin = not existing_admin`),
+  so the self-hoster never flips the column manually. Every account after it is
+  a regular user. This lives in runtime registration, *not* a migration — on a
+  fresh install migrations run before any user exists, so there is no row to
+  promote.
+- User management is available to admins via `GET /admin/users` +
+  `DELETE /admin/users/{id}`
 
 ### Known accepted advisories
 
@@ -358,7 +365,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `MINIFLUX_DB_PASSWORD` | ⚙️ compose | Password for the `miniflux` user inside the shared Postgres (default: `miniflux`) |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | ⚙️ compose | App database credentials (defaults: `niouzou`/`niouzou`/`niouzou`) |
 | `OPENROUTER_API_KEY` | ❌ | Enables AI enrichment and scoring |
-| `OPENROUTER_MODEL` | ❌ | Model to use (default: `nvidia/nemotron-3-super-120b-a12b:free`) |
+| `OPENROUTER_MODEL` | ❌ | Model to use (default: `google/gemma-4-26b-a4b-it:free`) |
 | `SCORE_THRESHOLD` | ❌ | Minimum *active* score to surface an article (0.0–1.0, default: `0.0`; cold/NULL rows bypass it) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
 | `RANDOM_SURFACE_RATE` | ❌ | % of random articles in feed (default: `0.05`) |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |

@@ -30,7 +30,9 @@ Common HTTP status codes:
 ## Authentication
 
 ### POST /auth/register
-Create a new user account.
+Create a new user account. The **first** account registered on a fresh instance
+is promoted to admin (`is_admin = true`); every account after it is a regular
+user.
 
 **Request**
 ```json
@@ -552,7 +554,8 @@ Returns the authenticated user's profile plus aggregate counts.
 }
 ```
 
-> `is_admin` is always `false` for now — the admin role is not yet implemented.
+> `is_admin` is `true` for the first account registered on the instance, `false`
+> for everyone after (see `POST /auth/register`). It gates the admin panel.
 > `scoring_mode` (E16-S5/S9) is the instance-wide active-score selector
 > (`"keyword"` | `"smart"`), read-only here — it is set via
 > `PATCH /admin/config`. The Keywords screen uses it to show the

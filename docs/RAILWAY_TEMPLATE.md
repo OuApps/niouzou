@@ -29,8 +29,8 @@ databases, AI agents, and more on Railway.
 Niouzou is a multi-service app (API, PWA, RSS reader, worker, database).
 Railway's private networking, shared Postgres, and one-click multi-service
 templates make it a natural fit: the whole stack deploys together, `JWT_SECRET`
-is generated for you, and the only optional input is an OpenRouter API key for
-AI summaries.
+is generated for you, and you bring an OpenRouter API key to power the
+recommendation features.
 
 ## Common Use Cases
 
@@ -46,15 +46,15 @@ AI summaries.
   article embeddings.
 - **Miniflux** — RSS/Atom ingestion (its own service, sharing the Postgres
   instance).
-- **OpenRouter** (optional) — LLM summaries and keyword extraction; without it
-  the feed still works on local Smart Match embeddings.
+- **OpenRouter** — LLM summaries and keyword extraction; required for the
+  recommendation features (both relevance scores depend on enrichment).
 
 ### Deployment Dependencies
 
 - [Niouzou source repository](https://github.com/OuApps/niouzou)
 - [Miniflux](https://miniflux.app/) — RSS reader
 - [pgvector](https://github.com/pgvector/pgvector) — Postgres vector extension
-- [OpenRouter](https://openrouter.ai/) (optional) — LLM provider
+- [OpenRouter](https://openrouter.ai/) — LLM provider (required for recommendations)
 
 ### Implementation Details
 

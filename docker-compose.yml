@@ -21,7 +21,7 @@ x-api-env: &api-env
   MINIFLUX_URL: http://miniflux:8080
   JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-string}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-26b-a4b-it:free}
   SCORE_THRESHOLD: ${SCORE_THRESHOLD:-0.0}
   RANDOM_SURFACE_RATE: ${RANDOM_SURFACE_RATE:-0.05}
   FEED_GRAVITY: ${FEED_GRAVITY:-1.5}

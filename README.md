@@ -6,7 +6,8 @@ A swipe-based news reader that scores every article 0–100% on how likely *you*
 are to care, and learns from each like/dislike. Two scoring engines run side by
 side — LLM-extracted keyword weights and semantic k-NN over local embeddings —
 and you pick which one drives the feed. No telemetry, no cloud lock-in, no black
-box: inspect and edit every weight, swap the LLM, or run with no AI key at all.
+box: inspect and edit every weight, and swap the LLM behind it for any OpenRouter
+model.
 
 [![CI](https://github.com/OuApps/niouzou/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OuApps/niouzou/actions/workflows/ci.yml)
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/niouzou?referralCode=bGgJYu)
@@ -21,89 +22,11 @@ box: inspect and edit every weight, swap the LLM, or run with no AI key at all.
 |---|---|---|---|
 | ![Feed](docs/assets/screen_1.png) | ![Explore & search](docs/assets/screen_2.png) | ![Saved](docs/assets/screen_3.png) | ![Keywords](docs/assets/screen_4.png) |
 
-- 🔒 **100% self-hosted** — Docker or one-click Railway; your data never leaves your box, zero telemetry
-- 🧠 **Two scoring engines** — learned keyword weights ⊕ semantic k-NN over `pgvector`; pick which drives the feed, flip instantly
-- 🤖 **Local-first AI** — embeddings run on-device (Qwen3-Embedding-0.6B); LLM enrichment is optional and pluggable via any OpenRouter model
-- 🔍 **No black box** — every keyword weight is visible and editable; a tunable random-surface rate keeps you out of the filter bubble
-- 📱 **Installable PWA** — swipe, save for later, full-text search, no app store
-
----
-
-## Under the hood
-
-| Layer | What runs |
-|---|---|
-| **API** | Python 3.13 · FastAPI · SQLAlchemy 2.0 (async) · Pydantic · JWT auth |
-| **PWA** | React · TypeScript · Vite · Tailwind — installable, mobile-first |
-| **Storage** | PostgreSQL 17 + `pgvector` (1024-dim article embeddings, k-NN) |
-| **Ingestion** | Miniflux (RSS/Atom), bootstrapped over its REST API |
-| **Embeddings** | Qwen3-Embedding-0.6B via `sentence-transformers`, in the worker, lazy-loaded |
-| **LLM** | any OpenRouter model (`OPENROUTER_MODEL`) — summaries + keyword extraction, fully optional |
-
-Routers stay thin and delegate to services; scoring goes through a single
-pipeline; the embedding model never loads in the API process. The deep dives
-live in [`docs/`](docs/) (`ARCHITECTURE`, `DATA_MODEL`, `API_SPEC`,
-`CONVENTIONS`).
-
----
-
-## Self-hosting
-
-You need Docker. That's it.
-
-```bash
-git clone https://github.com/OuApps/niouzou.git && cd niouzou
-cp .env.example .env && $EDITOR .env       # set JWT_SECRET + POSTGRES_PASSWORD
-docker-compose up -d
-```
-
-Open **http://localhost:3000**, create your account, add an RSS feed, start
-swiping. Database migrations, the Miniflux admin user, and Miniflux's API key
-are all provisioned automatically on the first boot — no UI step.
-
-> **RAM note (Smart Match).** Smart Match embeds articles with a local model
-> (Qwen3-Embedding-0.6B) inside the refresh worker — budget **~1.5 GB of
-> additional RAM** for that container when the `embeddings` extra is installed.
-> The model loads lazily on the first enrichment, never in the API process, and
-> unloads between runs. Leave the extra out and the feed still works on keyword
-> scoring alone.
->
-> **Upgrading an existing install to the pgvector image:** the Postgres
-> image changed from `postgres:17-alpine` to `pgvector/pgvector:pg17`
-> (glibc). On a pre-existing data volume, run `REINDEX DATABASE niouzou;`
-> and `REINDEX DATABASE miniflux;` once after the first boot — text-index
-> collation order differs between musl and glibc.
-
----
-
-## Deploy on Railway
-
-Click the button above. It deploys the whole stack in one shot — **5 services**:
-`api`, `pwa`, `miniflux`, `refresh-worker` and `Postgres`. Railway generates
-`JWT_SECRET` for you at deploy time; the only optional input is
-`OPENROUTER_API_KEY` (enables LLM summaries + keyword scoring). Niouzou
-provisions its own Miniflux access token on first boot — no manual key step
-(see "How Miniflux integration works" below).
-
-**Shared Postgres, two databases.** The API and Miniflux share **one** Postgres
-service but sit in **two databases** on it (the API's default DB and `miniflux`)
-so their `users` tables don't collide. The API's `preDeployCommand` creates the
-`miniflux` database and runs Alembic on first boot; the template points
-Miniflux's `DATABASE_URL` at the `miniflux` database:
-
-```
-postgres://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:${{Postgres.PGPORT}}/miniflux?sslmode=disable
-```
-
-The API keeps Railway's default `${{Postgres.DATABASE_URL}}` — it points at the
-default database, which is where Alembic runs.
-
-**How Miniflux integration works.** Because both apps share the same Postgres,
-the API/worker read (or create) a Miniflux access token directly from its
-`api_keys` table on first call — see `api/niouzou/services/miniflux_bootstrap.py`.
-The token is generated with `secrets.token_hex(32)`, INSERTed with
-`description='niouzou'` (`ON CONFLICT DO UPDATE`), and cached in memory.
-Idempotent across deploys.
+- **Self-hosted** — one-click Railway, or Docker Compose
+- **Two scoring engines** — learned keyword weights ⊕ semantic k-NN over `pgvector`; pick which drives the feed
+- **Local embeddings** — semantic vectors run on-device (Qwen3-Embedding-0.6B); the LLM that enriches articles is pluggable via any OpenRouter model
+- **No black box** — every keyword weight is visible and editable; see why each article is promoted
+- **Installable PWA** — swipe, save for later, full-text search, no app store
 
 ---
 
@@ -116,83 +39,114 @@ persisted side by side (`article_relevance_scores`):
    each article. Every like/dislike updates your personal keyword weights in
    real time (with decay), and new articles are scored against them before they
    reach your feed.
-2. **Smart Match score** — a local embedding model maps each article to a
-   1024-dim vector in `pgvector`; the score is a k-NN vote over your liked and
-   disliked history. No keywords, no API key.
+2. **Smart Match score** — a local embedding model turns each article's
+   LLM-written summary into a 1024-dim vector in `pgvector`; the score is a k-NN
+   vote over your liked and disliked history, no keywords involved.
+
+Both scores depend on LLM enrichment (via OpenRouter) — keyword extraction for
+the first, the article summary the embedding is built from for the second.
 
 `SCORING_MODE` (`keyword` — the default — or `smart`) picks which score filters
 and ranks the feed; flipping is instant, no re-scoring. `RANDOM_SURFACE_RATE`
 injects a few low-score articles so you never fully seal the bubble.
 
 Nothing is hidden: open the Keywords tab to read and edit every weight, or pin
-keywords to bias either engine.
+keywords to bias either engine. Reset your profile any time from Settings.
+
+<p align="center"><img src="docs/assets/screen_breakdown.png" width="300" alt="Score breakdown — keyword contributions and the closest Smart Match neighbours"></p>
+
+---
+
+## Under the hood
+
+| Layer | What runs |
+|---|---|
+| **API** | Python 3.13 · FastAPI · SQLAlchemy 2.0 (async) · Pydantic · JWT auth |
+| **PWA** | React · TypeScript · Vite · Tailwind — installable, mobile-first |
+| **Storage** | PostgreSQL 17 + `pgvector` (1024-dim article embeddings, k-NN) |
+| **Ingestion** | Miniflux (RSS/Atom), bootstrapped over its REST API |
+| **Embeddings** | Qwen3-Embedding-0.6B via `sentence-transformers`, in the worker, lazy-loaded |
+| **LLM** | any OpenRouter model (`OPENROUTER_MODEL`) — summaries + keyword extraction |
+
+---
+
+## Self-hosting
+
+### Local
+
+```bash
+git clone https://github.com/OuApps/niouzou.git && cd niouzou
+cp .env.example .env && $EDITOR .env       # set JWT_SECRET, POSTGRES_PASSWORD + OPENROUTER_API_KEY
+docker-compose up -d
+```
+
+Open **http://localhost:3000**, create your account, add an RSS feed, start
+swiping. The **first account you create becomes the instance admin**; everyone
+after is a regular user. Database migrations, the Miniflux admin user, and
+Miniflux's API key are all provisioned automatically on the first boot — no UI
+step.
+
+---
+
+## Deploy on Railway
+
+Click the button above. It deploys the whole stack in one shot — **5 services**:
+`api`, `pwa`, `miniflux`, `refresh-worker` and `Postgres`. Railway generates
+`JWT_SECRET` for you at deploy time; set `OPENROUTER_API_KEY` to power the
+recommendation features (summaries, keyword + semantic scoring). Niouzou
+provisions its own Miniflux access token on first boot — no manual key step.
 
 ---
 
 ## Configuration
 
-The values you actually edit in `.env`:
+Almost every knob is an environment variable with a sane default. Seven of them
+(✅ below) can also be changed live from the in-app **admin panel**; a few are
+deploy-time only (Compose / build).
 
-| Variable | Default | What it does |
-|---|---|---|
-| `JWT_SECRET` | — | **Required.** Long random string used to sign auth tokens. |
-| `POSTGRES_PASSWORD` | `niouzou` | App database password — change it. |
-| `MINIFLUX_ADMIN_PASSWORD` | `adminpassword` | RSS admin password — change it. |
-| `OPENROUTER_API_KEY` | — | Set to enable LLM summaries + keyword extraction. |
-| `OPENROUTER_MODEL` | a free model | Any OpenRouter model id — swap it freely. |
-| `SCORING_MODE` | `keyword` | Which score drives the feed: `keyword` or `smart` (Smart Match). |
-| `SCORE_THRESHOLD` | `0.0` | Minimum relevance score required to surface an article. |
-| `RANDOM_SURFACE_RATE` | `0.05` | Share of random low-score articles (anti-bubble). |
-| `FEED_GRAVITY` | `1.5` | How fast older articles drop in ranking. |
+**Override order:** admin panel (stored in the DB) → environment variable →
+built-in default. Editing one of the seven in the admin panel takes effect
+immediately, no restart; clearing it there falls back to the env var.
 
-Full reference in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#environment-variables).
+| Setting | Env var | Default | Admin UI | What it does |
+|---|---|---|---|---|
+| Auth secret | `JWT_SECRET` | `change-me` | — | Signs auth tokens. **Set a long random string.** |
+| Access token TTL | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | — | Access-token lifetime (minutes). |
+| Refresh token TTL | `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | — | Refresh-token lifetime (days). |
+| OpenRouter key | `OPENROUTER_API_KEY` | — | ✅ | **Required for recommendations** — LLM summaries, keyword + semantic scoring. |
+| OpenRouter model | `OPENROUTER_MODEL` | `google/gemma-4-26b-a4b-it:free` | ✅ | Any OpenRouter model id. |
+| OpenRouter base URL | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | — | API endpoint. |
+| OpenRouter timeout | `OPENROUTER_TIMEOUT` | `60` | — | Per-request timeout (seconds). |
+| Scoring mode | `SCORING_MODE` | `keyword` | ✅ | Active score: `keyword` or `smart`. |
+| Score threshold | `SCORE_THRESHOLD` | `0.0` | ✅ | Min active score to surface (0–1). |
+| Random surface rate | `RANDOM_SURFACE_RATE` | `0.05` | — | Share of random low-score articles (anti-bubble). |
+| Feed gravity | `FEED_GRAVITY` | `1.5` | — | How fast older articles drop in ranking. |
+| Cold-start threshold | `COLD_START_THRESHOLD` | `10` | — | Feedbacks below which the threshold is bypassed. |
+| Max keywords / article | `MAX_KEYWORDS_PER_ARTICLE` | `6` | ✅ | Keyword cap stored per article. |
+| Smart: neighbourhood | `SMART_TOPK` | `5` | — | k-NN neighbours per polarity. |
+| Smart: dislike weight | `SMART_LAMBDA` | `0.8` | — | λ in `raw = S+ − λ·S−`. |
+| Smart: sigmoid β | `SMART_BETA` | `2.0` | — | Steepness of the score sigmoid. |
+| Smart: decay half-life | `SMART_DECAY_HALFLIFE_DAYS` | `90` | — | Feedback decay half-life (days). |
+| Smart: rescore window | `SMART_RESCORE_WINDOW_DAYS` | `14` | — | Nightly rescore window (days). |
+| Fetch interval | `CRON_FETCH_INTERVAL` | `15` | ✅ | RSS fetch + enrich cadence (minutes). |
+| Enrich interval | `CRON_ENRICH_INTERVAL` | `30` | — | Enrichment pass cadence (minutes). |
+| Nightly refresh hour | `CRON_NIGHTLY_REFRESH_HOUR` | `3` | ✅ | UTC hour of weight recompute + dual-score rescore. |
+| Fetch batch size | `MINIFLUX_FETCH_BATCH_SIZE` | `100` | — | Entries pulled from Miniflux per run. |
+| Enrich batch size | `ENRICH_BATCH_SIZE` | `50` | — | Articles enriched per run. |
+| Embedding threads | `EMBEDDING_NUM_THREADS` | auto (≤4) | — | torch/OpenMP thread cap (worker only). |
+| Premium cutoff | `PREMIUM_CONTENT_MAX_CHARS` | `800` | — | Below this length → flagged partial/paywall. |
+| Boilerplate (exact) | `ENRICHMENT_BOILERPLATE_EXACT` | — | — | Extra paywall/CGU exact templates (`\|\|\|`-separated). |
+| Boilerplate (markers) | `ENRICHMENT_BOILERPLATE_MARKERS` | — | — | Extra boilerplate marker groups. |
+| Database DSN | `DATABASE_URL` | built from `POSTGRES_*` | — | Postgres connection (Compose-built). |
+| Miniflux URL | `MINIFLUX_URL` | — | — | Miniflux instance URL. |
+| App DB user / pass / name | `POSTGRES_USER` · `POSTGRES_PASSWORD` · `POSTGRES_DB` | `niouzou` | — | App database credentials (Compose). |
+| Miniflux admin | `MINIFLUX_ADMIN_USERNAME` · `MINIFLUX_ADMIN_PASSWORD` | `admin` · `change-me` | — | RSS admin account, first boot (Compose). |
+| Miniflux DB pass | `MINIFLUX_DB_PASSWORD` | `miniflux` | — | `miniflux` DB-user password (Compose). |
+| PWA API URL | `VITE_API_URL` | `http://localhost:8000/api/v1` | — | Baked into the bundle at build time. |
 
----
-
-## Development
-
-Hot-reload setups (running the API and PWA outside Docker) are documented in
-[`api/README.md`](api/README.md) and [`pwa/README.md`](pwa/README.md). The
-pytest suite uses a throwaway Postgres:
-
-```bash
-docker-compose -f docker-compose.test.yml up -d
-DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test \
-    uv run --project api alembic upgrade head
-DATABASE_URL=postgresql://niouzou:niouzou@localhost:5433/niouzou_test \
-    uv run --project api pytest
-```
-
-Architecture, data model, API spec and conventions all live in [`docs/`](docs/).
-
----
-
-## Known limitations (MVP)
-
-Conscious trade-offs, not bugs — most are harmless for single-user self-hosting:
-
-- **Refresh tokens are not revocable.** JWTs are stateless, valid for 30 days,
-  no blacklist. Logout or rotation can't invalidate a token before it expires.
-- **Relevance scores are frozen at enrichment.** A user who signs up after an
-  article was enriched won't see it in their feed.
-- **`RANDOM_SURFACE_RATE` + pagination.** With `SCORE_THRESHOLD > 0`, feed
-  pages can be unstable. With the default `SCORE_THRESHOLD = 0.0`, the feed
-  is fully deterministic.
-
----
-
-## Roadmap
-
-**Shipped:** swipe feed with live keyword learning · installable PWA · RSS
-ingestion via Miniflux · LLM enrichment (summaries + keywords) · dual scoring
-(keyword weights + local Smart Match embeddings) · admin panel · full-text
-Explore search · per-user recommendation reset · one-click Railway deploy.
-
-**Exploring:** revocable sessions · re-scoring older articles for users who join
-late · richer source management.
-
-The detailed build history lives in the internal development log,
-[`docs/EPICS.md`](docs/EPICS.md) — a decision record, not required reading.
+**Admin panel only** (no env var): edit the LLM prompt bodies, compact/merge the
+keyword vocabulary, pick the OpenRouter model from a live priced list, and manage
+users (promote admin, reset password).
 
 ---
 
