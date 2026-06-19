@@ -21,7 +21,7 @@ def test_mask_api_key():
 async def test_settings_get_falls_back_to_env_defaults(db_session):
     svc = SettingsService(db_session)
     # No DB row → returns the value from the env-backed Settings.
-    assert await svc.get("openrouter_model") == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert await svc.get("openrouter_model") == "google/gemma-4-26b-a4b-it:free"
     assert await svc.get("max_keywords_per_article") == 6
     assert await svc.get("cron_fetch_interval") == 15
     assert await svc.get("cron_nightly_refresh_hour") == 3
