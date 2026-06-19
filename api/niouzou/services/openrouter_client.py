@@ -1,8 +1,9 @@
 """Thin synchronous client over the OpenRouter chat-completions API.
 
-OpenRouter is optional: the whole system works without it (TF-IDF fallback).
-When ``OPENROUTER_API_KEY`` is set, the enrichment cron uses it for summaries
-and ``AIKeywordScorer`` uses it for keyword extraction.
+Keyword extraction is LLM-only (no TF-IDF fallback since E16-S8), so an
+OpenRouter key is required for enrichment — without it, articles get neither
+keywords nor a summary. When ``OPENROUTER_API_KEY`` is set, the enrichment cron
+uses it for summaries and ``AIKeywordScorer`` uses it for keyword extraction.
 
 Why synchronous (unlike ``MinifluxClient``)?
     The scorer contract ``BaseScorer.extract_keywords`` is synchronous — it is
@@ -34,8 +35,8 @@ logger = logging.getLogger("niouzou.openrouter_client")
 class OpenRouterError(RuntimeError):
     """Raised when an OpenRouter call ultimately fails (transport or parsing).
 
-    The enrichment cron catches this and falls back to TF-IDF, so a flaky LLM
-    never blocks the pipeline.
+    The enrichment cron catches this and degrades to an un-keyworded article
+    (``keywords=None``), so a flaky LLM never blocks the pipeline.
     """
 
 

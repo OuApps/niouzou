@@ -105,9 +105,10 @@ def _text_is_boilerplate(
 
 # E10-S1 — LLM retry policy. The OpenRouter free models routinely return
 # transient errors (rate limit, timeout, malformed JSON) that succeed on the
-# next call within a few seconds. Without this, a single hiccup pushed the
-# article to TF-IDF; the AI/TF-IDF ratio in /stats looked alarming even on
-# healthy days. Three attempts total, 1s and 3s backoff between them.
+# next call within a few seconds. Without this, a single hiccup left the
+# article un-enriched (no keywords, no summary); the failure ratio in /stats
+# looked alarming even on healthy days. Three attempts total, 1s and 3s backoff
+# between them.
 _LLM_BACKOFFS_S: tuple[float, ...] = (1.0, 3.0)
 
 # Input cap for the combined LLM call. The lede + first paragraphs carry the
@@ -199,10 +200,10 @@ class ExtractedContent:
 class Enrichment:
     """Combined output of the single LLM call: summary_executive + raw keywords.
 
-    ``keywords`` is ``None`` when AI is disabled or the call failed — the cron
-    then falls back to TF-IDF for keyword extraction. An empty list means the
-    LLM ran but returned no usable keywords (kept distinct from ``None`` so
-    the cron doesn't trigger fallback on a clean-but-empty reply).
+    ``keywords`` is ``None`` when AI is disabled or the call failed — the article
+    then gets no keywords (no TF-IDF fallback since E16-S8) and its keyword_score
+    stays NULL. An empty list means the LLM ran but returned no usable keywords
+    (kept distinct from ``None``, which marks a disabled or failed call).
 
     ``summary_short`` is retained on the dataclass (and on the ``articles``
     column) for backward compat with already-enriched rows — new enrichments
@@ -324,7 +325,8 @@ class EnrichmentService:
 
         Never raises: after up to 3 attempts (initial + 2 retries with 1s/3s
         backoff — E10-S1) a failed LLM call degrades to a fallback ``Enrichment``
-        with ``keywords=None`` so the cron triggers its TF-IDF fallback path.
+        with ``keywords=None`` — the article keeps no keywords (no TF-IDF
+        fallback since E16-S8) and its keyword_score stays NULL.
         Blocking — call via ``asyncio.to_thread``.
 
         ``retries=0`` is passed to ``complete_json`` so the retry budget is
