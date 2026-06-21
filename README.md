@@ -1,13 +1,13 @@
 # Niouzou
 
-**Your news feed, self-hosted and yours to tune.**
+**A self-hosted news feed that learns what each reader cares about.**
 
-A swipe-based news reader that scores every article 0–100% on how likely *you*
-are to care, and learns from each like/dislike. Two scoring engines run side by
-side — LLM-extracted keyword weights and semantic k-NN over local embeddings —
-and you pick which one drives the feed. No telemetry, no cloud lock-in, no black
-box: inspect and edit every weight, and swap the LLM behind it for any OpenRouter
-model.
+Niouzou is a swipe-based news reader that scores every article 0–100% on how
+likely the reader is to care, and learns from each like and dislike. Two scoring
+engines run side by side — LLM-extracted keyword weights and semantic k-NN over
+local embeddings — and either can drive the feed. No telemetry, no cloud
+lock-in, no black box: every weight is inspectable and editable, and the LLM
+behind it is swappable for any OpenRouter model.
 
 [![CI](https://github.com/OuApps/niouzou/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OuApps/niouzou/actions/workflows/ci.yml)
 ![Licence](https://img.shields.io/badge/licence-Apache%202.0%20%2B%20Commons%20Clause-blue)
@@ -24,9 +24,9 @@ model.
 | ![Feed](docs/assets/screen_1.png) | ![Explore & search](docs/assets/screen_2.png) | ![Saved](docs/assets/screen_3.png) | ![Keywords](docs/assets/screen_4.png) |
 
 - **Self-hosted** — one-click Railway, or Docker Compose
-- **Two scoring engines** — learned keyword weights ⊕ semantic k-NN over `pgvector`; pick which drives the feed
+- **Two scoring engines** — learned keyword weights or semantic k-NN over `pgvector`; either drives the feed
 - **Local embeddings** — semantic vectors run on-device (Qwen3-Embedding-0.6B); the LLM that enriches articles is pluggable via any OpenRouter model
-- **No black box** — every keyword weight is visible and editable; see why each article is promoted
+- **No black box** — every keyword weight is visible and editable; each article shows why it was promoted
 - **Installable PWA** — swipe, save for later, full-text search, no app store
 
 ---
@@ -37,22 +37,23 @@ Two independent relevance scores per article, both computed at ingestion and
 persisted side by side (`article_relevance_scores`):
 
 1. **Keyword score** — an LLM (via OpenRouter) extracts weighted keywords from
-   each article. Every like/dislike updates your personal keyword weights in
-   real time (with decay), and new articles are scored against them before they
-   reach your feed.
+   each article. Every like and dislike updates the reader's personal keyword
+   weights in real time (with decay), and new articles are scored against them
+   before they reach the feed.
 2. **Smart Match score** — a local embedding model turns each article's
    LLM-written summary into a 1024-dim vector in `pgvector`; the score is a k-NN
-   vote over your liked and disliked history, no keywords involved.
+   vote over the reader's liked and disliked history, no keywords involved.
 
 Both scores depend on LLM enrichment (via OpenRouter) — keyword extraction for
 the first, the article summary the embedding is built from for the second.
 
-`SCORING_MODE` (`keyword` — the default — or `smart`) picks which score filters
-and ranks the feed; flipping is instant, no re-scoring. `RANDOM_SURFACE_RATE`
-injects a few low-score articles so you never fully seal the bubble.
+`SCORING_MODE` (`keyword` or `smart`) picks which score filters and ranks the
+feed; flipping is instant, no re-scoring. `RANDOM_SURFACE_RATE` injects a few
+low-score articles so the feed never fully seals the bubble.
 
-Nothing is hidden: open the Keywords tab to read and edit every weight, or pin
-keywords to bias either engine. Reset your profile any time from Settings.
+Nothing is hidden: the Keywords tab exposes every weight for reading and editing,
+and keywords can be pinned to bias either engine. A profile can be reset at any
+time from Settings.
 
 <p align="center"><img src="docs/assets/screen_breakdown.png" width="300" alt="Score breakdown — keyword contributions and the closest Smart Match neighbours"></p>
 
@@ -77,15 +78,16 @@ keywords to bias either engine. Reset your profile any time from Settings.
 
 ```bash
 git clone https://github.com/OuApps/niouzou.git && cd niouzou
-cp .env.example .env && $EDITOR .env       # set JWT_SECRET, POSTGRES_PASSWORD + OPENROUTER_API_KEY
+cp .env.example .env
+# Edit the secrets and OpenRouter key in .env
 docker-compose up -d
 ```
 
-Open **http://localhost:3000**, create your account, add an RSS feed, start
-swiping. The **first account you create becomes the instance admin**; everyone
-after is a regular user. Database migrations, the Miniflux admin user, and
-Miniflux's API key are all provisioned automatically on the first boot — no UI
-step.
+Open **http://localhost:3000**, register an account, add an RSS feed, and start
+swiping. The **first account registered becomes the instance admin**; every
+account after is a regular user. Database migrations, the Miniflux admin user,
+and Miniflux's API key are all provisioned automatically on the first boot — no
+UI step.
 
 ---
 
@@ -93,21 +95,20 @@ step.
 
 Click the button above. It deploys the whole stack in one shot — **5 services**:
 `api`, `pwa`, `miniflux`, `refresh-worker` and `Postgres`. Railway generates
-`JWT_SECRET` for you at deploy time; set `OPENROUTER_API_KEY` to power the
-recommendation features (summaries, keyword + semantic scoring). Niouzou
+`JWT_SECRET` at deploy time; `OPENROUTER_API_KEY` powers the recommendation
+features (summaries, keyword + semantic scoring). Niouzou
 provisions its own Miniflux access token on first boot — no manual key step.
 
 ---
 
 ## Configuration
 
-Almost every knob is an environment variable with a sane default. Seven of them
-(✅ below) can also be changed live from the in-app **admin panel**; a few are
-deploy-time only (Compose / build).
+Almost every knob is an environment variable with a sane default.
+Some of them can also be changed live from the in-app **admin panel**.
 
 **Override order:** admin panel (stored in the DB) → environment variable →
-built-in default. Editing one of the seven in the admin panel takes effect
-immediately, no restart; clearing it there falls back to the env var.
+built-in default. Editing one of them in the admin panel takes effect
+immediately.
 
 | Setting | Env var | Default | Admin UI | What it does |
 |---|---|---|---|---|
@@ -145,7 +146,7 @@ immediately, no restart; clearing it there falls back to the env var.
 | Miniflux DB pass | `MINIFLUX_DB_PASSWORD` | `miniflux` | — | `miniflux` DB-user password (Compose). |
 | PWA API URL | `VITE_API_URL` | `http://localhost:8000/api/v1` | — | Baked into the bundle at build time. |
 
-**Admin panel only** (no env var): edit the LLM prompt bodies, compact/merge the
+**Admin panel only**: edit the LLM prompt bodies, compact/merge the
 keyword vocabulary, pick the OpenRouter model from a live priced list, and manage
 users (promote admin, reset password).
 
