@@ -389,7 +389,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 ## Key Design Decisions
 
 **Miniflux as external dependency**
-Miniflux is AGPL-licensed. Using it only via REST API keeps Niouzou under Apache 2.0 + Commons Clause without license contamination.
+Miniflux is AGPL-licensed, and Niouzou is itself AGPL-3.0; using Miniflux only via its REST API (a separate process, no linking) keeps the two cleanly decoupled.
 
 **Three distinct concepts, never conflated**
 `keyword.salience` (article-level, set once) × `keyword_weight` (user-level, learned) = `keyword_score`. Each has a single owner and a single moment of mutation. `smart_score` lives beside it, derived from `article.embedding` × feedback history (E16-S8).

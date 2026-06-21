@@ -120,4 +120,4 @@ This is the **live production database** — `SELECT` queries are fine for debug
 
 ## Licence
 
-Apache 2.0 + Commons Clause — self-hosting allowed, commercial hosting of this software for third parties is not.
+GNU AGPL-3.0 — open source; a modified version run as a network service must publish its source (AGPL §13). Contributions under `CLA.md` (keeps a future commercial/dual licence possible).

@@ -78,8 +78,8 @@ No open source, self-hostable solution exists with a mobile-first UX and a perso
 ## Distribution Model
 
 ### Open Source (self-hosted)
-- License: **Apache 2.0 + Commons Clause**
-- Free for personal and non-commercial use
+- License: **GNU AGPL-3.0** (contributions under a CLA to keep a commercial/dual licence possible)
+- Free to use, modify and self-host; network-service modifications must publish their source (AGPL §13)
 - Prohibited: offering Niouzou as a paid hosted service for third parties
 - Source code public on GitHub
 - Not OSI-certified "open source" — this is **source available**

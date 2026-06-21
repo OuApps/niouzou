@@ -10,7 +10,7 @@ lock-in, no black box: every weight is inspectable and editable, and the LLM
 behind it is swappable for any OpenRouter model.
 
 [![CI](https://github.com/OuApps/niouzou/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OuApps/niouzou/actions/workflows/ci.yml)
-![Licence](https://img.shields.io/badge/licence-Apache%202.0%20%2B%20Commons%20Clause-blue)
+![Licence](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/niouzou?referralCode=bGgJYu)
 
@@ -154,6 +154,10 @@ users (promote admin, reset password).
 
 ## Licence
 
-Apache 2.0 + Commons Clause. Free to use, modify, and self-host for personal
-or internal use. **Commercial hosting** as a service for third parties is not
-permitted. See [`LICENSE`](LICENSE).
+Open source under the **GNU AGPL-3.0**. Free to use, modify, and self-host. If
+a modified version is run as a network service, its source must be made
+available under the same licence (AGPL §13). See [`LICENSE`](LICENSE).
+
+Copyright © 2026 Guillaume Fregosi. Contributions are accepted under the
+[Contributor License Agreement](CLA.md), which keeps a future commercial/dual
+licence possible.

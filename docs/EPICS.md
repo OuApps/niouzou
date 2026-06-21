@@ -411,7 +411,7 @@ api/
 
 ## EPIC 6 — Packaging & Open Source ✅
 
-**Goal**: Anyone can self-host Niouzou with a single `docker compose up`. Repository published on GitHub under Apache 2.0 + Commons Clause.
+**Goal**: Anyone can self-host Niouzou with a single `docker compose up`. Repository published on GitHub under the GNU AGPL-3.0 (relicensed from Apache 2.0 + Commons Clause in E18).
 
 ### Stories
 
@@ -481,7 +481,7 @@ api/
 ---
 
 #### [x] E6-S4 — Repository & licence ✅
-- `LICENSE` file: Apache 2.0 + Commons Clause.
+- `LICENSE` file: GNU AGPL-3.0 (relicensed in E18).
 - `README.md`: pitch + one-command self-hosting quickstart + Railway deploy
   button + env var reference + screenshots + known MVP limitations.
 - `docs/` folder committed with all architecture documents.
