@@ -1,4 +1,6 @@
-# Niouzou
+<p align="center">
+  <img src="docs/assets/banner.png" alt="Niouzou" width="100%">
+</p>
 
 **A self-hosted news feed that learns what each reader cares about.**
 
