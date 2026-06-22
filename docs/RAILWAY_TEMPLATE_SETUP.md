@@ -49,7 +49,8 @@ below. After this, the only thing left without a value is `OPENROUTER_API_KEY`.
 | `OPENROUTER_API_KEY` | empty / optional (same as api) |
 | `CRON_FETCH_INTERVAL` | `30` |
 | `CRON_NIGHTLY_REFRESH_HOUR` | `3` |
-| `EMBEDDING_NUM_THREADS` / `OMP_NUM_THREADS` | `3` |
+| `EMBEDDING_NUM_THREADS` | `3` |
+| `OMP_NUM_THREADS` | `3` |
 | `RAILWAY_CONFIG_FILE` | `refresh-worker.railway.toml` (fixed) |
 
 ### miniflux

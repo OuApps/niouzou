@@ -137,7 +137,8 @@ immediately.
 | Nightly refresh hour | `CRON_NIGHTLY_REFRESH_HOUR` | `3` | ✅ | UTC hour of weight recompute + dual-score rescore. |
 | Fetch batch size | `MINIFLUX_FETCH_BATCH_SIZE` | `100` | — | Entries pulled from Miniflux per run. |
 | Enrich batch size | `ENRICH_BATCH_SIZE` | `50` | — | Articles enriched per run. |
-| Embedding threads | `EMBEDDING_NUM_THREADS` | auto (≤4) | — | torch/OpenMP thread cap (worker only). |
+| Embedding threads | `EMBEDDING_NUM_THREADS` | auto (≤4) | — | torch thread cap for the embedding model (worker only). |
+| OpenMP threads | `OMP_NUM_THREADS` | (unset) | — | OpenMP/BLAS thread cap, read at process start (worker only). Set ~3 to avoid CPU oversubscription. |
 | Premium cutoff | `PREMIUM_CONTENT_MAX_CHARS` | `800` | — | Below this length → flagged partial/paywall. |
 | Boilerplate (exact) | `ENRICHMENT_BOILERPLATE_EXACT` | — | — | Extra paywall/CGU exact templates (`\|\|\|`-separated). |
 | Boilerplate (markers) | `ENRICHMENT_BOILERPLATE_MARKERS` | — | — | Extra boilerplate marker groups. |
