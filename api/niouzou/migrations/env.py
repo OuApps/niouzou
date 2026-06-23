@@ -37,6 +37,10 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+# Arbitrary, stable key for the migration advisory lock (any bigint works).
+_MIGRATION_LOCK_ID = 776610291
+
+
 def do_run_migrations(connection) -> None:
     context.configure(
         connection=connection,
@@ -44,6 +48,16 @@ def do_run_migrations(connection) -> None:
         compare_type=True,
     )
     with context.begin_transaction():
+        # Serialize concurrent ``alembic upgrade head`` runs (e.g. overlapping
+        # Railway deploy retries against a fresh DB). Without this, two processes
+        # both find no ``alembic_version`` table and race to ``CREATE TABLE``
+        # it → ``UniqueViolationError`` on ``pg_type`` and a failed deploy. This
+        # transaction-scoped advisory lock makes a second runner block here until
+        # the first commits, after which it simply finds the DB already at head.
+        # Released automatically at transaction end; a no-op once migrated.
+        connection.exec_driver_sql(
+            f"SELECT pg_advisory_xact_lock({_MIGRATION_LOCK_ID})"
+        )
         context.run_migrations()
 
 

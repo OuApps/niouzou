@@ -312,6 +312,17 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
   creates the `miniflux` database on first boot and runs migrations.
 - The Miniflux service's `DATABASE_URL` references the same Postgres but the
   `miniflux` database (see README).
+- **First-deploy ordering.** Railway has no cross-service start ordering, so on a
+  fresh deploy Miniflux can boot before the API's pre-deploy has created the
+  `miniflux` DB (it logs `database "miniflux" does not exist`). The Miniflux
+  service therefore uses restart policy **`Always`** so it keeps restarting until
+  the DB exists; once created it persists on the volume (permanent thereafter).
+- **Concurrent-migration safety.** `alembic upgrade head` is guarded by a
+  transaction-scoped Postgres advisory lock in `migrations/env.py`: overlapping
+  pre-deploy retries against a fresh DB would otherwise both try to
+  `CREATE TABLE alembic_version` and crash on a duplicate-key (`pg_type`)
+  violation. The second runner blocks on the lock, then finds the DB already at
+  head — a no-op once migrated, so prod (already at head) is unaffected.
 - The Miniflux API token is provisioned automatically: the API/crons share
   Postgres with Miniflux, so they resolve a token directly from Miniflux's
   `api_keys` table on first call (see `services/miniflux_bootstrap.py`).

@@ -4147,6 +4147,7 @@ décision-log de 4000 lignes, et les screenshots datent.
 - [x] **E18-S2** — Déploiement Railway en 1-click (vrai Template publié `railway.com/deploy/niouzou` + section réécrite, 5 services réels)
 - [x] **E18-S3** — Statut du dev-log interne (header EPICS + roadmap publique) + politique tags/CLAUDE.md
 - [x] **E18-S4** — Captures d'écran réelles de l'app (MCP Firefox, viewport mobile, login mainteneur)
+- [x] **E18-S5** — Robustesse du déploiement template (race Miniflux + advisory lock migrations concurrentes)
 
 ---
 
@@ -4269,3 +4270,34 @@ keywords) sur l'app **déployée** (PWA Railway), en rendu **mobile-first**.
 
 **Acceptance** : 4 captures réelles, propres et cohérentes (mêmes dimensions mobiles) dans
 `docs/assets/` ; le README rend les nouvelles images.
+
+---
+
+#### [x] E18-S5 — Robustesse du déploiement template (race Miniflux + migrations concurrentes)
+
+**Problème adressé** :
+
+Un déploiement **neuf** du template publié plantait, pour **deux** raisons distinctes
+(la plomberie env vars, elle, était correcte et iso-prod : api/worker → base `railway`,
+miniflux → base `miniflux`, mêmes références) :
+1. **Race Miniflux** : Railway n'ordonne pas le démarrage des services → Miniflux boote avant que
+   le `preDeployCommand` de l'API ait créé la base `miniflux` (`database "miniflux" does not exist`),
+   et abandonne (restart `ON_FAILURE` / 10 retries épuisés avant que l'API ait fini son build à froid).
+2. **Migrations concurrentes** : `alembic upgrade head` (preDeploy API) échouait sur base vierge avec
+   `UniqueViolationError` sur `pg_type` / `CREATE TABLE alembic_version` — **deux runs alembic en
+   parallèle** (tentatives de redéploiement qui se chevauchent) qui tentent tous deux de créer
+   `alembic_version`. `env.py` n'avait aucun verrou. Latent : la prod ne l'a jamais touché (base
+   migrée depuis longtemps).
+
+**Fix** :
+- Miniflux : restart policy **`Always`** (composer) → boucle jusqu'à ce que la base `miniflux`
+  existe, puis persiste sur le volume (définitif). Healthcheck `/healthcheck` conservé (iso-prod).
+- Migrations : **advisory lock transactionnel Postgres** dans `migrations/env.py`
+  (`pg_advisory_xact_lock`) en tête de la transaction alembic → un 2ᵉ run bloque jusqu'au commit du
+  1ᵉʳ, puis trouve la base à head (no-op). Aucun impact quand la base est déjà migrée (prod intacte).
+
+**Vérification** : test de course local (deux `alembic upgrade head` simultanés sur base vierge) →
+**plus aucune** `UniqueViolation`, base finale à head.
+
+**Acceptance** : un déploiement neuf du template monte les 5 services ; `env.py` verrouillé ;
+`ARCHITECTURE.md` (section Railway) documente l'ordering Miniflux + la sécurité des migrations.
