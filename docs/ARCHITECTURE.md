@@ -317,6 +317,11 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
   `miniflux` DB (it logs `database "miniflux" does not exist`). The Miniflux
   service therefore uses restart policy **`Always`** so it keeps restarting until
   the DB exists; once created it persists on the volume (permanent thereafter).
+  In the **template**, the Miniflux service also runs with **no deploy
+  healthcheck**: Railway's healthcheck retry window (default 5 min, and the
+  timeout isn't exposed in the template composer) would otherwise expire while
+  Miniflux waits out the API's cold build and mark the deploy failed. Prod keeps
+  `/healthcheck` on Miniflux — it isn't subject to a cold-build race.
 - **Concurrent-migration safety.** `alembic upgrade head` is guarded by a
   transaction-scoped Postgres advisory lock in `migrations/env.py`: overlapping
   pre-deploy retries against a fresh DB would otherwise both try to

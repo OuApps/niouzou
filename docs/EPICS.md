@@ -4291,7 +4291,12 @@ miniflux → base `miniflux`, mêmes références) :
 
 **Fix** :
 - Miniflux : restart policy **`Always`** (composer) → boucle jusqu'à ce que la base `miniflux`
-  existe, puis persiste sur le volume (définitif). Healthcheck `/healthcheck` conservé (iso-prod).
+  existe, puis persiste sur le volume (définitif). **Healthcheck Path vidé dans le template** :
+  test live (projet `68f187ce`) → Miniflux finissait par connecter la base (`Starting HTTP server`)
+  mais la **fenêtre de healthcheck (défaut 5 min) expirait** pendant le build à froid de l'API
+  → deploy FAILED (un redéploiement manuel le passait au vert). Le champ *Healthcheck Timeout*
+  n'est pas exposé dans le composer → on retire le healthcheck (sans gate, `Always` traverse la
+  course tout seul). Prod garde `/healthcheck` (pas de course au build à froid).
 - Migrations : **advisory lock transactionnel Postgres** dans `migrations/env.py`
   (`pg_advisory_xact_lock`) en tête de la transaction alembic → un 2ᵉ run bloque jusqu'au commit du
   1ᵉʳ, puis trouve la base à head (no-op). Aucun impact quand la base est déjà migrée (prod intacte).
