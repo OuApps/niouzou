@@ -7,7 +7,7 @@ import { FeedArticleSlide } from '../components/FeedArticleSlide'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { diffForPost, useFeedbackStore } from '../store/feedback'
-import { getFeed, getSources, postFeedback, postImpression, ApiError } from '../api'
+import { getFeed, getSources, getStats, postFeedback, postImpression, ApiError } from '../api'
 import type { FeedArticle, FeedbackState, Reaction } from '../types/api'
 
 const PAGE_SIZE = 20
@@ -25,6 +25,20 @@ const VISIBILITY_REFETCH_AFTER_MS = 30_000
 // E7-S8 — empty-state threshold relaxation (preserved from the swipe deck).
 const SCORE_STEP = 0.1
 const INITIAL_OFFER_FLOOR = 0.4
+
+// E19-S4 — while a fresh account waits for its first articles, poll this often
+// for pipeline progress and silently probe the feed so it self-populates.
+const FETCH_POLL_MS = 6000
+
+interface FetchProgress {
+  running: boolean
+  done: number
+  total: number
+  pending: number
+  // articles.total for this user's sources > 0 — i.e. they've had articles
+  // before, so an empty deck means "caught up", not "still onboarding".
+  hasEverFetched: boolean
+}
 
 function formatScore(value: number): string {
   return value <= 0 ? '0' : value.toFixed(1)
@@ -62,6 +76,8 @@ export const Feed = () => {
   // E19-S3 — when the deck is empty, distinguish "fresh account, no sources"
   // from "nothing above the score floor". null = not checked yet.
   const [noSources, setNoSources] = useState<boolean | null>(null)
+  // E19-S4 — live pipeline progress while an empty deck waits for articles.
+  const [fetchProgress, setFetchProgress] = useState<FetchProgress | null>(null)
   // Active slide index — updated by the IntersectionObserver. Drives prefetch.
   const [activeIndex, setActiveIndex] = useState(0)
 
@@ -366,6 +382,59 @@ export const Feed = () => {
     }
   }, [status, articles.length, noSources])
 
+  // E19-S4 — empty deck but the user *has* sources: the pipeline is (or was
+  // just) fetching their articles. Poll /stats for live progress and silently
+  // probe the feed so it self-populates the moment articles land — no manual
+  // refresh, no misleading "widen the filter" copy. Stops as soon as articles
+  // arrive (the deck is no longer empty, so this effect bails on re-run).
+  const emptyWithSources =
+    status === 'ready' && articles.length === 0 && noSources === false
+  useEffect(() => {
+    // No reset on exit: when the deck is non-empty the render path ignores
+    // fetchProgress, and tick() refreshes it on the next empty entry — so a
+    // synchronous setState here would only trip the set-state-in-effect rule.
+    if (!emptyWithSources) return
+    let active = true
+    let timer = 0
+    const tick = async () => {
+      try {
+        const stats = await getStats()
+        if (!active) return
+        setFetchProgress({
+          running: stats.pipeline.status === 'running',
+          done: stats.pipeline.in_progress?.done ?? 0,
+          total: stats.pipeline.in_progress?.total ?? 0,
+          pending: stats.articles.pending_enrichment,
+          hasEverFetched: stats.articles.total > 0,
+        })
+      } catch {
+        // Keep the last known progress; the probe below still runs.
+      }
+      try {
+        const page = await getFeed({
+          limit: PAGE_SIZE,
+          minScore: minScore ?? undefined,
+        })
+        if (!active) return
+        if (page.articles.length > 0) {
+          setArticles(page.articles)
+          setCursor(page.next_cursor)
+          setHasMore(page.has_more)
+          setActiveIndex(0)
+          return // articles arrived — let the deck render, stop polling
+        }
+      } catch {
+        // Transient — try again next tick.
+      }
+      if (active) timer = window.setTimeout(tick, FETCH_POLL_MS)
+    }
+    tick()
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [emptyWithSources, minScore])
+
   // ── Render ────────────────────────────────────────────────────────────────
   if (status === 'loading') {
     return (
@@ -386,27 +455,46 @@ export const Feed = () => {
   }
 
   if (articles.length === 0) {
+    // A veteran who's read everything: articles exist, nothing pending, idle.
+    // Anything else on an empty-with-sources deck = still fetching (E19-S4).
+    const caughtUp =
+      !!fetchProgress &&
+      fetchProgress.hasEverFetched &&
+      !fetchProgress.running &&
+      fetchProgress.pending === 0
+
+    let body
+    if (noSources === true) {
+      body = <NoSourcesPrompt onAdd={() => navigate('/sources')} />
+    } else if (noSources === null) {
+      // Still resolving whether the account has sources — stay neutral rather
+      // than flashing the wrong empty state.
+      body = <Spinner size={32} />
+    } else if (caughtUp) {
+      body = (
+        <EmptyDeck
+          currentFloor={minScore}
+          onLower={(next) => {
+            setStatus('loading')
+            setMinScore(next)
+          }}
+          onReset={
+            minScore !== null
+              ? () => {
+                  setStatus('loading')
+                  setMinScore(null)
+                }
+              : undefined
+          }
+        />
+      )
+    } else {
+      body = <FetchingState progress={fetchProgress} />
+    }
+
     return (
       <FullScreenShell>
-        {noSources ? (
-          <NoSourcesPrompt onAdd={() => navigate('/sources')} />
-        ) : (
-          <EmptyDeck
-            currentFloor={minScore}
-            onLower={(next) => {
-              setStatus('loading')
-              setMinScore(next)
-            }}
-            onReset={
-              minScore !== null
-                ? () => {
-                    setStatus('loading')
-                    setMinScore(null)
-                  }
-                : undefined
-            }
-          />
-        )}
+        {body}
         <BottomNav />
       </FullScreenShell>
     )
@@ -517,6 +605,46 @@ const NoSourcesPrompt = ({ onAdd }: { onAdd: () => void }) => (
     </button>
   </div>
 )
+
+/**
+ * E19-S4 — shown when a fresh account has sources but no articles yet: the
+ * pipeline was kicked on source add and is fetching/enriching. Polls in the
+ * background (see the Feed effect) and the deck self-populates when ready, so
+ * this is purely reassurance — no action required from the user.
+ */
+const FetchingState = ({ progress }: { progress: FetchProgress | null }) => {
+  const detail =
+    progress?.running && progress.total > 0
+      ? `Enriching articles… ${progress.done}/${progress.total}`
+      : (progress?.pending ?? 0) > 0
+        ? `Processing ${progress!.pending} article${progress!.pending === 1 ? '' : 's'}…`
+        : 'This can take a minute.'
+
+  return (
+    <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+      <div
+        className="flex items-center justify-center"
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: '50%',
+          background: 'var(--accent-subtle)',
+          margin: '0 auto 16px',
+        }}
+      >
+        <Spinner size={28} />
+      </div>
+      <p style={{ fontSize: 20, marginBottom: 8, color: 'var(--text-primary)', fontWeight: 600 }}>
+        Fetching your first articles…
+      </p>
+      <p style={{ marginBottom: 4, maxWidth: 260 }}>
+        We&apos;re pulling in your sources. New articles will appear here
+        automatically.
+      </p>
+      <p style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{detail}</p>
+    </div>
+  )
+}
 
 interface EmptyDeckProps {
   currentFloor: number | null

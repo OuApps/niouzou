@@ -628,6 +628,13 @@ Add a new RSS source. The backend registers the feed in Miniflux and creates the
 > The feed name is auto-discovered from the RSS feed metadata.
 > Returns `409` if the source URL already exists for this user.
 
+> **Side effect (E19-S4):** after the source is committed, the API kicks the
+> refresh-worker's fetch+enrich pipeline (`POST /run`) as a fire-and-forget
+> background task so a brand-new user doesn't wait for the next scheduled tick.
+> Best-effort — a worker that's down or already running never affects the
+> `201` response. The PWA feed polls `GET /stats` and self-populates when the
+> first articles land.
+
 ---
 
 ### PATCH /sources/{id}

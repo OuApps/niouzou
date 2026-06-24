@@ -4362,3 +4362,31 @@ empty-state dédié (« No sources yet » + bouton **Add a source** → `/source
 **Acceptance** : compte neuf, 0 source → empty-state d'onboarding avec bouton qui redirige vers
 `/sources` ; dès qu'une source existe, l'empty-state « caught up / widen filter » d'origine
 revient.
+
+#### [x] E19-S4 — Après ajout de source : déclencher le pipeline + état « fetching » live
+
+**Problème** : une fois sa 1re source ajoutée, le nouvel utilisateur attend le prochain tick
+planifié du worker (`cron_fetch_interval`, **15 min** par défaut) avant de voir le moindre article,
+et entre-temps le feed vide retombe sur « You're all caught up / widen the filter » — message
+trompeur (il n'a jamais eu d'article). Aucun signal de « ça arrive ».
+
+**Fix** (déclencher + informer) :
+- **Backend** — nouveau `services/worker_client.py` (`trigger_pipeline_run`, best-effort, ne lève
+  jamais). `POST /sources` enchaîne un `BackgroundTask` qui kicke le worker `POST /run` **après le
+  commit** de la requête (sinon le worker fetcherait avant que la source soit visible). Débouncé par
+  le lock du worker (`already_running` si un run est déjà en vol) → sûr à chaque ajout. Pas de
+  nouveau réglage. Le `/admin/refresh` admin-only existant est inchangé.
+- **Frontend** — quand le deck est vide **et** que l'utilisateur a des sources, le Feed poll `/stats`
+  (accessible à tout user : `pipeline.status` + `in_progress` done/total, `articles.pending_enrichment`,
+  `articles.total` scopé aux sources du user) toutes les 6 s et **sonde silencieusement** le feed ;
+  il se peuple tout seul dès que des articles arrivent (sans spinner de rechargement). Un état dédié
+  `FetchingState` (« Fetching your first articles… » + progression live) remplace le CTA
+  « widen filter ». Distinction : `caughtUp` = a déjà eu des articles **et** pipeline idle **et**
+  rien en attente → on garde l'empty-state d'origine ; sinon → `FetchingState`.
+
+**Vérification** : tests `test_worker_client` (started / already_running / injoignable → sentinelle,
+jamais d'exception) ; `test_sources_service` vert (service inchangé) ; build/typecheck/lint PWA OK.
+
+**Acceptance** : ajout d'une source sur compte neuf → le pipeline démarre sans attendre le tick, le
+feed affiche « Fetching your first articles… » avec progression, puis charge les articles
+automatiquement ; un vétéran qui a tout lu garde « caught up / widen filter ».

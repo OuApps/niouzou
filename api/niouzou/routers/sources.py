@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 
 from niouzou.deps import CurrentUser
 from niouzou.schemas.sources import (
@@ -13,6 +13,7 @@ from niouzou.schemas.sources import (
     SourceUpdate,
 )
 from niouzou.services.sources_service import SourcesService
+from niouzou.services.worker_client import trigger_pipeline_run
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -28,11 +29,20 @@ async def list_sources(
 
 @router.post("", response_model=SourceOut, status_code=status.HTTP_201_CREATED)
 async def create_source(
-    body: SourceCreate, user: CurrentUser, service: SourcesServiceDep
+    body: SourceCreate,
+    user: CurrentUser,
+    service: SourcesServiceDep,
+    background: BackgroundTasks,
 ) -> SourceOut:
-    return await service.create_source(
+    source = await service.create_source(
         user.id, body.url, fetch_full_content=body.fetch_full_content
     )
+    # E19-S4 — kick the pipeline so a brand-new user doesn't wait up to a full
+    # fetch interval for their first articles. Runs after the response (so the
+    # request's commit has landed and the worker sees the new source); the
+    # worker debounces against any run already in flight.
+    background.add_task(trigger_pipeline_run)
+    return source
 
 
 @router.patch("/{source_id}", response_model=SourceOut)
