@@ -7,6 +7,23 @@
 - **Rounded**: generous border-radius everywhere, pill shapes for badges and tags
 - **Minimal chrome**: no unnecessary borders, labels, or decorations
 - **Mobile-first**: all sizing and spacing optimized for 375px viewport
+- **Centred column on desktop**: the whole app is constrained to a ~480px
+  centred column (`#root { max-width: 480px; margin-inline: auto }`, E19-S1) so
+  it reads as a "phone" on wide screens instead of stretching full-width. The
+  blob background stays full-bleed behind it; fixed UI that must align with the
+  column (`BottomNav`, modals) recreates the same width. Faint side borders
+  appear ≥ 520px to delineate the column.
+
+---
+
+## Modals
+
+- All centred dialogs go through `components/Modal.tsx` (E19-S2): backdrop
+  `rgba(0,0,0,0.6)` + 4px blur, `glass` panel, `border-radius: 20`,
+  `max-height: 85vh`, closes on backdrop click and Escape. Pass `maxWidth` to
+  size the panel (360 for confirmations, 560 for content-heavy previews).
+- The feed's `ScoreDebugSheet` is a **bottom sheet**, a deliberately distinct
+  pattern — not a `Modal`.
 
 ---
 

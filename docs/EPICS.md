@@ -4306,3 +4306,59 @@ miniflux → base `miniflux`, mêmes références) :
 
 **Acceptance** : un déploiement neuf du template monte les 5 services ; `env.py` verrouillé ;
 `ARCHITECTURE.md` (section Railway) documente l'ordering Miniflux + la sécurité des migrations.
+
+---
+
+## EPIC 19 — Polish post-lancement : desktop & onboarding (juin 2026)
+
+Trois retours après le passage open source, en testant l'app « en conditions réelles » sur
+desktop et en première connexion. PWA pur — aucun changement backend.
+
+### Stories
+
+#### [x] E19-S1 — Largeur desktop : colonne centrée (plus de full-width)
+
+**Problème** : l'app est mobile-first (375px) mais aucun écran ne contraint sa largeur — sur PC
+tout s'étire sur toute la fenêtre, illisible. Choix retenu : une **colonne centrée ~480px** sur
+**tous** les écrans (feed swipe inclus), pour garder l'expérience « téléphone » identique sur desktop.
+
+**Fix** : contrainte globale dans `index.css` sur `#root` (`max-width: 480px ; margin-inline: auto`,
+`position: relative`) + bordures latérales discrètes ≥ 520px pour délimiter la colonne. Le
+`BlobBackground` (`.bg-blobs`, `position: fixed inset: 0`) reste plein écran derrière la colonne.
+`BottomNav` (fixed) recadré à la même largeur (`max-width: 480px ; margin-inline: auto`) pour
+s'aligner sur la colonne. Mobile (< 480px) strictement inchangé.
+
+**Acceptance** : sur desktop tous les écrans (Feed, Explore, Saved, Keywords, Profile, Sources,
+Admin, Login/Register) s'affichent en colonne centrée ~480px, blobs plein écran derrière ; mobile
+identique à avant.
+
+#### [x] E19-S2 — Uniformisation Admin : sections repliables + popups unifiés
+
+**Problème** : l'écran Admin mélange des sections toujours dépliées (Configuration, Scoring,
+Keywords) et d'autres repliables (Users, Prompts) ; et deux popups codés à la main divergent
+(`DeleteUserModal` : `glass-sm`/maxWidth 360/blur 4px/zIndex 50 ; `CompactionPreviewModal` :
+`glass`/maxWidth 560/zIndex 60/sans blur).
+
+**Fix** :
+- **Sections** : toutes les sections Admin passent par un composant `AdminSection` repliable, **fermées
+  par défaut** (accordéon cohérent : Configuration, Scoring engine, Keywords, Users, LLM Prompts).
+- **Popups** : nouveau composant partagé `components/Modal.tsx` (backdrop `fixed inset-0`,
+  `rgba(0,0,0,0.6)` + blur, centré, `glass`, maxHeight 85vh, fermeture au clic backdrop / Échap).
+  `DeleteUserModal` et `CompactionPreviewModal` passent par `Modal`. (`ScoreDebugSheet` reste un
+  bottom sheet — pattern volontairement distinct, hors périmètre.)
+
+**Acceptance** : les 5 sections Admin sont des accordéons fermés par défaut ; les deux popups
+partagent le même habillage via `Modal` ; Échap et clic backdrop ferment.
+
+#### [x] E19-S3 — Première connexion sans source : CTA d'ajout
+
+**Problème** : un nouvel utilisateur sans aucune source voit le même empty-state que « plus
+d'article » (« You're all caught up! ») — trompeur, aucun chemin évident vers l'ajout de source.
+
+**Fix** : quand le deck est vide, le Feed détecte « 0 source » (`getSources`) et affiche un
+empty-state dédié (« No sources yet » + bouton **Add a source** → `/sources`), au lieu du CTA
+« widen the filter ». Détection paresseuse (uniquement quand le deck est vide).
+
+**Acceptance** : compte neuf, 0 source → empty-state d'onboarding avec bouton qui redirige vers
+`/sources` ; dès qu'une source existe, l'empty-state « caught up / widen filter » d'origine
+revient.

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Inbox } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { FeedArticleSlide } from '../components/FeedArticleSlide'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { diffForPost, useFeedbackStore } from '../store/feedback'
-import { getFeed, postFeedback, postImpression, ApiError } from '../api'
+import { getFeed, getSources, postFeedback, postImpression, ApiError } from '../api'
 import type { FeedArticle, FeedbackState, Reaction } from '../types/api'
 
 const PAGE_SIZE = 20
@@ -34,6 +35,7 @@ export const Feed = () => {
   // from Explore History / New and from Saved). We read the param once on
   // mount, then strip it from the URL so refreshes/scroll-snap reloads don't
   // keep re-applying the same pivot.
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [startId, setStartId] = useState<string | null>(
     () => searchParams.get('start'),
@@ -57,6 +59,9 @@ export const Feed = () => {
   const [loadingMore, setLoadingMore] = useState(false)
   // null = use server default. Lowered via the empty-state CTA (E7-S8).
   const [minScore, setMinScore] = useState<number | null>(null)
+  // E19-S3 — when the deck is empty, distinguish "fresh account, no sources"
+  // from "nothing above the score floor". null = not checked yet.
+  const [noSources, setNoSources] = useState<boolean | null>(null)
   // Active slide index — updated by the IntersectionObserver. Drives prefetch.
   const [activeIndex, setActiveIndex] = useState(0)
 
@@ -342,6 +347,25 @@ export const Feed = () => {
     [getOverlay, send],
   )
 
+  // Once the deck settles empty, check whether the account has any sources at
+  // all — drives the onboarding empty state vs. the "widen the filter" one.
+  // Lazy: only runs while empty, and stops re-checking once answered (E19-S3).
+  useEffect(() => {
+    if (status !== 'ready' || articles.length > 0 || noSources !== null) return
+    let cancelled = false
+    getSources()
+      .then((res) => {
+        if (!cancelled) setNoSources(res.sources.length === 0)
+      })
+      .catch(() => {
+        // Non-fatal — fall back to the default empty deck.
+        if (!cancelled) setNoSources(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [status, articles.length, noSources])
+
   // ── Render ────────────────────────────────────────────────────────────────
   if (status === 'loading') {
     return (
@@ -364,21 +388,25 @@ export const Feed = () => {
   if (articles.length === 0) {
     return (
       <FullScreenShell>
-        <EmptyDeck
-          currentFloor={minScore}
-          onLower={(next) => {
-            setStatus('loading')
-            setMinScore(next)
-          }}
-          onReset={
-            minScore !== null
-              ? () => {
-                  setStatus('loading')
-                  setMinScore(null)
-                }
-              : undefined
-          }
-        />
+        {noSources ? (
+          <NoSourcesPrompt onAdd={() => navigate('/sources')} />
+        ) : (
+          <EmptyDeck
+            currentFloor={minScore}
+            onLower={(next) => {
+              setStatus('loading')
+              setMinScore(next)
+            }}
+            onReset={
+              minScore !== null
+                ? () => {
+                    setStatus('loading')
+                    setMinScore(null)
+                  }
+                : undefined
+            }
+          />
+        )}
         <BottomNav />
       </FullScreenShell>
     )
@@ -445,6 +473,50 @@ export const Feed = () => {
     </div>
   )
 }
+
+/**
+ * E19-S3 — onboarding empty state shown to a fresh account with no sources,
+ * pointing straight at the Sources screen instead of the misleading
+ * "you're all caught up" / widen-the-filter copy.
+ */
+const NoSourcesPrompt = ({ onAdd }: { onAdd: () => void }) => (
+  <div className="text-center" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+    <div
+      className="flex items-center justify-center"
+      style={{
+        width: 64,
+        height: 64,
+        borderRadius: '50%',
+        background: 'var(--accent-subtle)',
+        color: 'var(--accent)',
+        margin: '0 auto 16px',
+      }}
+    >
+      <Inbox size={28} />
+    </div>
+    <p style={{ fontSize: 20, marginBottom: 8, color: 'var(--text-primary)', fontWeight: 600 }}>
+      No sources yet
+    </p>
+    <p style={{ marginBottom: 16, maxWidth: 260 }}>
+      Add a feed to start seeing articles here.
+    </p>
+    <button
+      onClick={onAdd}
+      style={{
+        padding: '10px 16px',
+        borderRadius: 20,
+        border: '1px solid var(--accent-border)',
+        background: 'var(--accent-subtle)',
+        color: 'var(--accent-text)',
+        fontSize: 13,
+        fontWeight: 600,
+        cursor: 'pointer',
+      }}
+    >
+      Add a source
+    </button>
+  </div>
+)
 
 interface EmptyDeckProps {
   currentFloor: number | null

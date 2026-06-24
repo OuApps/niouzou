@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import { ArrowLeft, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
+import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
@@ -42,8 +44,6 @@ export const Admin = () => {
     [],
   )
 
-  const [usersOpen, setUsersOpen] = useState(false)
-
   // E10-S3 — Keyword compaction stats; refreshed after apply/reject.
   const {
     data: stats,
@@ -79,14 +79,13 @@ export const Admin = () => {
       {/* No flex-1 here: a flex-basis:0% child inside a column flex container
           can short-circuit the parent's intrinsic height calculation, leaving
           the long Users list unscrollable on iOS. The wrapper already owns
-          ``overflow-y-auto h-dvh`` so a normal block grows naturally. */}
-      <div className="relative z-10" style={{ padding: '16px 16px 40px' }}>
-        {/* Config section */}
-        <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 12 }}>
-            Configuration
-          </h2>
+          ``overflow-y-auto h-dvh`` so a normal block grows naturally.
 
+          E19-S2 — every section is a collapsible AdminSection, closed by
+          default, for a consistent accordion instead of the old mix of
+          always-open headers and ad-hoc toggles. */}
+      <div className="relative z-10" style={{ padding: '16px 16px 40px' }}>
+        <AdminSection title="Configuration">
           {configLoading ? (
             <div className="flex justify-center" style={{ paddingTop: 20 }}>
               <Spinner size={24} />
@@ -139,97 +138,92 @@ export const Admin = () => {
               />
             </div>
           ) : null}
-        </div>
+        </AdminSection>
 
         {/* Scoring engine section (E16-S4) */}
         {config ? (
-          <div style={{ marginBottom: 24 }}>
-            <h2
-              style={{
-                fontSize: 14,
-                fontWeight: 600,
-                color: 'var(--text-secondary)',
-                marginBottom: 12,
-              }}
-            >
-              Scoring engine
-            </h2>
+          <AdminSection title="Scoring engine">
             <ScoringEngineSection config={config} onChange={reloadConfig} />
-          </div>
+          </AdminSection>
         ) : null}
 
         {/* Keywords section (E10-S3) */}
-        <div style={{ marginBottom: 24 }}>
-          <h2
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              color: 'var(--text-secondary)',
-              marginBottom: 12,
-            }}
-          >
-            Keywords
-          </h2>
+        <AdminSection title="Keywords">
           <KeywordsSection stats={stats} onChange={reloadStats} />
-        </div>
+        </AdminSection>
 
         {/* Users section */}
-        <div>
-          <button
-            onClick={() => setUsersOpen((o) => !o)}
-            style={{
-              width: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              fontSize: 14,
-              fontWeight: 600,
-              color: 'var(--text-secondary)',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              padding: '0 0 12px 0',
-              marginBottom: 12,
-            }}
-            aria-expanded={usersOpen}
-          >
-            <span>Users</span>
-            {usersOpen ? (
-              <ChevronUp size={16} style={{ color: 'var(--text-tertiary)' }} />
-            ) : (
-              <ChevronDown size={16} style={{ color: 'var(--text-tertiary)' }} />
-            )}
-          </button>
-
-          {usersOpen && (
-            <>
-              {usersLoading ? (
-                <div className="flex justify-center" style={{ paddingTop: 20 }}>
-                  <Spinner size={24} />
-                </div>
-              ) : usersError ? (
-                <ErrorState message={usersError} onRetry={reloadUsers} />
-              ) : users && users.length > 0 ? (
-                <div className="flex flex-col gap-2">
-                  {users.map((user) => (
-                    <UserRow
-                      key={user.id}
-                      user={user}
-                      onPasswordReset={reloadUsers}
-                      onDelete={reloadUsers}
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
+        <AdminSection title="Users">
+          {usersLoading ? (
+            <div className="flex justify-center" style={{ paddingTop: 20 }}>
+              <Spinner size={24} />
+            </div>
+          ) : usersError ? (
+            <ErrorState message={usersError} onRetry={reloadUsers} />
+          ) : users && users.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {users.map((user) => (
+                <UserRow
+                  key={user.id}
+                  user={user}
+                  onPasswordReset={reloadUsers}
+                  onDelete={reloadUsers}
+                />
+              ))}
+            </div>
+          ) : null}
+        </AdminSection>
 
         {/* E13-S2 — LLM prompts editor */}
-        <div style={{ marginTop: 28 }}>
+        <AdminSection title="LLM Prompts">
           <PromptsSection />
-        </div>
+        </AdminSection>
       </div>
+    </div>
+  )
+}
+
+interface AdminSectionProps {
+  title: string
+  defaultOpen?: boolean
+  children: ReactNode
+}
+
+/**
+ * E19-S2 — uniform collapsible section for the admin screen. Closed by
+ * default; children mount only when open (so a section's data fetch stays
+ * lazy where the content owns its own fetch).
+ */
+const AdminSection = ({ title, defaultOpen = false, children }: AdminSectionProps) => {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          fontSize: 14,
+          fontWeight: 600,
+          color: 'var(--text-secondary)',
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '0 0 12px 0',
+          marginBottom: open ? 12 : 0,
+        }}
+      >
+        <span>{title}</span>
+        {open ? (
+          <ChevronUp size={16} style={{ color: 'var(--text-tertiary)' }} />
+        ) : (
+          <ChevronDown size={16} style={{ color: 'var(--text-tertiary)' }} />
+        )}
+      </button>
+      {open && children}
     </div>
   )
 }
@@ -753,107 +747,78 @@ const DeleteUserModal = ({
 }: DeleteUserModalProps) => {
   const matches = confirmInput === email
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.6)',
-        backdropFilter: 'blur(4px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 16,
-        zIndex: 50,
-      }}
-      onClick={onCancel}
-    >
-      <div
-        className="glass-sm"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          borderRadius: 16,
-          padding: 18,
-          width: '100%',
-          maxWidth: 360,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12,
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <AlertTriangle size={16} style={{ color: 'var(--action-dislike)' }} />
-          <h3 style={{ fontSize: 14, fontWeight: 700 }}>Delete user</h3>
-        </div>
-        <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          This wipes <strong>{email}</strong> and every related row (sources,
-          articles seen, feedback, weights). It cannot be undone.
-        </p>
-        <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-          Type the email to confirm:
-        </p>
-        <input
-          type="text"
-          value={confirmInput}
-          onChange={(e) => setConfirmInput(e.target.value)}
-          autoFocus
-          style={{
-            padding: '8px 10px',
-            borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.10)',
-            background: 'rgba(255,255,255,0.04)',
-            color: 'var(--text-primary)',
-            fontSize: 12,
-          }}
-        />
-        {error && (
-          <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>
-        )}
-        <div className="flex gap-2">
-          <button
-            onClick={onCancel}
-            disabled={deleting}
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              borderRadius: 8,
-              background: 'rgba(255,255,255,0.08)',
-              color: 'var(--text-primary)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: deleting ? 'default' : 'pointer',
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={!matches || deleting}
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              borderRadius: 8,
-              background: matches ? 'var(--action-dislike)' : 'rgba(255,255,255,0.08)',
-              color: matches ? '#fff' : 'var(--text-tertiary)',
-              border: 'none',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: !matches || deleting ? 'default' : 'pointer',
-              opacity: deleting ? 0.6 : 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-            }}
-          >
-            {deleting && <Spinner size={11} />}
-            {deleting ? 'Deleting…' : 'Delete forever'}
-          </button>
-        </div>
+    <Modal onClose={onCancel} maxWidth={360} ariaLabel="Delete user">
+      <div className="flex items-center gap-2">
+        <AlertTriangle size={16} style={{ color: 'var(--action-dislike)' }} />
+        <h3 style={{ fontSize: 14, fontWeight: 700 }}>Delete user</h3>
       </div>
-    </div>
+      <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+        This wipes <strong>{email}</strong> and every related row (sources,
+        articles seen, feedback, weights). It cannot be undone.
+      </p>
+      <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+        Type the email to confirm:
+      </p>
+      <input
+        type="text"
+        value={confirmInput}
+        onChange={(e) => setConfirmInput(e.target.value)}
+        autoFocus
+        style={{
+          padding: '8px 10px',
+          borderRadius: 8,
+          border: '1px solid rgba(255,255,255,0.10)',
+          background: 'rgba(255,255,255,0.04)',
+          color: 'var(--text-primary)',
+          fontSize: 12,
+        }}
+      />
+      {error && (
+        <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={onCancel}
+          disabled={deleting}
+          style={{
+            flex: 1,
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: 'rgba(255,255,255,0.08)',
+            color: 'var(--text-primary)',
+            border: '1px solid rgba(255,255,255,0.10)',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: deleting ? 'default' : 'pointer',
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={!matches || deleting}
+          style={{
+            flex: 1,
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: matches ? 'var(--action-dislike)' : 'rgba(255,255,255,0.08)',
+            color: matches ? '#fff' : 'var(--text-tertiary)',
+            border: 'none',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: !matches || deleting ? 'default' : 'pointer',
+            opacity: deleting ? 0.6 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+          }}
+        >
+          {deleting && <Spinner size={11} />}
+          {deleting ? 'Deleting…' : 'Delete forever'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 
@@ -861,56 +826,30 @@ const DeleteUserModal = ({
 // ── E13-S2 — LLM prompts editor ────────────────────────────────────────────
 
 const PromptsSection = () => {
-  const [open, setOpen] = useState(false)
+  // E19-S2 — collapse chrome now lives in the parent AdminSection; this is
+  // pure content (fetch fires when the section is first opened).
   const { data: prompts, loading, error, reload } = useApiData(getAdminPrompts, [])
 
-  return (
-    <div>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          width: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          fontSize: 14,
-          fontWeight: 600,
-          color: 'var(--text-secondary)',
-          background: 'none',
-          border: 'none',
-          cursor: 'pointer',
-          padding: '0 0 12px 0',
-          marginBottom: 12,
-        }}
-        aria-expanded={open}
-      >
-        <span>LLM Prompts</span>
-        {open ? (
-          <ChevronUp size={16} style={{ color: 'var(--text-tertiary)' }} />
-        ) : (
-          <ChevronDown size={16} style={{ color: 'var(--text-tertiary)' }} />
-        )}
-      </button>
-
-      {open && (
-        <>
-          {loading ? (
-            <div className="flex justify-center" style={{ paddingTop: 20 }}>
-              <Spinner size={24} />
-            </div>
-          ) : error ? (
-            <ErrorState message={error} onRetry={reload} />
-          ) : prompts && prompts.length > 0 ? (
-            <div className="flex flex-col gap-3">
-              {prompts.map((p) => (
-                <PromptCard key={p.name} prompt={p} onSaved={reload} />
-              ))}
-            </div>
-          ) : null}
-        </>
-      )}
-    </div>
-  )
+  if (loading) {
+    return (
+      <div className="flex justify-center" style={{ paddingTop: 20 }}>
+        <Spinner size={24} />
+      </div>
+    )
+  }
+  if (error) {
+    return <ErrorState message={error} onRetry={reload} />
+  }
+  if (prompts && prompts.length > 0) {
+    return (
+      <div className="flex flex-col gap-3">
+        {prompts.map((p) => (
+          <PromptCard key={p.name} prompt={p} onSaved={reload} />
+        ))}
+      </div>
+    )
+  }
+  return null
 }
 
 interface PromptCardProps {
@@ -1202,88 +1141,60 @@ const CompactionPreviewModal = ({
   onReject,
   applying,
 }: PreviewModalProps) => (
-  <div
-    style={{
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(0,0,0,0.55)',
-      zIndex: 60,
-      display: 'flex',
-      // Centred dialog rather than bottom sheet — feels less mobile-tacked
-      // on the admin desktop view and stays balanced on tall screens too.
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: 16,
-    }}
-    onClick={onReject}
-  >
+  <Modal onClose={onReject} maxWidth={560} ariaLabel="Keyword compaction preview">
     <div
-      onClick={(e) => e.stopPropagation()}
-      className="glass"
-      style={{
-        width: '100%',
-        maxWidth: 560,
-        borderRadius: 20,
-        background: 'rgba(12, 16, 24, 0.98)',
-        padding: '18px 18px 20px',
-        maxHeight: '85vh',
-        overflowY: 'auto',
-      }}
+      style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}
     >
-      <div
-        style={{ fontSize: 14, fontWeight: 600, marginBottom: 14, color: 'var(--text-primary)' }}
-      >
-        {preview.groups.length === 0
-          ? 'No groups to merge'
-          : `${preview.groups.length} group(s) to merge`}
-      </div>
-
-      {preview.groups.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
-          {preview.groups.map((g, idx) => (
-            <CompactionGroupRow key={`${g.canonical}-${idx}`} group={g} />
-          ))}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 10 }}>
-        <button
-          onClick={onApply}
-          disabled={applying || preview.groups.length === 0}
-          style={{
-            flex: 1,
-            padding: '10px 14px',
-            borderRadius: 12,
-            border: 'none',
-            background: 'var(--accent)',
-            color: '#0c1018',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor:
-              applying || preview.groups.length === 0 ? 'not-allowed' : 'pointer',
-            opacity: applying || preview.groups.length === 0 ? 0.6 : 1,
-          }}
-        >
-          {applying ? 'Running…' : 'Apply'}
-        </button>
-        <button
-          onClick={onReject}
-          style={{
-            flex: 1,
-            padding: '10px 14px',
-            borderRadius: 12,
-            border: '1px solid rgba(255,255,255,0.10)',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            fontSize: 13,
-            cursor: 'pointer',
-          }}
-        >
-          Cancel
-        </button>
-      </div>
+      {preview.groups.length === 0
+        ? 'No groups to merge'
+        : `${preview.groups.length} group(s) to merge`}
     </div>
-  </div>
+
+    {preview.groups.length > 0 && (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {preview.groups.map((g, idx) => (
+          <CompactionGroupRow key={`${g.canonical}-${idx}`} group={g} />
+        ))}
+      </div>
+    )}
+
+    <div style={{ display: 'flex', gap: 10 }}>
+      <button
+        onClick={onApply}
+        disabled={applying || preview.groups.length === 0}
+        style={{
+          flex: 1,
+          padding: '10px 14px',
+          borderRadius: 12,
+          border: 'none',
+          background: 'var(--accent)',
+          color: '#0c1018',
+          fontSize: 13,
+          fontWeight: 600,
+          cursor:
+            applying || preview.groups.length === 0 ? 'not-allowed' : 'pointer',
+          opacity: applying || preview.groups.length === 0 ? 0.6 : 1,
+        }}
+      >
+        {applying ? 'Running…' : 'Apply'}
+      </button>
+      <button
+        onClick={onReject}
+        style={{
+          flex: 1,
+          padding: '10px 14px',
+          borderRadius: 12,
+          border: '1px solid rgba(255,255,255,0.10)',
+          background: 'transparent',
+          color: 'var(--text-secondary)',
+          fontSize: 13,
+          cursor: 'pointer',
+        }}
+      >
+        Cancel
+      </button>
+    </div>
+  </Modal>
 )
 
 

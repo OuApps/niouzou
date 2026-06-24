@@ -18,6 +18,10 @@ export const BottomNav = () => {
     <nav
       className="fixed bottom-0 left-0 right-0 z-40 flex justify-around items-center"
       style={{
+        // Match the centred app column on desktop (E19-S1) — a fixed element
+        // ignores #root's max-width, so it recreates the same 480px constraint.
+        maxWidth: 480,
+        marginInline: 'auto',
         padding: '8px 20px calc(env(safe-area-inset-bottom, 0px) + 16px)',
         borderTop: '1px solid rgba(255, 255, 255, 0.05)',
         background: 'rgba(12, 16, 24, 0.85)',

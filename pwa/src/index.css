@@ -43,9 +43,26 @@ html, body, #root {
   overflow-x: hidden;
 }
 
+/* Mobile-first stays untouched below 480px. On wider viewports the whole app
+   is constrained to a centred ~480px column so it reads as a "phone" on
+   desktop instead of stretching full-width (E19-S1). The blob background
+   (.bg-blobs, position: fixed) sits behind and stays full-bleed. Fixed UI
+   that must align with the column (BottomNav, modals) recreates this width. */
 #root {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 480px;
+  margin-inline: auto;
+  position: relative;
+}
+
+/* Delineate the column on desktop so the centred layout reads intentionally. */
+@media (min-width: 520px) {
+  #root {
+    border-left: 1px solid var(--divider);
+    border-right: 1px solid var(--divider);
+  }
 }
 
 /* ── Blob Background ── */
