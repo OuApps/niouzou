@@ -628,6 +628,14 @@ Add a new RSS source. The backend registers the feed in Miniflux and creates the
 > The feed name is auto-discovered from the RSS feed metadata.
 > Returns `409` if the source URL already exists for this user.
 
+> **Backfill (E19-S5):** within the request, the source is seeded with the
+> feed's ~30 most recent Miniflux entries (read ones included) as `pending`
+> articles, with per-`(user, url)` dedup. This is what lets a subscriber to an
+> already-consumed shared feed see content immediately — `cron_fetch` alone
+> only ever yields *unread* entries, which a prior subscriber has already
+> consumed. Best-effort: a Miniflux failure logs and inserts nothing rather
+> than failing the `201`.
+
 > **Side effect (E19-S4):** after the source is committed, the API kicks the
 > refresh-worker's fetch+enrich pipeline (`POST /run`) as a fire-and-forget
 > background task so a brand-new user doesn't wait for the next scheduled tick.

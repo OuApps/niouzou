@@ -39,6 +39,12 @@ def _mock_miniflux_create(
             },
         )
     )
+    # E19-S5 — create_source now backfills recent feed entries. Default to an
+    # empty feed so existing assertions (which don't care about backfill) hold;
+    # tests that exercise backfill mock this endpoint explicitly.
+    respx.get(f"{BASE}/v1/feeds/{feed_id}/entries").mock(
+        return_value=httpx.Response(200, json={"entries": []})
+    )
 
 
 @respx.mock
@@ -271,6 +277,10 @@ async def test_create_source_passes_crawler_to_miniflux(db_session):
                 "crawler": True,
             },
         )
+    )
+    # E19-S5 — create_source backfills; an empty feed keeps this test focused.
+    respx.get(f"{BASE}/v1/feeds/42/entries").mock(
+        return_value=httpx.Response(200, json={"entries": []})
     )
 
     out = await SourcesService(db_session).create_source(
@@ -553,6 +563,103 @@ async def test_hard_delete_swallows_miniflux_404(db_session):
 
     assert await db_session.scalar(select(func.count()).select_from(Source)) == 0
     assert await db_session.scalar(select(func.count()).select_from(Article)) == 0
+
+
+def _entry(entry_id: int, url: str, *, feed_id: int = 42) -> dict:
+    return {
+        "id": entry_id,
+        "feed_id": feed_id,
+        "title": f"Entry {entry_id}",
+        "url": url,
+        "content": "<p>body</p>",
+        "published_at": "2026-06-24T10:00:00Z",
+        "enclosures": [],
+    }
+
+
+@respx.mock
+async def test_create_source_backfills_recent_entries(db_session):
+    """E19-S5 — adding a source seeds it with the feed's recent backlog so a
+    new subscriber to an already-consumed feed sees articles immediately."""
+    user = await make_user(db_session)
+    await db_session.commit()
+    _mock_miniflux_create()
+    # Override the default empty backfill with two real entries.
+    respx.get(f"{BASE}/v1/feeds/42/entries").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "entries": [
+                    _entry(1001, "https://feed.example.com/a"),
+                    _entry(1002, "https://feed.example.com/b"),
+                ]
+            },
+        )
+    )
+
+    out = await SourcesService(db_session).create_source(user.id, FEED_URL)
+    await db_session.commit()
+
+    rows = (
+        await db_session.scalars(
+            select(Article).where(Article.source_id == out.id)
+        )
+    ).all()
+    assert {a.url for a in rows} == {
+        "https://feed.example.com/a",
+        "https://feed.example.com/b",
+    }
+    assert all(a.status == "pending" for a in rows)
+
+
+@respx.mock
+async def test_backfill_skips_urls_user_already_has(db_session):
+    """A URL the user already holds (via another source) isn't re-inserted."""
+    user = await make_user(db_session)
+    other = await make_source(db_session, user, feed_id=99)
+    dup = await make_article(db_session, other, title="already here")
+    await db_session.commit()
+    _mock_miniflux_create()
+    respx.get(f"{BASE}/v1/feeds/42/entries").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "entries": [
+                    _entry(2001, dup.url),  # same URL the user already has
+                    _entry(2002, "https://feed.example.com/fresh"),
+                ]
+            },
+        )
+    )
+
+    out = await SourcesService(db_session).create_source(user.id, FEED_URL)
+    await db_session.commit()
+
+    new_rows = (
+        await db_session.scalars(
+            select(Article).where(Article.source_id == out.id)
+        )
+    ).all()
+    assert {a.url for a in new_rows} == {"https://feed.example.com/fresh"}
+
+
+@respx.mock
+async def test_backfill_failure_does_not_break_add(db_session):
+    """A Miniflux hiccup on backfill must not fail the source creation."""
+    user = await make_user(db_session)
+    await db_session.commit()
+    _mock_miniflux_create()
+    respx.get(f"{BASE}/v1/feeds/42/entries").mock(
+        side_effect=httpx.ConnectError("miniflux down")
+    )
+
+    out = await SourcesService(db_session).create_source(user.id, FEED_URL)
+    await db_session.commit()
+
+    assert out.url == FEED_URL  # add still succeeds
+    assert (
+        await db_session.scalar(select(func.count()).select_from(Article)) == 0
+    )
 
 
 @respx.mock

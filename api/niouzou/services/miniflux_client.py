@@ -133,6 +133,38 @@ class MinifluxClient:
         # Defensive cap: never return more than asked, even if a page overshoots.
         return entries[:max_entries]
 
+    async def list_feed_entries(
+        self, feed_id: int, *, max_entries: int
+    ) -> list[MinifluxEntry]:
+        """Fetch up to ``max_entries`` of a feed's entries, newest first.
+
+        Unlike ``list_unread_entries`` this is scoped to a single feed and
+        ignores read/unread status — it's used to backfill a freshly-added
+        source (E19-S5) with the feed's recent backlog, even entries a prior
+        subscriber already consumed (and thus marked read) on the shared
+        Miniflux instance. Does NOT mark anything read.
+        """
+        entries: list[MinifluxEntry] = []
+        offset = 0
+        while len(entries) < max_entries:
+            limit = min(_PAGE_LIMIT, max_entries - len(entries))
+            resp = await self._client.get(
+                f"/v1/feeds/{feed_id}/entries",
+                params={
+                    "limit": limit,
+                    "offset": offset,
+                    "order": "published_at",
+                    "direction": "desc",
+                },
+            )
+            resp.raise_for_status()
+            page = resp.json().get("entries", [])
+            if not page:
+                break
+            entries.extend(MinifluxEntry.from_api(e) for e in page)
+            offset += len(page)
+        return entries[:max_entries]
+
     async def get_entry_content(self, entry_id: int) -> str | None:
         """Return an entry's raw RSS ``content`` (HTML), or ``None`` if gone.
 

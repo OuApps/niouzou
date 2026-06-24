@@ -4390,3 +4390,36 @@ jamais d'exception) ; `test_sources_service` vert (service inchangé) ; build/ty
 **Acceptance** : ajout d'une source sur compte neuf → le pipeline démarre sans attendre le tick, le
 feed affiche « Fetching your first articles… » avec progression, puis charge les articles
 automatiquement ; un vétéran qui a tout lu garde « caught up / widen filter ».
+
+#### [x] E19-S5 — Backfill du flux à l'ajout (l'abonné à un flux déjà consommé voyait 0 article)
+
+**Problème** (découvert en test prod avec `bg@gmail.com`) : E19-S4 déclenchait bien le pipeline à
+l'ajout, mais le nouvel utilisateur restait **vide**. Cause **structurelle**, pas un timing :
+`cron_fetch` ne tire de Miniflux que les entrées **`unread`** et les **marque `read`** après
+ingestion. Miniflux est **partagé** entre tous les users niouzou (un seul user admin Miniflux) →
+quand `bg` s'abonne à un flux **déjà souscrit** par un autre user (ex. Le Monde, `miniflux_feed_id=1`,
+déjà 2 abonnés / 2090 articles), Miniflux renvoie `"This feed already exists"` et niouzou **réutilise
+le feed id** ; or toutes ses entrées sont **déjà lues** → `cron_fetch` reçoit 0 entrée → 0 article
+pour `bg`. Aucun backfill historique : le nouvel abonné n'aurait vu que du contenu publié **après**
+son inscription, au prochain tick (30 min en prod).
+
+**Fix** : à `POST /sources`, **backfiller directement** les ~30 entrées récentes du flux via le
+nouveau `MinifluxClient.list_feed_entries(feed_id)` (`GET /v1/feeds/{id}/entries`, **toutes** —
+lues incluses, tri `published_at desc`), insérées en `pending` pour la nouvelle source dans la même
+transaction (`SourcesService._backfill_source`), avec la **même dédup `(user, url)`** que
+`cron_fetch` + `ON CONFLICT (source_id, miniflux_entry_id)`. **Best-effort** : un pépin Miniflux
+log et renvoie 0, sans faire échouer l'ajout. **Ne marque rien `read`** côté Miniflux (indépendant
+du modèle global unread→read). Le `BackgroundTask` `trigger_pipeline_run` (E19-S4) enrichit ensuite
+ces articles. Backfill appliqué aussi au chemin **revive** (re-souscription d'une source en pause).
+Profondeur ~30 = constante module (`_BACKFILL_ENTRIES`), pas de nouveau réglage env.
+
+**Limite connue** : pour un flux **totalement neuf**, Miniflux doit l'avoir poll au moins une fois
+(il planifie le job à la création) — le backfill ne trouve les entrées qu'une fois ce poll passé.
+Pour les flux **déjà présents** (cas dominant d'onboarding sur instance partagée), le contenu est
+immédiat.
+
+**Vérification** : `test_sources_service` — backfill insère les entrées récentes, saute les URLs déjà
+détenues par le user, et un échec Miniflux ne casse pas l'ajout (3 nouveaux tests) ; 30 tests verts.
+
+**Acceptance** : s'abonner à un flux déjà consommé par un autre user → la nouvelle source est
+immédiatement peuplée de son backlog récent, puis enrichie ; pas de double si le user a déjà l'URL.

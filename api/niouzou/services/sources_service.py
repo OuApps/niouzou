@@ -6,17 +6,24 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import case, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.errors import bad_request, conflict, not_found
 from niouzou.models import Article, Source
+from niouzou.models.article import STATUS_PENDING
 from niouzou.schemas.sources import SourceOut, SourcesListResponse
 from niouzou.services.miniflux_bootstrap import get_miniflux_token
 from niouzou.services.miniflux_client import MinifluxClient
 
 logger = logging.getLogger("niouzou.sources")
+
+# E19-S5 — how many of a feed's recent entries to seed a freshly-added source
+# with. ~30 ≈ what an RSS feed typically exposes; enough for instant content
+# without a heavy first enrichment pass.
+_BACKFILL_ENTRIES = 30
 
 
 class SourcesService:
@@ -121,6 +128,9 @@ class SourcesService:
             await self.session.flush()
             if fetch_full_content:
                 await self._set_crawler(existing.miniflux_feed_id, True)
+            await self._backfill_source(
+                existing.id, user_id, existing.miniflux_feed_id
+            )
             out = SourceOut.model_validate(existing)
             out.fetch_full_content = fetch_full_content
             return out
@@ -138,9 +148,87 @@ class SourcesService:
         except IntegrityError as exc:
             # (user_id, miniflux_feed_id) already taken — same feed, other URL.
             raise conflict("Source already exists for this user") from exc
+        await self._backfill_source(source.id, user_id, feed_id)
         out = SourceOut.model_validate(source)
         out.fetch_full_content = fetch_full_content
         return out
+
+    async def _backfill_source(
+        self,
+        source_id: uuid.UUID,
+        user_id: uuid.UUID,
+        miniflux_feed_id: int,
+    ) -> int:
+        """Seed a freshly-added source with the feed's recent backlog (E19-S5).
+
+        ``cron_fetch`` only ever pulls *unread* entries and marks them read, so
+        a new subscriber to an already-consumed feed (common on a shared
+        Miniflux) would otherwise see nothing until brand-new entries are
+        published. This pulls the feed's recent entries directly — read ones
+        included — and inserts them as pending articles for this source, with
+        the same per-``(user, url)`` dedup as ``cron_fetch``. The subsequent
+        ``trigger_pipeline_run`` (router background task) enriches them.
+
+        Best-effort: a Miniflux hiccup logs and returns 0 rather than failing
+        the source add. Returns the number of articles inserted.
+        """
+        try:
+            async with await self._client() as client:
+                entries = await client.list_feed_entries(
+                    miniflux_feed_id, max_entries=_BACKFILL_ENTRIES
+                )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "backfill: Miniflux fetch failed for feed %s — %s",
+                miniflux_feed_id,
+                exc,
+            )
+            return 0
+        if not entries:
+            return 0
+
+        # Drop URLs this user already has via any of their sources, and any
+        # duplicate URL within this batch (two entries reprinting one URL).
+        urls = list({e.url for e in entries})
+        existing_rows = await self.session.execute(
+            select(Article.url)
+            .join(Source, Source.id == Article.source_id)
+            .where(Source.user_id == user_id, Article.url.in_(urls))
+        )
+        existing: set[str] = {r[0] for r in existing_rows.all()}
+
+        seen: set[str] = set()
+        values: list[dict] = []
+        for e in entries:
+            if e.url in existing or e.url in seen:
+                continue
+            seen.add(e.url)
+            values.append(
+                {
+                    "source_id": source_id,
+                    "miniflux_entry_id": e.id,
+                    "url": e.url,
+                    "title": e.title,
+                    "content": e.content,
+                    "og_image_url": e.og_image_url,
+                    "published_at": e.published_at,
+                    "status": STATUS_PENDING,
+                }
+            )
+        if not values:
+            return 0
+
+        stmt = pg_insert(Article).values(values).on_conflict_do_nothing(
+            index_elements=["source_id", "miniflux_entry_id"]
+        )
+        await self.session.execute(stmt)
+        logger.info(
+            "backfill: seeded %d article(s) for source %s (feed %s)",
+            len(values),
+            source_id,
+            miniflux_feed_id,
+        )
+        return len(values)
 
     async def update_source(
         self,
