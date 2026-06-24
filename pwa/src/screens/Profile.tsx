@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
+import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { useApiData } from '../hooks/useApiData'
 import { useAuthStore } from '../store/auth'
@@ -429,91 +430,68 @@ export const Profile = () => {
 
       {/* Reset-recommendations confirmation modal (E17-S5). */}
       {confirmResetReco && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          onClick={() => !resettingReco && setConfirmResetReco(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 50,
-            background: 'rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 20,
-          }}
+        <Modal
+          onClose={() => !resettingReco && setConfirmResetReco(false)}
+          ariaLabel="Reset recommendations"
         >
-          <div
-            className="glass"
-            onClick={(e) => e.stopPropagation()}
+          <h3
             style={{
-              borderRadius: 20,
-              padding: 20,
-              maxWidth: 320,
-              width: '100%',
-              background: 'var(--bg-elevated, rgba(20,24,34,0.95))',
+              fontSize: 16,
+              fontWeight: 600,
+              margin: '0 0 8px',
+              color: 'var(--text-primary)',
             }}
           >
-            <h3
+            Reset recommendations?
+          </h3>
+          <p
+            style={{
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: 'var(--text-secondary)',
+              margin: '0 0 16px',
+            }}
+          >
+            This clears your likes and dislikes and the preferences learned
+            from them, so your feed starts fresh. Your saved articles and
+            pinned keywords are kept. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setConfirmResetReco(false)}
+              disabled={resettingReco}
               style={{
-                fontSize: 16,
-                fontWeight: 600,
-                margin: '0 0 8px',
-                color: 'var(--text-primary)',
-              }}
-            >
-              Reset recommendations?
-            </h3>
-            <p
-              style={{
-                fontSize: 13,
-                lineHeight: 1.5,
+                padding: '8px 14px',
+                borderRadius: 10,
+                border: '1px solid var(--divider)',
+                background: 'transparent',
                 color: 'var(--text-secondary)',
-                margin: '0 0 16px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
               }}
             >
-              This clears your likes and dislikes and the preferences learned
-              from them, so your feed starts fresh. Your saved articles and
-              pinned keywords are kept. This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmResetReco(false)}
-                disabled={resettingReco}
-                style={{
-                  padding: '8px 14px',
-                  borderRadius: 10,
-                  border: '1px solid var(--divider)',
-                  background: 'transparent',
-                  color: 'var(--text-secondary)',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={doResetReco}
-                disabled={resettingReco}
-                style={{
-                  padding: '8px 14px',
-                  borderRadius: 10,
-                  border: 'none',
-                  background: 'var(--action-dislike)',
-                  color: '#fff',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  opacity: resettingReco ? 0.7 : 1,
-                }}
-              >
-                {resettingReco ? 'Resetting…' : 'Reset'}
-              </button>
-            </div>
+              Cancel
+            </button>
+            <button
+              onClick={doResetReco}
+              disabled={resettingReco}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 10,
+                border: 'none',
+                background: 'var(--action-dislike)',
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                opacity: resettingReco ? 0.7 : 1,
+              }}
+            >
+              {resettingReco ? 'Resetting…' : 'Reset'}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
       <BottomNav />

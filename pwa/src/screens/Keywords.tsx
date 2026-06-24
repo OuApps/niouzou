@@ -4,6 +4,7 @@ import { ArrowLeft, Pencil, Check, SlidersHorizontal, Lock, LockOpen, Sparkles, 
 import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { EmptyState } from '../components/EmptyState'
+import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { getKeywords, getMe, patchKeyword, resetKeywords, ApiError } from '../api'
@@ -508,89 +509,66 @@ export const Keywords = () => {
 
       {/* Reset-all confirmation modal */}
       {confirmReset && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          onClick={() => !resetting && setConfirmReset(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 50,
-            background: 'rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 20,
-          }}
+        <Modal
+          onClose={() => !resetting && setConfirmReset(false)}
+          ariaLabel="Reset all keywords"
         >
-          <div
-            className="glass"
-            onClick={(e) => e.stopPropagation()}
+          <h3
             style={{
-              borderRadius: 20,
-              padding: 20,
-              maxWidth: 320,
-              width: '100%',
-              background: 'var(--bg-elevated, rgba(20,24,34,0.95))',
+              fontSize: 16,
+              fontWeight: 600,
+              margin: '0 0 8px',
+              color: 'var(--text-primary)',
             }}
           >
-            <h3
+            Reset all keywords?
+          </h3>
+          <p
+            style={{
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: 'var(--text-secondary)',
+              margin: '0 0 16px',
+            }}
+          >
+            This will delete all your keyword weights. This cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setConfirmReset(false)}
+              disabled={resetting}
               style={{
-                fontSize: 16,
-                fontWeight: 600,
-                margin: '0 0 8px',
-                color: 'var(--text-primary)',
-              }}
-            >
-              Reset all keywords?
-            </h3>
-            <p
-              style={{
-                fontSize: 13,
-                lineHeight: 1.5,
+                padding: '8px 14px',
+                borderRadius: 10,
+                border: '1px solid var(--divider)',
+                background: 'transparent',
                 color: 'var(--text-secondary)',
-                margin: '0 0 16px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
               }}
             >
-              This will delete all your keyword weights. This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmReset(false)}
-                disabled={resetting}
-                style={{
-                  padding: '8px 14px',
-                  borderRadius: 10,
-                  border: '1px solid var(--divider)',
-                  background: 'transparent',
-                  color: 'var(--text-secondary)',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={doReset}
-                disabled={resetting}
-                style={{
-                  padding: '8px 14px',
-                  borderRadius: 10,
-                  border: 'none',
-                  background: 'var(--action-dislike)',
-                  color: '#fff',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  opacity: resetting ? 0.7 : 1,
-                }}
-              >
-                {resetting ? 'Resetting…' : 'Reset all'}
-              </button>
-            </div>
+              Cancel
+            </button>
+            <button
+              onClick={doReset}
+              disabled={resetting}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 10,
+                border: 'none',
+                background: 'var(--action-dislike)',
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                opacity: resetting ? 0.7 : 1,
+              }}
+            >
+              {resetting ? 'Resetting…' : 'Reset all'}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
       <BottomNav />

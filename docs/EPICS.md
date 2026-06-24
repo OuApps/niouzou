@@ -4423,3 +4423,25 @@ détenues par le user, et un échec Miniflux ne casse pas l'ajout (3 nouveaux te
 
 **Acceptance** : s'abonner à un flux déjà consommé par un autre user → la nouvelle source est
 immédiatement peuplée de son backlog récent, puis enrichie ; pas de double si le user a déjà l'URL.
+
+#### [x] E19-S6 — Popups : aligner sur le pattern canonique de l'app (vraie source unique)
+
+**Problème** : E19-S2 avait unifié les **deux popups admin entre eux**, mais pas sur le standard de
+confirmation **déjà établi** ailleurs (Keywords « Reset all keywords? », Profile « Reset
+recommendations? »). Résultat : la popup *Delete user* détonnait — backdrop *flouté*, fond plus
+sombre (`rgba(12,16,24,0.98)`), boutons 50/50 pleine largeur (radius 8, font 12), icône triangle —
+là où le reste de l'app utilise un backdrop **sans flou**, panel `glass` sur `--bg-elevated`, et des
+boutons **alignés à droite** (Cancel bordure `--divider` / action pleine, radius 10, font 13).
+
+**Fix** : `components/Modal.tsx` devient la **reproduction exacte** du pattern canonique (backdrop
+`rgba(0,0,0,0.6)` sans flou, panel `glass` / `--bg-elevated` / radius 20 / padding 20 / maxWidth 320
+par défaut, Échap + clic backdrop). `DeleteUserModal` réécrit au format canonique (titre h3, corps,
+input cohérent radius 10, boutons `justify-end`). `CompactionPreviewModal` hérite du même habillage
+(maxWidth 560). Les confirmations **Keywords** et **Profile** sont **migrées sur `Modal`** (markup
+identique) → plus aucune copie inline du backdrop+panel, plus de dérive possible.
+
+**Vérification** : tsc + build + lint PWA OK (lint = baseline, bundle légèrement réduit par la
+déduplication) ; `DESIGN_SYSTEM.md` documente le pattern et interdit de recoder un backdrop à la main.
+
+**Acceptance** : les popups Delete user, Compaction, Reset keywords et Reset recommendations
+partagent un habillage strictement identique via `Modal`.

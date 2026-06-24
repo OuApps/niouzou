@@ -747,47 +747,65 @@ const DeleteUserModal = ({
 }: DeleteUserModalProps) => {
   const matches = confirmInput === email
   return (
-    <Modal onClose={onCancel} maxWidth={360} ariaLabel="Delete user">
-      <div className="flex items-center gap-2">
-        <AlertTriangle size={16} style={{ color: 'var(--action-dislike)' }} />
-        <h3 style={{ fontSize: 14, fontWeight: 700 }}>Delete user</h3>
-      </div>
-      <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+    <Modal
+      onClose={() => !deleting && onCancel()}
+      maxWidth={320}
+      ariaLabel="Delete user"
+    >
+      <h3
+        style={{
+          fontSize: 16,
+          fontWeight: 600,
+          margin: '0 0 8px',
+          color: 'var(--text-primary)',
+        }}
+      >
+        Delete user?
+      </h3>
+      <p
+        style={{
+          fontSize: 13,
+          lineHeight: 1.5,
+          color: 'var(--text-secondary)',
+          margin: '0 0 12px',
+        }}
+      >
         This wipes <strong>{email}</strong> and every related row (sources,
-        articles seen, feedback, weights). It cannot be undone.
-      </p>
-      <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-        Type the email to confirm:
+        articles seen, feedback, weights). This cannot be undone.
       </p>
       <input
         type="text"
         value={confirmInput}
         onChange={(e) => setConfirmInput(e.target.value)}
+        placeholder="Type the email to confirm"
         autoFocus
         style={{
-          padding: '8px 10px',
-          borderRadius: 8,
-          border: '1px solid rgba(255,255,255,0.10)',
+          width: '100%',
+          padding: '8px 12px',
+          borderRadius: 10,
+          border: '1px solid var(--divider)',
           background: 'rgba(255,255,255,0.04)',
           color: 'var(--text-primary)',
-          fontSize: 12,
+          fontSize: 13,
+          marginBottom: error ? 8 : 16,
         }}
       />
       {error && (
-        <p style={{ fontSize: 11, color: 'var(--action-dislike)' }}>{error}</p>
+        <p style={{ fontSize: 12, color: 'var(--action-dislike)', margin: '0 0 16px' }}>
+          {error}
+        </p>
       )}
-      <div className="flex gap-2">
+      <div className="flex justify-end gap-2">
         <button
           onClick={onCancel}
           disabled={deleting}
           style={{
-            flex: 1,
-            padding: '8px 12px',
-            borderRadius: 8,
-            background: 'rgba(255,255,255,0.08)',
-            color: 'var(--text-primary)',
-            border: '1px solid rgba(255,255,255,0.10)',
-            fontSize: 12,
+            padding: '8px 14px',
+            borderRadius: 10,
+            border: '1px solid var(--divider)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            fontSize: 13,
             fontWeight: 600,
             cursor: deleting ? 'default' : 'pointer',
           }}
@@ -798,24 +816,18 @@ const DeleteUserModal = ({
           onClick={onConfirm}
           disabled={!matches || deleting}
           style={{
-            flex: 1,
-            padding: '8px 12px',
-            borderRadius: 8,
+            padding: '8px 14px',
+            borderRadius: 10,
+            border: 'none',
             background: matches ? 'var(--action-dislike)' : 'rgba(255,255,255,0.08)',
             color: matches ? '#fff' : 'var(--text-tertiary)',
-            border: 'none',
-            fontSize: 12,
+            fontSize: 13,
             fontWeight: 600,
             cursor: !matches || deleting ? 'default' : 'pointer',
-            opacity: deleting ? 0.6 : 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 6,
+            opacity: deleting ? 0.7 : 1,
           }}
         >
-          {deleting && <Spinner size={11} />}
-          {deleting ? 'Deleting…' : 'Delete forever'}
+          {deleting ? 'Deleting…' : 'Delete'}
         </button>
       </div>
     </Modal>
@@ -1143,7 +1155,12 @@ const CompactionPreviewModal = ({
 }: PreviewModalProps) => (
   <Modal onClose={onReject} maxWidth={560} ariaLabel="Keyword compaction preview">
     <div
-      style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}
+      style={{
+        fontSize: 16,
+        fontWeight: 600,
+        color: 'var(--text-primary)',
+        marginBottom: 14,
+      }}
     >
       {preview.groups.length === 0
         ? 'No groups to merge'
@@ -1151,7 +1168,14 @@ const CompactionPreviewModal = ({
     </div>
 
     {preview.groups.length > 0 && (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          marginBottom: 18,
+        }}
+      >
         {preview.groups.map((g, idx) => (
           <CompactionGroupRow key={`${g.canonical}-${idx}`} group={g} />
         ))}

@@ -18,10 +18,23 @@
 
 ## Modals
 
-- All centred dialogs go through `components/Modal.tsx` (E19-S2): backdrop
-  `rgba(0,0,0,0.6)` + 4px blur, `glass` panel, `border-radius: 20`,
-  `max-height: 85vh`, closes on backdrop click and Escape. Pass `maxWidth` to
-  size the panel (360 for confirmations, 560 for content-heavy previews).
+- **Every** centred dialog goes through `components/Modal.tsx` — the single
+  source of truth (E19-S2, aligned to the canonical confirm pattern in E19-S6).
+  It reproduces the original Keywords "Reset all" / Profile "Reset
+  recommendations" dialogs exactly:
+  - Backdrop: `rgba(0,0,0,0.6)`, **no blur**, `padding: 20`, `z-index: 50`.
+  - Panel: `class="glass"` on `--bg-elevated` (`rgba(20,24,34,0.95)`),
+    `border-radius: 20`, `padding: 20`, `max-height: 85vh`, default
+    `max-width: 320` (pass `maxWidth` to widen, e.g. 560 for the compaction
+    preview). Closes on backdrop click and Escape.
+  - Content convention: `<h3>` title (16/600, `margin: 0 0 8px`), `<p>` body
+    (13, secondary, `margin: 0 0 16px`), then a **right-aligned** button row
+    (`flex justify-end gap-2`): Cancel = transparent + `1px solid --divider`;
+    primary/destructive = solid fill (`--accent` or `--action-dislike`),
+    `border-radius: 10`, `font-size: 13`.
+- Users of `Modal`: Admin (delete user, compaction preview), Keywords (reset
+  all), Profile (reset recommendations). Do **not** hand-roll a backdrop+panel
+  — reuse `Modal` so confirmations never drift again.
 - The feed's `ScoreDebugSheet` is a **bottom sheet**, a deliberately distinct
   pattern — not a `Modal`.
 

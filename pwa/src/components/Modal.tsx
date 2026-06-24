@@ -5,22 +5,27 @@ interface ModalProps {
   /** Called on backdrop click and on Escape. */
   onClose: () => void
   children: ReactNode
-  /** Panel max width in px. Defaults to 420. */
+  /** Panel max width in px. Defaults to 320 (the app's confirm-dialog width). */
   maxWidth?: number
-  /** Accessible label / dialog title id pass-through (optional). */
+  /** Accessible label for the dialog. */
   ariaLabel?: string
 }
 
 /**
- * Shared centred dialog (E19-S2). One backdrop + panel treatment for every
- * popup so the admin modals stop diverging (opacity, blur, z-index, surface).
- * Closes on backdrop click and on Escape; the panel stops propagation so
- * clicks inside never bubble to the backdrop.
+ * Shared centred dialog — the single source of truth for the app's confirm /
+ * popup chrome (E19-S2, aligned to the canonical pattern in E19-S6). Reproduces
+ * exactly the backdrop + glass panel used by the Keywords "Reset all" and
+ * Profile "Reset recommendations" dialogs: dim `rgba(0,0,0,0.6)` backdrop (no
+ * blur), `glass` panel on `--bg-elevated`, radius 20, padding 20. Closes on
+ * backdrop click and Escape; the panel stops propagation.
+ *
+ * Children own their own internal layout (title / body / a `justify-end`
+ * button row), matching the inline dialogs this replaces.
  *
  * Not for the feed's ScoreDebugSheet — that's a bottom sheet, a deliberately
  * different pattern.
  */
-export const Modal = ({ onClose, children, maxWidth = 420, ariaLabel }: ModalProps) => {
+export const Modal = ({ onClose, children, maxWidth = 320, ariaLabel }: ModalProps) => {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -38,30 +43,25 @@ export const Modal = ({ onClose, children, maxWidth = 420, ariaLabel }: ModalPro
       style={{
         position: 'fixed',
         inset: 0,
+        zIndex: 50,
         background: 'rgba(0, 0, 0, 0.6)',
-        backdropFilter: 'blur(4px)',
-        WebkitBackdropFilter: 'blur(4px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: 16,
-        zIndex: 60,
+        padding: 20,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         className="glass"
         style={{
-          width: '100%',
-          maxWidth,
           borderRadius: 20,
-          background: 'rgba(12, 16, 24, 0.98)',
-          padding: 18,
+          padding: 20,
+          maxWidth,
+          width: '100%',
           maxHeight: '85vh',
           overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12,
+          background: 'var(--bg-elevated, rgba(20,24,34,0.95))',
         }}
       >
         {children}
