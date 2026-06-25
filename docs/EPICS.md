@@ -4497,3 +4497,36 @@ derrière `me?.is_admin`, nouveau `FeedFreshnessRow` (pill « Nouveau contenu en
 via `/stats/freshness`), `aiStatus` calcule `off` via `total_ai === 0`, pill `AI · Off`.
 **Vérif** : tsc + build PWA OK, lint inchangé (baseline) ; pytest `test_endpoints` + `test_pipeline_runs`
 + `test_explore_filters` (43 passed) dont un test 403-non-admin / 200-freshness ; `API_SPEC.md` à jour.
+
+#### [x] E19-S8 — Monitoring : panel System déplacé dans Administration, indice de fraîcheur pour tous
+
+**Problème.** E19-S7 avait rendu le panel « System » admin-only sur le Profile et donné aux non-admins
+un simple indice de fraîcheur. Mais l'incohérence restait : un admin voyait à la fois la rangée
+« Administration » (qui ouvre l'écran admin) **et** un panel « System » dépliable séparé sur le même
+écran Profile, alors que toute cette télémétrie d'instance appartient à l'écran d'administration. Le
+souhait : **admin et non-admin voient la même chose dans le Profile** (l'indice de fraîcheur), et le
+détail (santé pipeline, facture OpenRouter, « Run now ») devient un **sous-menu « Monitoring »** de
+l'écran Administration.
+
+**Fix (PWA-only, aucun changement API).**
+
+- `Profile.tsx` : l'indice de fraîcheur (`FeedFreshnessRow`) est rendu pour **tous** les utilisateurs
+  (suppression du garde `!me.is_admin`). Le bloc `SystemPanel` dépliable et tout son state
+  (`stats`/`loading`/`error`/`refreshing`/`pipelineWindow`, `loadStats`, `runRefresh`, le `useEffect`
+  lazy-load) sont retirés, ainsi que les helpers/composants déplacés.
+- `Admin.tsx` : nouvelle `AdminSection title="Monitoring"` placée **en tête** de l'écran, alimentée par
+  `MonitoringSection` (porte le state `/stats` + trigger « Run now », lazy-load au montage puisque
+  l'accordéon ne monte ses enfants qu'à l'ouverture). Le `SystemPanel` complet et ses helpers
+  (`aiStatus`, `formatCost`, `costForWindow`, `nextRunLabel`, `isStalled`, `ProgressBar`,
+  `PipelineAggregatesBlock`, `Row`, `AiStatusPill`, `Warning`) sont déplacés tels quels depuis
+  `Profile.tsx`.
+
+**Vérif** : tsc + build PWA OK ; lint inchangé (3 erreurs baseline pré-existantes, identiques sur
+`main` : `any` dans `ConfigRow`, `set-state-in-effect` + `Date.now()` du SystemPanel déplacé verbatim) ;
+boot navigateur sans crash console. Aucun endpoint touché.
+
+**Acceptance** :
+- Le Profile affiche le même indice de fraîcheur pour admin et non-admin ; plus aucun panel System sur
+  le Profile.
+- Un admin retrouve toute la télémétrie (pipeline, facture, « Run now ») dans Administration ›
+  Monitoring.
