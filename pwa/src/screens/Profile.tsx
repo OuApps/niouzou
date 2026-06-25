@@ -13,6 +13,7 @@ import { BottomNav } from '../components/BottomNav'
 import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { useApiData } from '../hooks/useApiData'
+import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { useAuthStore } from '../store/auth'
 import {
   getFeedFreshness,
@@ -419,6 +420,17 @@ const FeedFreshnessRow = () => {
       </div>
       <span className="flex-1 text-left">
         {fetching ? 'Nouveau contenu en route…' : 'Feed à jour'}
+        {!fetching && data.last_completed_at && (
+          <span
+            style={{
+              display: 'block',
+              fontSize: 11,
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            mis à jour {formatTimeAgo(data.last_completed_at)}
+          </span>
+        )}
       </span>
       <span
         style={{
