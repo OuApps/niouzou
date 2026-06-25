@@ -33,10 +33,10 @@ class KeywordsStats(BaseModel):
 class EnrichmentStats(BaseModel):
     last_enriched_at: datetime | None
     total_ai: int
-    # All TF-IDF enrichments (fallback + pure when AI is off). Lets the PWA
-    # show a non-zero TF-IDF count even when AI was never attempted.
+    # Legacy TF-IDF enrichments from pre-E16-S8 instances. Enrichment is now
+    # LLM-only (no fallback), so this only counts historical rows; kept so the
+    # admin panel can still surface them on upgraded instances.
     total_tfidf: int
-    total_tfidf_fallback: int
     last_error: str | None
     last_error_at: datetime | None
 
@@ -116,6 +116,24 @@ class LLMCostStats(BaseModel):
     """
 
     windows: list[LLMCostWindow]
+
+
+class FeedFreshness(BaseModel):
+    """Lightweight feed-freshness signal for non-admin users (E19-S7).
+
+    A deliberately minimal slice of the System telemetry — no OpenRouter
+    cost, no pipeline errors, no run trigger. Just enough for the Profile
+    screen to tell a regular user whether new content is on its way.
+
+    ``pipeline_status`` is the global worker state (``running`` /
+    ``completed`` / ``failed`` / ``never_run``); ``pending_enrichment`` is
+    scoped to *this* user's sources; ``last_completed_at`` is the global
+    pipeline's last successful finish.
+    """
+
+    pipeline_status: str
+    pending_enrichment: int
+    last_completed_at: datetime | None
 
 
 class Stats(BaseModel):

@@ -372,7 +372,6 @@ export interface Stats {
     last_enriched_at: string | null
     total_ai: number
     total_tfidf: number
-    total_tfidf_fallback: number
     last_error: string | null
     last_error_at: string | null
   }
@@ -382,8 +381,23 @@ export interface Stats {
   llm_cost: LLMCostStats
 }
 
+// E19-S7 — admin-only now (returns 403 for non-admins). Non-admins use
+// getFeedFreshness instead.
 export function getStats(pipelineWindow: PipelineWindow = '6h'): Promise<Stats> {
   return request<Stats>(`/stats?pipeline_window=${pipelineWindow}`)
+}
+
+// E19-S7 — lightweight feed-freshness signal for every user. No cost, no
+// pipeline errors, no run trigger — just enough to tell whether new content
+// is on its way.
+export interface FeedFreshness {
+  pipeline_status: string
+  pending_enrichment: number
+  last_completed_at: string | null
+}
+
+export function getFeedFreshness(): Promise<FeedFreshness> {
+  return request<FeedFreshness>('/stats/freshness')
 }
 
 export function triggerRefresh(): Promise<{ status: string }> {

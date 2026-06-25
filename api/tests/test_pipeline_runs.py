@@ -9,7 +9,7 @@ don't touch the LLM or newspaper paths.
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from niouzou.models import Article, LLMUsageLog, PipelineRun
 from niouzou.models.article import STATUS_ENRICHED, STATUS_ENRICHING, STATUS_PENDING
@@ -396,6 +396,9 @@ async def test_stats_pipeline_window_validation_rejects_unknown_value():
 
     class _FakeUser:
         id = _uuid.uuid4()
+        # E19-S7 — /stats is admin-only now; this test exercises the query-param
+        # validation path, so the fake user must clear the admin gate.
+        is_admin = True
 
     app.dependency_overrides[get_current_user] = lambda: _FakeUser()
     try:
@@ -407,6 +410,54 @@ async def test_stats_pipeline_window_validation_rejects_unknown_value():
                 "/api/v1/stats", params={"pipeline_window": "2h"}
             )
         assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_stats_is_admin_only_but_freshness_is_open():
+    """E19-S7 — a non-admin gets 403 on /stats but 200 on /stats/freshness.
+
+    Same ASGITransport pattern. The non-admin /stats call is rejected by the
+    ``get_current_admin`` gate before any DB access, so no setup is needed;
+    the freshness call does hit the DB, so it's only asserted when Postgres
+    is reachable.
+    """
+    import uuid as _uuid
+
+    import httpx
+
+    from niouzou.db import engine
+    from niouzou.deps import get_current_user
+    from niouzou.main import app
+
+    class _NonAdmin:
+        id = _uuid.uuid4()
+        is_admin = False
+
+    app.dependency_overrides[get_current_user] = lambda: _NonAdmin()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            stats_resp = await client.get("/api/v1/stats")
+            assert stats_resp.status_code == 403
+
+            # Freshness touches the DB — skip the assertion if it's unreachable.
+            try:
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                reachable = True
+            except Exception:
+                reachable = False
+            if reachable:
+                fresh_resp = await client.get("/api/v1/stats/freshness")
+                assert fresh_resp.status_code == 200
+                body = fresh_resp.json()
+                assert "pipeline_status" in body
+                assert "pending_enrichment" in body
+                assert "last_completed_at" in body
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 

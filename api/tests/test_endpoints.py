@@ -206,8 +206,8 @@ async def test_stats_aggregates_user_scoped_counts(db_session):
     a1 = await make_article(db_session, source, title="ai")
     a1.enriched_at = datetime.now(timezone.utc)
     a1.enrichment_method = "ai"
-    # Enriched article with TF-IDF fallback (AI error captured).
-    a2 = await make_article(db_session, source, title="fallback")
+    # Legacy TF-IDF enrichment (pre-E16-S8) with an error captured.
+    a2 = await make_article(db_session, source, title="legacy-tfidf")
     a2.enriched_at = datetime.now(timezone.utc)
     a2.enrichment_method = "tfidf"
     a2.enrichment_error = "boom"
@@ -228,5 +228,10 @@ async def test_stats_aggregates_user_scoped_counts(db_session):
     assert stats.sources.total == 1
     assert stats.enrichment.total_ai == 1
     assert stats.enrichment.total_tfidf == 1
-    assert stats.enrichment.total_tfidf_fallback == 1
     assert stats.enrichment.last_error == "boom"
+
+    # E19-S7 — the lightweight non-admin freshness slice: pending count is
+    # user-scoped, and one article is still pending here.
+    freshness = await StatsService(db_session).freshness(user.id)
+    assert freshness.pending_enrichment == 1
+    assert freshness.pipeline_status == "never_run"

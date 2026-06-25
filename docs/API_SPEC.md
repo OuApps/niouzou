@@ -754,10 +754,14 @@ Delete **all** keyword weights for the authenticated user. Hard delete, irrevers
 ## System
 
 ### GET /stats
+**Admin only (E19-S7)** — returns `403` for non-admin users. The payload is
+global instance telemetry (pipeline health, enrichment queue, OpenRouter
+bill); non-admins use [`GET /stats/freshness`](#get-statsfreshness) instead.
+
 System and AI-enrichment health. `articles`, `sources`, `keywords`, and
-`enrichment` are user-scoped. The `pipeline` block is **global** — the
-refresh worker is single-replica and the `pipeline_runs` history is shared
-across the instance.
+`enrichment` are scoped to the admin's own sources. The `pipeline` and
+`llm_cost` blocks are **global** — the refresh worker is single-replica and
+the `pipeline_runs` / `llm_usage_log` history is shared across the instance.
 
 **Query params**
 
@@ -790,7 +794,6 @@ across the instance.
     "last_enriched_at": "2026-05-27T14:10:00Z",
     "total_ai": 1456,
     "total_tfidf": 384,
-    "total_tfidf_fallback": 42,
     "last_error": "JSONDecodeError: Expecting value: line 1 column 1",
     "last_error_at": "2026-05-20T13:45:00Z"
   },
@@ -824,9 +827,9 @@ across the instance.
 }
 ```
 
-> `total_tfidf` counts every article enriched with TF-IDF (pure TF-IDF when AI
-> is off, plus fallbacks). `total_tfidf_fallback` is the subset where AI was
-> attempted and failed — useful for monitoring AI reliability.
+> `total_tfidf` counts legacy TF-IDF-enriched articles from pre-E16-S8
+> instances (enrichment is LLM-only now — no fallback), kept so upgraded
+> instances can still surface them.
 > `last_error` / `last_error_at` are null when no enrichment error has
 > happened **in the last hour**. The 1 h window prevents an old failure
 > from flagging the System panel as broken indefinitely — a recurring
@@ -873,6 +876,30 @@ across the instance.
 > for the Explore filter bar's "≥ seuil" chip so the displayed value
 > always matches the live setting; admin edits via `PATCH /admin/config`
 > are reflected on the next `/stats` call.
+
+---
+
+### GET /stats/freshness
+**Any authenticated user (E19-S7).** A deliberately minimal slice of the
+System telemetry for non-admin users — no OpenRouter cost, no pipeline
+errors, no run trigger. Just enough for the Profile screen to tell a regular
+user whether new content is on its way.
+
+**Response `200`**
+```json
+{
+  "pipeline_status": "running",
+  "pending_enrichment": 7,
+  "last_completed_at": "2026-05-31T13:45:00Z"
+}
+```
+
+> `pipeline_status` is the global worker state (`"running"` / `"completed"` /
+> `"failed"` / `"never_run"`, same values as `pipeline.status` on `/stats`).
+> `pending_enrichment` is scoped to **this** user's sources. `last_completed_at`
+> is the global pipeline's last successful finish (null on a fresh install).
+> The PWA derives a single "fetching / up to date" pill from
+> `pipeline_status === "running" || pending_enrichment > 0`.
 
 ---
 

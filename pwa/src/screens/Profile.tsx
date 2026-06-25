@@ -20,6 +20,7 @@ import { useApiData } from '../hooks/useApiData'
 import { useAuthStore } from '../store/auth'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
 import {
+  getFeedFreshness,
   getMe,
   getStats,
   resetReco,
@@ -299,9 +300,17 @@ export const Profile = () => {
             </button>
           )}
 
+          {/* Feed freshness (E19-S7) — non-admins don't get the System panel
+              (global instance telemetry + OpenRouter bill), only this light
+              "is new content on its way?" pill. */}
+          {me && !me.is_admin && <FeedFreshnessRow />}
+
           {/* System (E7-S15) — collapsible health + AI enrichment stats.
-              Kept inside the same gap-2 stack as the menu rows for visual
-              consistency (E7-S27). */}
+              Admin-only since E19-S7: the payload is global instance
+              telemetry (pipeline health, enrichment queue, OpenRouter bill,
+              Run now), none of it per-user. Kept inside the same gap-2 stack
+              as the menu rows for visual consistency (E7-S27). */}
+          {me?.is_admin && (
           <div>
             <button
               onClick={() => setSystemOpen((o) => !o)}
@@ -353,6 +362,7 @@ export const Profile = () => {
               />
             )}
           </div>
+          )}
 
           {/* Reset recommendations (E17-S5) — destructive, gated behind a
               confirmation modal. Sits just above Sign out, grouped with the
@@ -499,6 +509,55 @@ export const Profile = () => {
   )
 }
 
+// E19-S7 — non-admin feed-freshness pill. Self-contained: fetches its own
+// lightweight /stats/freshness slice (no cost, no errors, no run trigger).
+// Renders nothing until loaded, and on error, to avoid a noisy empty state.
+const FeedFreshnessRow = () => {
+  const { data, loading } = useApiData(getFeedFreshness, [])
+  if (loading || !data) return null
+  const fetching =
+    data.pipeline_status === 'running' || data.pending_enrichment > 0
+  return (
+    <div
+      className="glass-sm flex items-center gap-3 w-full"
+      style={{
+        borderRadius: 16,
+        padding: '14px 16px',
+        border: '1px solid rgba(255,255,255,0.10)',
+        background: 'var(--glass-bg)',
+        color: 'var(--text-primary)',
+        fontSize: 14,
+      }}
+    >
+      <div
+        style={{
+          width: 34,
+          height: 34,
+          borderRadius: 10,
+          background: 'var(--accent-subtle)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--accent)',
+        }}
+      >
+        {fetching ? <Spinner size={14} /> : <Activity size={16} />}
+      </div>
+      <span className="flex-1 text-left">
+        {fetching ? 'Nouveau contenu en route…' : 'Feed à jour'}
+      </span>
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 999,
+          background: fetching ? 'var(--accent)' : '#22c55e',
+        }}
+      />
+    </div>
+  )
+}
+
 interface SystemPanelProps {
   stats: Stats | null
   loading: boolean
@@ -518,8 +577,10 @@ function truncate(s: string, n: number): string {
 type AiStatus = 'working' | 'failed' | 'off'
 
 function aiStatus(enrichment: Stats['enrichment']): AiStatus {
-  const { total_ai, total_tfidf_fallback, last_error, last_error_at, last_enriched_at } = enrichment
-  if (total_ai === 0 && total_tfidf_fallback === 0) return 'off'
+  const { total_ai, last_error, last_error_at, last_enriched_at } = enrichment
+  // E19-S7 — enrichment is LLM-only since E16-S8 (no TF-IDF fallback), so
+  // "off" simply means no AI enrichment has run.
+  if (total_ai === 0) return 'off'
   if (!last_error) return 'working'
   // last_error present: failed iff the error is at least as recent as the
   // last successful enrichment (or no successful run yet).
@@ -936,7 +997,7 @@ const AiStatusPill = ({ status }: { status: AiStatus }) => {
   const config = {
     working: { dot: '#22c55e', label: 'AI · Working' },
     failed: { dot: '#f9c74f', label: 'AI · Last run failed' },
-    off: { dot: 'var(--text-tertiary)', label: 'AI · Off (TF-IDF)' },
+    off: { dot: 'var(--text-tertiary)', label: 'AI · Off' },
   }[status]
   return (
     <span className="flex items-center gap-1.5">

@@ -27,6 +27,7 @@ from niouzou.models.pipeline_run import STATUS_COMPLETED, STATUS_RUNNING
 from niouzou.schemas.stats import (
     ArticlesStats,
     EnrichmentStats,
+    FeedFreshness,
     KeywordsStats,
     LLMCostStats,
     LLMCostWindow,
@@ -105,15 +106,6 @@ class StatsService:
                     func.count(
                         case((article_join.c.enrichment_method == "tfidf", 1))
                     ).label("total_tfidf"),
-                    func.count(
-                        case(
-                            (
-                                (article_join.c.enrichment_method == "tfidf")
-                                & (article_join.c.enrichment_error.is_not(None)),
-                                1,
-                            )
-                        )
-                    ).label("total_tfidf_fallback"),
                 ).select_from(article_join)
             )
         ).one()
@@ -214,12 +206,39 @@ class StatsService:
                 last_enriched_at=articles_row.last_enriched_at,
                 total_ai=articles_row.total_ai or 0,
                 total_tfidf=articles_row.total_tfidf or 0,
-                total_tfidf_fallback=articles_row.total_tfidf_fallback or 0,
                 last_error=last_err_row.enrichment_error if last_err_row else None,
                 last_error_at=last_err_row.enriched_at if last_err_row else None,
             ),
             pipeline=pipeline,
             llm_cost=llm_cost,
+        )
+
+    async def freshness(self, user_id: uuid.UUID) -> FeedFreshness:
+        """Minimal feed-freshness signal for non-admin users (E19-S7).
+
+        Two cheap reads — the user's pending-enrichment count and the latest
+        global ``pipeline_runs`` row — with none of the sensitive telemetry
+        (cost, errors, run trigger) the admin-only ``/stats`` carries.
+        """
+        pending = await self.session.scalar(
+            select(func.count())
+            .select_from(Article)
+            .join(Source, Source.id == Article.source_id)
+            .where(
+                Source.user_id == user_id,
+                Source.deleted_at.is_(None),
+                Article.status != STATUS_ENRICHED,
+            )
+        )
+        row = await self.session.scalar(
+            select(PipelineRun)
+            .order_by(PipelineRun.started_at.desc())
+            .limit(1)
+        )
+        return FeedFreshness(
+            pipeline_status=row.status if row else "never_run",
+            pending_enrichment=pending or 0,
+            last_completed_at=row.completed_at if row else None,
         )
 
     async def _llm_cost_aggregates(self) -> LLMCostStats:

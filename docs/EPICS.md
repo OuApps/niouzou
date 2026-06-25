@@ -4445,3 +4445,55 @@ déduplication) ; `DESIGN_SYSTEM.md` documente le pattern et interdit de recoder
 
 **Acceptance** : les popups Delete user, Compaction, Reset keywords et Reset recommendations
 partagent un habillage strictement identique via `Modal`.
+
+#### [x] E19-S7 — Panel System : admin-only + indice de fraîcheur non-admin + purge legacy TF-IDF
+
+**Problème** (deux défauts de conception sur le même panel).
+
+1. **Fuite de télémétrie globale vers tous les comptes.** Le panel « System » (`Profile.tsx:302-355`,
+   `SystemPanel` `:593`) est rendu pour **chaque** utilisateur connecté, contrairement à la rangée
+   « Administration » juste au-dessus (`:269`) qui est gardée par `me?.is_admin`. Or il n'expose que de
+   la télémétrie **globale d'instance** : santé du pipeline, file d'enrichissement, **facture
+   OpenRouter** (`formatCost`, fenêtres 1h/6h/24h), et un bouton **« Run now »** qui tape
+   `POST /admin/refresh` — déjà `CurrentAdmin`-gated côté serveur → **403 pour un non-admin** qui voit
+   pourtant le bouton (bug UX latent). Pire, `GET /stats` n'est gardé que par `CurrentUser` : n'importe
+   quel compte peut lire la facture directement via l'API. **Aucune de ces données n'est
+   par-utilisateur** : un seul pipeline, une seule file, un seul compte OpenRouter. « Valeurs par user »
+   n'a donc pas de sens → la bonne réponse est **admin-only**. Mais un utilisateur lambda a une attente
+   légitime : « est-ce que du nouveau contenu arrive ? » → on lui garde un **indice de fraîcheur léger**
+   (sans coût, sans run-now, sans internals pipeline).
+
+2. **Code legacy TF-IDF.** Le pill `AI · Off (TF-IDF)` (`:939`), le champ `total_tfidf_fallback`
+   (`schemas/stats.py:39`, `stats_service.py:104-217`) et l'heuristique `aiStatus` qui le lit
+   (`:520-528`) datent d'avant **E16-S8** (enrichment **LLM-only**, plus aucun fallback TF-IDF). Le
+   statut `off` ne veut plus dire « bascule TF-IDF » mais simplement « aucun enrichment IA ».
+
+**Fix.**
+
+- **Backend.** `GET /stats` passe sous `CurrentAdmin`. Nouveau `GET /stats/freshness` (gardé
+  `CurrentUser`) renvoyant un payload **minimal** — `pipeline_status`, `pending_enrichment`,
+  `last_completed_at` — assez pour dériver un état de fraîcheur, **zéro donnée sensible** (ni coût, ni
+  erreurs, ni trigger). Purge de `total_tfidf_fallback` dans `schemas/stats.py` et `stats_service.py`.
+- **PWA.** Le `SystemPanel` complet **et** sa rangée passent derrière `me?.is_admin` (comme
+  Administration). Pour les non-admins : un **indice de fraîcheur** léger (pill / ligne unique) —
+  « Nouveau contenu en route… » quand `pipeline_status === 'running'` ou `pending_enrichment > 0`,
+  « Feed à jour » sinon — alimenté par `/stats/freshness`. `aiStatus` calcule `off` via `total_ai === 0`
+  (plus de référence au fallback) et le pill devient `AI · Off`.
+
+**Vérification** : tsc + build + lint PWA ; pytest (gating admin sur `/stats` → 403 non-admin, accès
+`/stats/freshness` autorisé, service stats sans `total_tfidf_fallback`). Mettre à jour `API_SPEC.md`
+(`/stats` devient admin, ajout `/stats/freshness`) et `ARCHITECTURE.md`/`CONVENTIONS.md` si impactés.
+
+**Acceptance** :
+- Un non-admin ne voit ni la facture OpenRouter, ni « Run now », ni les internals pipeline, et
+  `GET /stats` lui renvoie **403**.
+- Un non-admin voit un **indice de fraîcheur** (fetching / à jour) sur l'écran Profile.
+- Plus aucune occurrence de `TF-IDF` ni `total_tfidf_fallback` dans le code.
+
+**Implémentation** : `GET /stats` passe sous `CurrentAdmin` ; nouveau `GET /stats/freshness`
+(`CurrentUser`) → `StatsService.freshness()` (pending user-scoped + dernier `pipeline_runs` global).
+`EnrichmentStats.total_tfidf_fallback` supprimé du schéma + service. PWA : `SystemPanel` + rangée
+derrière `me?.is_admin`, nouveau `FeedFreshnessRow` (pill « Nouveau contenu en route… / Feed à jour »
+via `/stats/freshness`), `aiStatus` calcule `off` via `total_ai === 0`, pill `AI · Off`.
+**Vérif** : tsc + build PWA OK, lint inchangé (baseline) ; pytest `test_endpoints` + `test_pipeline_runs`
++ `test_explore_filters` (43 passed) dont un test 403-non-admin / 200-freshness ; `API_SPEC.md` à jour.
