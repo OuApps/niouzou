@@ -4530,3 +4530,141 @@ boot navigateur sans crash console. Aucun endpoint touché.
   le Profile.
 - Un admin retrouve toute la télémétrie (pipeline, facture, « Run now ») dans Administration ›
   Monitoring.
+
+---
+
+## EPIC 20 — Worker frugal : le modèle d'embedding hors du process always-on (juin 2026)
+
+**Contexte / déclencheur.** En ~5 jours d'exploitation Railway, la facture a explosé. Le poste
+dominant est le service **`refresh-worker`**, et E17-S4 n'a pas réglé le fond du problème.
+
+**Diagnostic (le vrai « pourquoi »).** Le worker est un process **always-on**
+(`uvicorn … refresh_worker:app` + APScheduler) qui tourne 24/7. E17-S4 a ajouté
+`unload_embedding_model()` (`del` + `gc.collect()`) après chaque run en pensant rendre la RAM —
+**mais ça ne la rend pas à l'OS**. Une fois `torch` + `sentence-transformers` importés et le modèle
+Qwen3-0.6B (~1,2 Go) chargé **une seule fois**, le RSS du process ne redescend quasiment jamais :
+l'allocateur caching de torch + les arènes glibc conservent les pages, et `torch`/`transformers`
+restent importés à vie. Railway facturant l'**usage réel** (Go·h mémoire + vCPU·min), le worker paie
+en continu un RSS de l'ordre de **0,5–1,5 Go, 24h/24**, alors que le modèle n'est réellement utile
+que **quelques minutes par jour**.
+
+> Preuve dans les logs prod : à 18:00 et 18:30, `fetched=0` → le run se termine en **<1 s** sans
+> jamais charger le modèle. À 17:31, 39 articles → run **~4 min**. Le travail réel cumulé est de
+> l'ordre de **10–30 min/jour** ; le reste du temps on paie un modèle qui dort en RAM.
+
+**Principe de la solution.** La **seule** façon fiable de rendre la RAM à l'OS, c'est de **tuer le
+process** — pas un `unload` in-process. Direction retenue (validée 2026-06-28) : **parent léger +
+subprocess**.
+
+- Le `refresh-worker` reste un petit service **always-on (~120–150 Mo, SANS jamais importer torch)**
+  qui conserve ses endpoints HTTP (`/run`, `/compact/*`, `/health`) et son planning APScheduler.
+- Le pipeline lourd (fetch + enrich + **embedding local**) est exécuté dans un **process enfant**
+  one-shot qui importe torch, charge le modèle, fait le travail, puis **meurt** → l'OS récupère
+  100 % de sa RAM (mort de process, pas `gc`).
+- Au repos : pas de modèle en mémoire, pas de torch importé → RSS plancher. Pendant un run : pic bref
+  (parent + enfant ~1,5 Go) le temps du run, puis retour au plancher. Gain attendu sur le worker :
+  **~5–10× moins de Go·h** (et davantage les jours creux, où l'enfant ne charge même pas le modèle
+  faute d'articles à enrichir).
+
+**Alternatives écartées.** Railway **Cron Job pur** (vrai scale-to-zero, conteneur éteint entre les
+runs) serait encore moins cher, mais imposait de sortir tous les endpoints HTTP du worker, un
+**advisory lock Postgres**, le modèle **embarqué dans l'image** (sinon re-téléchargement de 1,2 Go
+par run, conteneur neuf à chaque fois) et la perte/relocalisation du bouton « Refresh now » →
+re-archi plus lourde, écartée pour l'instant. **App Sleeping** du worker : inadapté (planning
+*interne* APScheduler — endormi, rien ne le réveille ; déjà tranché en E17-S4).
+
+> Note sur les pistes initiales : **« qu'un seul thread »** agit sur le **vCPU**, pas sur la RAM
+> (déjà plafonné `EMBEDDING_NUM_THREADS=3`/`OMP_NUM_THREADS=3`) → n'adresse pas le vrai problème ici,
+> qui est la RAM résidente 24/7. **« Éteindre »** est obtenu via la mort du subprocess.
+
+### Stories
+
+#### [ ] E20-S1 — Entrypoint pipeline one-shot (le process qui meurt)
+
+**But** : un module exécutable autonome (ex. `python -m niouzou.crons.run_once`) qui exécute **un
+cycle fetch + enrich complet** (extraction contenu + LLM + **embedding local**), écrit la télémétrie
+dans `pipeline_runs` comme aujourd'hui, **ferme proprement le pool Postgres**, puis **`exit`**.
+
+- Réutilise la logique de `_run_pipeline` (actuellement dans `refresh_worker.py`) — l'idée est de la
+  **déplacer** dans ce one-shot, pas de la dupliquer. Le worker l'appellera via subprocess (S2).
+- C'est ce process — et lui seul — qui importe torch et charge le modèle. À sa mort, la RAM
+  (~1,2 Go + overhead torch) est intégralement rendue à l'OS.
+- Self-reaper optionnel au démarrage de l'enfant (les `'enriching'` orphelins restent aussi couverts
+  par le reaper du parent, cf. S2).
+- `unload_embedding_model()` devient **inutile** (la mort du process remplace l'unload) → à retirer
+  en S2.
+
+**Acceptance** : `python -m niouzou.crons.run_once` lancé à la main fait un cycle complet, log la
+télémétrie, et **se termine** (code 0) en libérant toute sa RAM ; aucun handle Postgres laissé
+ouvert ; tests du one-shot (embedder injecté, jamais le vrai modèle — cf. tripwire conftest).
+
+#### [ ] E20-S2 — Parent léger : APScheduler + `/run` lancent un subprocess (jamais torch en parent)
+
+**But** : refondre `workers/refresh_worker.py` pour que le process always-on **n'importe jamais
+torch** et ne charge **jamais** le modèle. Le planning et le déclenchement manuel **spawnent**
+l'entrypoint S1 comme process enfant.
+
+- `_guarded_run` (scheduler) et `POST /run` (bouton admin) appellent
+  `asyncio.create_subprocess_exec(sys.executable, "-m", "niouzou.crons.run_once", …)` au lieu
+  d'exécuter le pipeline en process. L'enfant **hérite stdout/stderr** → logs visibles dans Railway ;
+  la télémétrie `/stats` continue de fonctionner (l'enfant écrit `pipeline_runs` directement en DB).
+- **Verrou** : le `asyncio.Lock` in-process est conservé et **tenu pendant toute la vie de
+  l'enfant** (`await proc.wait()` sous le lock). Un seul enfant à la fois ; la compaction-apply (qui
+  prend le même `_lock`) reste mutuellement exclusive avec le pipeline → **pas besoin d'advisory lock
+  Postgres** (une seule réplique).
+- **Timeout / reaping** : si l'enfant dépasse une durée max (ex. 20 min), le parent le `kill` pour ne
+  pas bloquer le lock indéfiniment ; le reaper `_reaper_reset_enriching` reste au démarrage du parent.
+- **Trim des imports du parent** : vérifier (test) que le module worker n'importe **transitivement
+  pas** torch (le RSS plancher doit rester ~120–150 Mo). Retirer l'import et l'appel
+  `unload_embedding_model`.
+- Compaction (`/compact/*`) **inchangée** : reste dans le parent (LLM + DB, pas de torch).
+
+**Acceptance** : au repos, `refresh-worker` ne charge ni torch ni modèle (RSS plancher vérifié) ;
+un tick planifié et le bouton « Refresh now » déclenchent bien un cycle (via subprocess) ; un seul
+cycle à la fois ; la compaction et le pipeline ne se chevauchent jamais ; après chaque run le RSS
+parent revient au plancher.
+
+#### [ ] E20-S3 — Nightly refresh : même modèle d'exécution
+
+**But** : exécuter `cron_nightly_refresh` (recompute des poids + rescore dual) **aussi** en
+subprocess one-shot, pour garder le parent uniformément léger et isoler les pannes.
+
+- Note : le nightly ne charge **pas** le modèle d'embedding (le rescore smart tourne en pgvector sur
+  des embeddings déjà stockés). Le passage en subprocess est surtout une question d'**isolation** et
+  d'uniformité, pas de RAM. Peut réutiliser l'entrypoint S1 avec un flag (`--nightly`) ou un second
+  module — à trancher à l'implémentation.
+
+**Acceptance** : le refresh nocturne tourne en subprocess et se termine ; `/stats` et les poids
+reflètent le run ; pas de régression sur la fenêtre de rescore.
+
+#### [ ] E20-S4 — (Durcissement) modèle embarqué dans l'image au build
+
+**But** : pré-télécharger le snapshot HuggingFace de Qwen3-Embedding-0.6B dans une **couche de
+l'image Docker** au build, pour supprimer la dépendance réseau à HF au runtime et le téléchargement
+de 1,2 Go au premier run après chaque déploiement.
+
+- Moins critique dans la variante « parent + subprocess » que dans un cron pur : le conteneur parent
+  étant always-on, son **cache disque persiste** entre les spawns → le re-téléchargement n'arrive
+  qu'**une fois** après un déploiement. Story de durcissement (offline-friendly, cold-start plus
+  rapide), pas un bloqueur.
+
+**Acceptance** : un conteneur fraîchement déployé enrichit sans accès réseau à HuggingFace ; le
+premier run après déploiement ne re-télécharge pas le modèle.
+
+#### [ ] E20-S5 — Quick-wins complémentaires (zéro/peu de code)
+
+**But** : capter les gains faciles en parallèle de la re-archi.
+
+- Activer **Serverless / App Sleeping** sur `api` et `pwa` (services web → se rendorment hors trafic,
+  réveil sur requête entrante). À activer via l'UI Railway (pas configurable en `railway.toml`).
+- Éventuellement porter `CRON_FETCH_INTERVAL` 30 → 60 min si la fraîcheur le tolère (1 variable).
+- Documenter la conso attendue avant/après dans `ARCHITECTURE.md`.
+
+**Acceptance** : `api`/`pwa` en Serverless ; note de conso avant/après livrée ; décision intervalle
+tranchée.
+
+> **Docs à mettre à jour à l'implémentation** (pas maintenant) : `ARCHITECTURE.md` (le worker n'est
+> plus un process qui enrichit en propre mais un superviseur qui spawn un one-shot ; schéma + section
+> « Cron Jobs » + variables), `CONVENTIONS.md` si un pattern de subprocess est introduit. La note
+> mémoire « Railway worker threading » reste valide (le cap de threads continue de s'appliquer dans
+> l'enfant).
