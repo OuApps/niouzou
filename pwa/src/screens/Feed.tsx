@@ -93,15 +93,16 @@ export const Feed = () => {
   // ── Data loading ───────────────────────────────────────────────────────────
   useEffect(() => {
     let active = true
-    setStatus('loading')
-    impressed.current.clear()
-    impressionTimers.current.clear()
-    getFeed({
-      limit: PAGE_SIZE,
-      minScore: minScore ?? undefined,
-      start: startId ?? undefined,
-    })
-      .then((page) => {
+    async function load() {
+      setStatus('loading')
+      impressed.current.clear()
+      impressionTimers.current.clear()
+      try {
+        const page = await getFeed({
+          limit: PAGE_SIZE,
+          minScore: minScore ?? undefined,
+          start: startId ?? undefined,
+        })
         if (!active) return
         setArticles(page.articles)
         setCursor(page.next_cursor)
@@ -117,12 +118,13 @@ export const Feed = () => {
         requestAnimationFrame(() => {
           containerRef.current?.scrollTo({ top: 0, behavior: 'auto' })
         })
-      })
-      .catch((e) => {
+      } catch (e) {
         if (!active) return
         setErrorMsg(e instanceof ApiError ? e.message : 'Could not load your feed.')
         setStatus('error')
-      })
+      }
+    }
+    void load()
     return () => {
       active = false
     }
@@ -193,12 +195,16 @@ export const Feed = () => {
   // Infinite scroll — kick in N slides before the end of the loaded list.
   useEffect(() => {
     if (
-      status === 'ready' &&
-      hasMore &&
-      activeIndex >= articles.length - PREFETCH_AHEAD
+      status !== 'ready' ||
+      !hasMore ||
+      activeIndex < articles.length - PREFETCH_AHEAD
     ) {
-      loadMore()
+      return
     }
+    async function prefetch() {
+      await loadMore()
+    }
+    void prefetch()
   }, [activeIndex, articles.length, hasMore, status, loadMore])
 
   // E9-S2 — high-priority preload for the first two slides' hero images.
@@ -272,12 +278,16 @@ export const Feed = () => {
     observerRef.current = observer
     // Observe any slides that were already mounted (re-mount after reload).
     for (const node of slideRefs.current.values()) observer.observe(node)
+    // Capture the (stable) timer map for the cleanup closure — the ref is
+    // never reassigned, only cleared, so this is equivalent to reading
+    // `.current` at teardown.
+    const timers = impressionTimers.current
     return () => {
       observer.disconnect()
       observerRef.current = null
       // Cancel any pending impression timer.
-      for (const t of impressionTimers.current.values()) window.clearTimeout(t)
-      impressionTimers.current.clear()
+      for (const t of timers.values()) window.clearTimeout(t)
+      timers.clear()
     }
     // Deliberately re-attach when the article list changes so the closure
     // captures the latest `articles` for the index lookup.

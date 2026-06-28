@@ -33,20 +33,22 @@ export const Saved = () => {
 
   useEffect(() => {
     let active = true
-    setStatus('loading')
-    getSaved(undefined, PAGE_SIZE)
-      .then((page) => {
+    async function load() {
+      setStatus('loading')
+      try {
+        const page = await getSaved(undefined, PAGE_SIZE)
         if (!active) return
         setArticles(page.articles)
         setCursor(page.next_cursor)
         setHasMore(page.has_more)
         setStatus('ready')
-      })
-      .catch((e) => {
+      } catch (e) {
         if (!active) return
         setErrorMsg(e instanceof ApiError ? e.message : 'Something went wrong.')
         setStatus('error')
-      })
+      }
+    }
+    void load()
     return () => {
       active = false
     }

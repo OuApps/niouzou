@@ -26,24 +26,25 @@ export const ScoreDebugSheet = ({ articleId, onClose }: Props) => {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!articleId) {
-      setData(null)
-      setError(null)
-      return
-    }
     let cancelled = false
-    setLoading(true)
-    setError(null)
-    getScoreDebug(articleId)
-      .then((debug) => {
+    async function load() {
+      if (!articleId) {
+        setData(null)
+        setError(null)
+        return
+      }
+      setLoading(true)
+      setError(null)
+      try {
+        const debug = await getScoreDebug(articleId)
         if (!cancelled) setData(debug)
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) setError('Could not load score details.')
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false)
-      })
+      }
+    }
+    void load()
     return () => {
       cancelled = true
     }

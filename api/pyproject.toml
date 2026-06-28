@@ -72,3 +72,11 @@ packages = ["niouzou"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Upstream-internal Starlette deprecations (starlette 1.3.x, a transitive pin of
+# FastAPI), not anything in our code: the TestClient nudges towards httpx2, and
+# Starlette's own exception handler still references the pre-rename HTTP_422
+# constant. Nothing to fix on our side until FastAPI ships a Starlette that drops
+# them — silence the whole category so the suite output stays clean.
+filterwarnings = [
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+]

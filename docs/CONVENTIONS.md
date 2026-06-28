@@ -224,15 +224,30 @@ type FeedbackAction = 'like' | 'dislike' | 'skip' | 'save'
 
 ### State management
 - Local component state: `useState` / `useReducer`
-- Server state (API data, loading, errors): React Query (`@tanstack/react-query`)
+- Server state (API data, loading, errors): owned per-screen with `useEffect` +
+  `useState` — there is no data-fetching library. See "React effects" below.
 - Global client state (auth token, user): Zustand — token persisted in localStorage
 - No Redux
 
 ### API calls
-- All API calls go through `src/api/` — never call `fetch` or `axios` directly from a component
-- Use React Query for all data fetching
+- All API calls go through the typed client in `src/api/` — never call `fetch` or `axios` directly from a component
 - Optimistic updates for feedback actions (swipe must feel instant)
 - Auth token read from Zustand store (which hydrates from localStorage on init)
+
+### React effects (eslint-plugin-react-hooks v7 / React Compiler rules)
+The recommended config enables the React Compiler lint family; `npm run lint`
+must stay green. The patterns that satisfy it:
+- **No synchronous `setState` in an effect body.** Wrap an async fetch in an
+  inner `async function load() { … }` and call `void load()`: set `loading`
+  first inside it, then the data after `await`, guarded by a `cancelled`/`active`
+  flag flipped in the cleanup (avoids race conditions on fast dep changes).
+- **Reset state on a prop change during render, not in an effect** — keep the
+  previous prop in state and compare (`if (id !== prev) { setPrev(id); reset() }`),
+  or give the child a `key`. Effects are for imperative side effects (scroll, DOM).
+- **Render must stay pure** — never call `Date.now()` / `Math.random()` during
+  render; hold the value in state and update it from an event or a timer.
+- Copy a ref's `.current` into a local variable before using it inside an effect
+  cleanup closure.
 
 ---
 
@@ -274,6 +289,11 @@ Format: `type/epic-story-short-description`
 - Frontend: `vitest` + `@testing-library/react`
 - Focus tests on services and scoring logic — not on routers or UI details
 - Each scorer must have unit tests covering: neutral user (no history), positive keywords, negative keywords, mixed
+- Upstream-only deprecation warnings are silenced in `api/pyproject.toml`
+  (`[tool.pytest.ini_options].filterwarnings`) — currently the Starlette
+  `StarletteDeprecationWarning` family (httpx/TestClient nudge + the renamed
+  `HTTP_422` constant), which originate inside Starlette, not our code. Only add
+  an `ignore` for a warning we genuinely cannot fix on our side.
 
 ## Continuous integration
 

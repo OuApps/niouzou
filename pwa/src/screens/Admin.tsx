@@ -25,6 +25,7 @@ import {
   compactKeywordsReject,
   ApiError,
   type AdminConfig,
+  type AdminConfigPatch,
   type AdminModel,
   type AdminUser,
   type CompactionGroup,
@@ -211,7 +212,10 @@ const MonitoringSection = () => {
   const [statsLoading, setStatsLoading] = useState(false)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [refreshDisabledUntil, setRefreshDisabledUntil] = useState(0)
+  // Debounce flag for the "Run now" button. Held as a boolean (flipped back by
+  // a timer) rather than a deadline timestamp, so render stays pure — reading
+  // `Date.now()` during render is impure (react-hooks/purity).
+  const [refreshDisabled, setRefreshDisabled] = useState(false)
   // E10-S5 — windowed pipeline aggregates. Default 6h matches the backend
   // and smooths out the cron cadence while still reflecting recent state.
   const [pipelineWindow, setPipelineWindow] = useState<PipelineWindow>('6h')
@@ -230,7 +234,10 @@ const MonitoringSection = () => {
 
   // Lazy-load on first mount (the section only mounts when opened).
   useEffect(() => {
-    void loadStats()
+    async function load() {
+      await loadStats()
+    }
+    void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -241,11 +248,13 @@ const MonitoringSection = () => {
   }
 
   const runRefresh = async () => {
-    if (refreshing || Date.now() < refreshDisabledUntil) return
+    if (refreshing || refreshDisabled) return
     setRefreshing(true)
     try {
       await triggerRefresh()
-      setRefreshDisabledUntil(Date.now() + REFRESH_DEBOUNCE_MS)
+      // Debounce the button for a while after a successful trigger.
+      setRefreshDisabled(true)
+      setTimeout(() => setRefreshDisabled(false), REFRESH_DEBOUNCE_MS)
       // Give the background job a head start, then refetch stats.
       setTimeout(() => loadStats(), REFRESH_REFETCH_MS)
     } catch {
@@ -262,7 +271,7 @@ const MonitoringSection = () => {
       error={statsError}
       onRetry={() => loadStats()}
       refreshing={refreshing}
-      refreshDisabled={Date.now() < refreshDisabledUntil}
+      refreshDisabled={refreshDisabled}
       onRefresh={runRefresh}
       pipelineWindow={pipelineWindow}
       onPipelineWindowChange={handleWindowChange}
@@ -318,7 +327,7 @@ const AdminSection = ({ title, defaultOpen = false, children }: AdminSectionProp
 interface ConfigRowProps {
   label: string
   config: AdminConfig
-  field: keyof AdminConfig
+  field: keyof AdminConfigPatch
   // ``percent`` stores 0-1 server-side but edits/displays 0-100 % — used by
   // ``score_threshold`` so the admin types a number that matches what the
   // score badge shows on the feed.
@@ -347,7 +356,10 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
     setError(null)
     setSaving(true)
     try {
-      const patch: Record<string, string | number> = {}
+      const patch: AdminConfigPatch = {}
+      // Writing a single field via a `keyof` index needs a widened view —
+      // TS can't correlate the dynamic key with its specific value type.
+      const writable = patch as Record<string, string | number>
       if (isNumeric) {
         const raw =
           type === 'number' ? parseInt(value, 10) : parseFloat(value)
@@ -367,11 +379,11 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
           return
         }
         // Percent → store as 0-1 float on the backend.
-        patch[field] = type === 'percent' ? raw / 100 : raw
+        writable[field] = type === 'percent' ? raw / 100 : raw
       } else {
-        patch[field] = value
+        writable[field] = value
       }
-      await patchAdminConfig(patch as any)
+      await patchAdminConfig(patch)
       setEditing(false)
       onSave()
     } catch (err) {

@@ -76,6 +76,14 @@ export const FeedArticleSlide = ({
   // short scroll to the action bar, not a marathon. Anything past
   // CONTENT_PREVIEW_CHARS is hidden behind "Lire plus" until they ask.
   const [contentExpanded, setContentExpanded] = useState(false)
+  // Collapse the "Lire plus" expansion when we switch to a different article.
+  // Done during render (React's recommended pattern for resetting state on a
+  // prop change) rather than synchronously in an Effect.
+  const [renderedArticleId, setRenderedArticleId] = useState(article.id)
+  if (article.id !== renderedArticleId) {
+    setRenderedArticleId(article.id)
+    setContentExpanded(false)
+  }
   // E10-S2 — open/closed state of the score-debug bottom sheet. The sheet
   // itself owns its fetch; we only pass the article id when open.
   const [debugOpen, setDebugOpen] = useState(false)
@@ -104,7 +112,6 @@ export const FeedArticleSlide = ({
   // title on re-entry.
   useEffect(() => {
     scrollEl.current?.scrollTo({ top: 0, behavior: 'auto' })
-    setContentExpanded(false)
   }, [article.id])
 
   // Swipe gesture detection at article boundaries (E11-S3): when at top/bottom
