@@ -102,13 +102,17 @@ External:
   after each run, the OS reclaims 100 % of that *anonymous* RAM. (This replaced
   E17-S4's in-process `unload_embedding_model()`, which freed Python references
   but did not return torch's pages to the OS, so a 24/7 process kept paying for
-  them.) **Page-cache caveat:** the model file (mmap'd by safetensors) stays in
-  the cgroup **page cache** after the child dies, and Railway counts page cache
-  in its Memory metric — so the parent calls `posix_fadvise(DONTNEED)` on the
-  HF cache files after each run (`_drop_model_page_cache`) to evict them and
-  return idle memory to the parent's floor RSS (~120-150 MB). The next run
-  re-reads the model from local disk (small cold-start). `CRON_FETCH_INTERVAL`
-  defaults to 30 min in prod.
+  them.) **Page-cache caveat:** the files the child mmaps stay in the cgroup
+  **page cache** after it dies — the model (~1.2 GB safetensors) *and* torch's
+  shared libs (`libtorch_cpu.so` ~440 MB) — and Railway counts page cache in
+  its Memory metric, so idle memory didn't drop to the floor. The parent calls
+  `posix_fadvise(DONTNEED)` on the HF cache + the `torch` package dir after each
+  run (`_drop_run_page_cache`) to evict those clean, now-unmapped pages and
+  return idle RSS toward ~150-200 MB (measured anon is only ~74 MB; the rest is
+  reclaimable cache). torch's dir is located via `sysconfig` so the parent never
+  imports torch; fadvise leaves the parent's own still-mapped libs untouched.
+  The next run re-reads them from local disk (small cold-start).
+  `CRON_FETCH_INTERVAL` defaults to 30 min in prod.
 - **Subprocess supervision** (`workers/refresh_worker.py`): the scheduler tick
   and `POST /run` both call `_spawn_run_once()`, which runs the child with
   `asyncio.create_subprocess_exec` and holds the in-process `_lock` for the

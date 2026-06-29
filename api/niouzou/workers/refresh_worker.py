@@ -42,6 +42,7 @@ import asyncio
 import logging
 import os
 import sys
+import sysconfig
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -89,15 +90,19 @@ _NIGHTLY_TIMEOUT_S = 60 * 60
 
 # ── page-cache hygiene (E20 follow-up) ──────────────────────────────────────
 #
-# Killing the run_once child frees the embedding model's RSS, but the model
-# file (~1.2 GB, mmap'd by safetensors) stays in the container's cgroup page
-# cache after the child exits — and Railway counts page cache in its Memory
-# metric. So idle memory never returned to the parent's floor (~150 MB); it sat
-# at ~1.2 GB. The fix: after each run, advise the kernel to drop those clean,
-# now-unmapped pages. Verified on Linux: reading a file populates page cache,
-# posix_fadvise(DONTNEED) from a fresh fd evicts it exactly. The next run
-# re-reads the model from local disk (small cold-start, already accepted by
-# E20). The parent does this itself — no torch, just os + the HF cache path.
+# Killing the run_once child frees its *anonymous* RSS, but every file the
+# child mmap'd stays in the container's cgroup **page cache** after it exits —
+# and Railway counts page cache in its Memory metric, so idle memory never
+# returned to the parent's floor. Two big offenders, measured on the live
+# worker: the embedding model (~1.2 GB safetensors) and torch's shared libs
+# (libtorch_cpu.so alone is ~440 MB). After each run the parent advises the
+# kernel to drop those clean, now-unmapped pages. Verified on Linux: reading a
+# file populates page cache, posix_fadvise(DONTNEED) from a fresh fd evicts it
+# exactly. The next run re-reads them from local disk (small cold-start,
+# already accepted by E20). The parent stays torch-free — it locates torch's
+# directory via sysconfig, never importing it. fadvise leaves the parent's own
+# still-mapped libs (uvicorn, sqlalchemy…) untouched; only the dead child's
+# unmapped pages are reclaimed.
 
 
 def _hf_cache_dir() -> Path | None:
@@ -120,32 +125,48 @@ def _hf_cache_dir() -> Path | None:
     return None
 
 
-def _drop_model_page_cache() -> None:
-    """Evict the embedding-model files from the OS page cache (Linux only).
+def _page_cache_dirs() -> list[Path]:
+    """Directories whose files the child mmaps and leaves in page cache.
 
-    No-op where ``posix_fadvise`` is absent (macOS/local dev) or the cache dir
-    doesn't exist yet (no model ever loaded). Best-effort per file — a failure
-    on one file must not abort the sweep.
+    The HF model cache plus the installed ``torch`` package (its ``lib/*.so``
+    are the bulk). torch's path is resolved via sysconfig so the parent never
+    imports torch.
+    """
+    dirs: list[Path] = []
+    hf = _hf_cache_dir()
+    if hf is not None:
+        dirs.append(hf)
+    purelib = sysconfig.get_path("purelib")
+    if purelib:
+        torch_dir = Path(purelib) / "torch"
+        if torch_dir.exists():
+            dirs.append(torch_dir)
+    return dirs
+
+
+def _drop_run_page_cache() -> None:
+    """Evict the model + torch files from the OS page cache (Linux only).
+
+    No-op where ``posix_fadvise`` is absent (macOS/local dev). Best-effort per
+    file — a failure on one file must not abort the sweep.
     """
     fadvise = getattr(os, "posix_fadvise", None)
     if fadvise is None:
         return
-    cache = _hf_cache_dir()
-    if cache is None:
-        return
     dropped = 0
-    for path in cache.rglob("*"):
-        try:
-            if not path.is_file():
+    for cache in _page_cache_dirs():
+        for path in cache.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                with open(path, "rb") as fh:
+                    fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+                dropped += 1
+            except OSError:
                 continue
-            with open(path, "rb") as fh:
-                fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-            dropped += 1
-        except OSError:
-            continue
     if dropped:
         logger.info(
-            "refresh_worker: evicted %d model file(s) from page cache", dropped
+            "refresh_worker: evicted %d file(s) from page cache", dropped
         )
 
 
@@ -193,9 +214,9 @@ async def _guarded_run() -> None:
         rc = await _spawn_run_once(timeout_s=_PIPELINE_TIMEOUT_S)
         if rc != 0:
             logger.warning("refresh_worker: pipeline child exited with code %d", rc)
-        # Return the model's page cache to the OS so idle memory drops back to
-        # the parent's floor (off-loop: it walks the HF cache dir).
-        await asyncio.to_thread(_drop_model_page_cache)
+        # Return the model + torch page cache to the OS so idle memory drops
+        # back to the parent's floor (off-loop: it walks the cache dirs).
+        await asyncio.to_thread(_drop_run_page_cache)
 
 
 async def _nightly_refresh_job() -> None:
