@@ -60,7 +60,10 @@ niouzou/
 │       ├── crons/
 │       │   ├── fetch.py
 │       │   ├── enrich.py
-│       │   └── nightly_refresh.py  ← weights + dual-score rescore (ex refresh_weights, E16-S9)
+│       │   ├── nightly_refresh.py  ← weights + dual-score rescore (ex refresh_weights, E16-S9)
+│       │   └── run_once.py    ← one-shot pipeline entrypoint, spawned per run by the worker (E20)
+│       ├── workers/
+│       │   └── refresh_worker.py  ← light always-on supervisor: APScheduler + /run + /compact, spawns run_once (E20)
 │       └── migrations/        ← Alembic
 └── pwa/
     ├── Dockerfile

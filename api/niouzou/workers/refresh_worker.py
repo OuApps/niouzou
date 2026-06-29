@@ -110,6 +110,12 @@ def _hf_cache_dir() -> Path | None:
 
     Mirrors HF's own precedence so the parent stays torch/HF-free. Returns the
     most specific existing dir (the ``hub`` subdir when present), or None.
+
+    Reads ``os.environ`` directly (not via ``config.py``) on purpose: these are
+    HuggingFace's *own* env vars, not Niouzou settings — we read them only to
+    locate where HF put its cache, the same way ``embedding_service`` reads the
+    cgroup/CPU state directly. Adding them to ``Settings`` would misrepresent
+    them as Niouzou knobs.
     """
     for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
         value = os.environ.get(var)

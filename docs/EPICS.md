@@ -4651,7 +4651,7 @@ de 1,2 Go au premier run après chaque déploiement.
 **Acceptance** : un conteneur fraîchement déployé enrichit sans accès réseau à HuggingFace ; le
 premier run après déploiement ne re-télécharge pas le modèle.
 
-#### [ ] E20-S5 — Quick-wins complémentaires (zéro/peu de code)
+#### [x] E20-S5 — Quick-wins complémentaires (zéro/peu de code)
 
 **But** : capter les gains faciles en parallèle de la re-archi.
 
@@ -4668,3 +4668,29 @@ tranchée.
 > « Cron Jobs » + variables), `CONVENTIONS.md` si un pattern de subprocess est introduit. La note
 > mémoire « Railway worker threading » reste valide (le cap de threads continue de s'appliquer dans
 > l'enfant).
+
+#### Follow-up implémentation (livré 2026-06-29) — le page cache, le vrai dernier kilomètre
+
+S1–S3 livrés et déployés (commit `27f8781`). Mais le graphe Railway montrait un plancher idle
+~1,25 Go, pas les ~150 Mo attendus. **Diagnostic (confirmé par inspection cgroup read-only via
+`railway ssh`)** : tuer l'enfant rend bien la RAM **anonyme** (mesuré `anon` = 74 Mo, aucun process
+résiduel) — la frugalité marche. Mais chaque fichier que l'enfant **mmap** reste dans le **page cache**
+du cgroup après sa mort, et **Railway compte le page cache** dans sa métrique Memory. Deux gros
+coupables : le **modèle** (~1,2 Go safetensors) ET les **libs de torch** (`libtorch_cpu.so` ≈ 442 Mo,
+dossier `torch` 750 Mo).
+
+**Correctif** (commits `bd37d65` puis `f2628f5`) : après chaque run, le parent (toujours sans torch)
+appelle `posix_fadvise(DONTNEED)` sur le cache HF **et** le dossier `torch` (localisé via
+`sysconfig`, jamais importé) → `_drop_run_page_cache()`. fadvise ne réclame que les pages **non
+mappées** du défunt enfant ; les libs encore mappées du parent (uvicorn, sqlalchemy…) sont
+intactes. Mécanisme vérifié sur Linux (lecture → `Cached +N` ; fadvise → `Cached −N`) et en prod
+(cgroup idle retombé à **93 Mo** : `anon` 75 Mo + `file` 0). Coût : l'enfant relit modèle+libs du
+disque local au run suivant (petit cold-start, déjà accepté). **Leçon réutilisable** : « tuer le
+process » libère l'anonyme mais **pas** le page cache des fichiers mmap'és — sur une plateforme qui
+facture le page cache, il faut l'évincer explicitement.
+
+**Note Serverless (S5)** : `api`/`pwa` en App Sleeping (réveil sur requête) ✅. Le **worker ne peut
+pas** l'être (planning APScheduler interne → endormi, rien ne le réveille). Le vrai scale-to-zero du
+worker serait un **Railway Cron Job** lançant `run_once` (conteneur éteint entre runs, 0 € idle) —
+mais impose le modèle embarqué dans l'image (S4, +1,2 Go) sinon re-DL à chaque run, et la perte des
+endpoints `/run` + `/compact`. Écarté au profit du correctif page-cache (2026-06-29).
