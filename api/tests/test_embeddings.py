@@ -207,35 +207,3 @@ async def test_backfill_embeds_all_null_rows_then_noop(db_session):
     assert await backfill_embeddings.run(batch_size=2, embedder=embedder) == 3
     # Re-run: everything already embedded → zero work (idempotent/resumable).
     assert await backfill_embeddings.run(batch_size=2, embedder=embedder) == 0
-
-
-# ── unload between worker runs (E17-S4) ───────────────────────────────────────
-
-
-def test_unload_is_noop_for_injected_encoder():
-    """Injected fakes (tests) are never dropped — would force a real load."""
-    enc = HashEncoder()
-    svc = EmbeddingService(enc)
-    assert svc.unload() is False
-    # Still usable, fake preserved (no real model load).
-    assert len(svc.embed_texts(["x"])) == 1
-    assert enc.calls >= 1
-
-
-def test_unload_drops_lazily_loaded_encoder():
-    svc = EmbeddingService()  # encoder=None → not injected
-    svc._encoder = HashEncoder()  # simulate a lazily-loaded model
-    assert svc.unload() is True
-    assert svc._encoder is None
-
-
-def test_unload_is_noop_when_nothing_loaded():
-    assert EmbeddingService().unload() is False
-
-
-def test_module_unload_keeps_fake_singleton():
-    """conftest installs an injected fake singleton; module-level unload must
-    leave it intact (no real load on the next embed)."""
-    before = embedding_service.get_embedding_service()._encoder
-    embedding_service.unload_embedding_model()
-    assert embedding_service.get_embedding_service()._encoder is before

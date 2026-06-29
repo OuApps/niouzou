@@ -1,87 +1,67 @@
-"""Refresh worker — scheduled + on-demand pipeline runner.
+"""Refresh worker — light always-on supervisor that spawns one-shot children.
 
-Why a separate service? The pipeline is CPU/IO heavy (newspaper4k parsing,
-optional LLM calls per article, batch INSERTs). Running it inside the main
-uvicorn process — even as a BackgroundTask — starves incoming PWA requests
-on a small Railway instance.
+Why a separate service? The pipeline is CPU/IO/RAM heavy (newspaper4k parsing,
+optional LLM calls per article, the local ~1.2 GB embedding model, batch
+INSERTs). Running it inside the main uvicorn process — even as a BackgroundTask
+— starves incoming PWA requests on a small Railway instance.
 
-This service shares the API's Docker image and codebase; only the start
-command and the Railway service config differ. It runs as a single replica
-behind a private Railway domain (``*.railway.internal``).
+E20 — Frugal worker (the current shape):
+    This process is **always-on** but stays **light (~120-150 MB) and never
+    imports torch / never loads the embedding model**. The heavy fetch+enrich
+    pipeline runs in a short-lived **child process** (``python -m
+    niouzou.crons.run_once``) that the worker spawns per run; when the child
+    exits the OS reclaims 100 % of its RAM (the only reliable way to give
+    torch's resident pages back — an in-process ``unload`` + ``gc`` does not,
+    see E17-S4). At rest: no model in memory, RSS at the floor. During a run: a
+    brief spike (parent + child) for the few minutes of real work, then back to
+    the floor. The nightly refresh runs the same way (``run_once --nightly``).
 
-E8-S6 — Scheduled execution:
-    Three Railway cron services used to call the cron scripts directly
-    against the DB, completely bypassing this worker. That left a race
-    window where ``POST /admin/refresh`` and a Railway cron could run
-    ``cron_fetch``/``cron_enrich`` concurrently with no mutual exclusion.
-    The worker now owns scheduling too, via APScheduler:
+    The worker keeps its HTTP surface (``/run``, ``/compact/*``, ``/health``)
+    and its APScheduler planning; only the *execution* moved to a subprocess.
 
-      * ``_guarded_run`` is shared by the scheduler AND ``POST /run`` — the
-        same ``asyncio.Lock`` is acquired in both paths, so a manual trigger
-        during a scheduled run (or vice versa) is debounced cleanly.
-      * Settings are resolved at startup via ``SettingsService`` (DB override
-        → env fallback). Live changes via ``PATCH /admin/config`` take effect
-        on the next worker restart — acceptable, see EPICS.md E8-S6.
+Scheduling + mutual exclusion (E8-S6, preserved):
+    ``_guarded_run`` is shared by the scheduler AND ``POST /run`` — the same
+    in-process ``asyncio.Lock`` is held for the **whole lifetime of the child**
+    (``await proc.wait()`` under the lock), so a manual trigger during a
+    scheduled run (or vice versa) is debounced and only one child ever runs at
+    a time. The nightly job and compaction-apply take the same lock, so they
+    never overlap the pipeline. A single in-process lock is enough since there
+    is exactly one replica; if this ever scales out, swap it for
+    ``SELECT pg_try_advisory_lock(...)``.
 
-E10-S1 — Pipeline telemetry:
-    Every fetch+enrich cycle is now recorded in ``pipeline_runs``: when it
-    started, when it ended, how many articles were processed, and whether it
-    failed. The previous design exposed no run history — "Feed may be
-    stalled" was a faux-positive driven by the last article's ``created_at``,
-    which lit up whenever a healthy cron tick produced nothing new.
+Telemetry: the child writes ``pipeline_runs`` directly in the DB, so ``/stats``
+keeps working unchanged. The child inherits stdout/stderr, so its logs surface
+in Railway exactly as before.
 
-    The worker drives the per-article loop itself (rather than calling
-    ``cron_enrich.run()``) so it can update the run row after each article.
-    Each article briefly flips to ``'enriching'`` in its own short
-    transaction before the heavy enrichment work — that transient state is
-    what ``/stats`` reads to render the live progress bar.
-
-    A reaper at startup resets any article left in ``'enriching'`` from a
-    previous worker crash. Without it, those articles would be invisible to
-    both the feed (status filter) and the next pipeline run (pending filter).
-
-Concurrency: a single in-process ``asyncio.Lock`` is enough since there is
-exactly one replica. If this service ever scales out, swap the lock for
-``SELECT pg_try_advisory_lock(...)`` against Postgres.
+Reaper: any article left ``'enriching'`` by a crashed/killed run is reset to
+``'pending'`` at the parent's startup (and again at each child's startup) so it
+stays visible to the feed and the next run.
 """
 
 import asyncio
 import logging
-import time
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import update
 
-from niouzou.config import get_settings
-from niouzou.crons import enrich as cron_enrich
-from niouzou.crons import fetch as cron_fetch
-from niouzou.crons import nightly_refresh as cron_nightly_refresh
+from niouzou.crons.run_once import _reaper_reset_enriching
 from niouzou.db import session_scope
-from niouzou.models import Article, PipelineRun
-from niouzou.models.article import STATUS_ENRICHING, STATUS_PENDING
-from niouzou.models.pipeline_run import (
-    STATUS_COMPLETED,
-    STATUS_FAILED,
-    STATUS_RUNNING,
-)
 from niouzou.models import CompactionRun
 from niouzou.models.compaction_run import STATUS_PREVIEW as _COMPACT_PREVIEW
 from niouzou.services.compaction_service import CompactionService
-from niouzou.services.embedding_service import unload_embedding_model
 from niouzou.services.openrouter_client import OpenRouterClient
 from niouzou.services.settings_service import SettingsService
 
 # uvicorn only configures its own loggers; without this our app loggers
-# (niouzou.refresh_worker, niouzou.cron_fetch, niouzou.cron_enrich) emit
-# nothing at INFO level — making the pipeline look stuck.
+# (niouzou.refresh_worker, the child's niouzou.run_once, …) emit nothing at
+# INFO level — making the pipeline look stuck.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -98,312 +78,82 @@ _lock = asyncio.Lock()
 _compact_lock = asyncio.Lock()
 _scheduler: AsyncIOScheduler | None = None
 
-
-# ── pipeline_runs persistence helpers ─────────────────────────────────────
-
-
-async def _create_pipeline_run() -> uuid.UUID:
-    """Insert a ``status='running'`` row and return its id."""
-    async with session_scope() as session:
-        run = PipelineRun(status=STATUS_RUNNING)
-        session.add(run)
-        await session.flush()
-        return run.id
+# Hard ceiling on a child's wall-clock runtime. Past this the parent kills the
+# child so a wedged run can't hold ``_lock`` (and the feed) forever. The fetch
+# +enrich batch is normally a few minutes; the nightly is given more head-room.
+_PIPELINE_TIMEOUT_S = 20 * 60
+_NIGHTLY_TIMEOUT_S = 60 * 60
 
 
-async def _update_pipeline_run(run_id: uuid.UUID, **fields: object) -> None:
-    """Patch a few columns on an in-flight run (no completed_at)."""
-    if not fields:
-        return
-    async with session_scope() as session:
-        await session.execute(
-            update(PipelineRun).where(PipelineRun.id == run_id).values(**fields)
-        )
+# ── subprocess supervision ─────────────────────────────────────────────────
 
 
-async def _finalize_pipeline_run(
-    run_id: uuid.UUID,
-    *,
-    status_value: str,
-    articles_fetched: int,
-    articles_enriched: int,
-    articles_failed: int,
-    articles_in_run: int,
-    total_duration_s: float,
-    error: str | None,
-) -> None:
-    """Write the terminal row state. ``avg_s_per_article`` derived per spec.
+async def _spawn_run_once(*args: str, timeout_s: float) -> int:
+    """Spawn the one-shot pipeline child, inherit its stdio, and wait for it.
 
-    Per E10-S1: ``avg = total_duration_s / max(1, articles_enriched)``. When
-    nothing was enriched (denominator clamped to 1), the value equals the
-    total run duration — the PWA suppresses the display in that case.
+    Returns the child's exit code (``-1`` if it had to be killed on timeout).
+    The child is ``python -m niouzou.crons.run_once`` — it inherits this
+    process's environment (DATABASE_URL, OPENROUTER_*, …) and stdout/stderr, so
+    no extra wiring is needed and its logs show up in Railway. This is the only
+    process in the system that imports torch / loads the embedding model.
     """
-    avg = total_duration_s / max(1, articles_enriched)
-    async with session_scope() as session:
-        await session.execute(
-            update(PipelineRun)
-            .where(PipelineRun.id == run_id)
-            .values(
-                status=status_value,
-                completed_at=datetime.now(timezone.utc),
-                articles_fetched=articles_fetched,
-                articles_enriched=articles_enriched,
-                articles_failed=articles_failed,
-                articles_in_run=articles_in_run,
-                total_duration_s=total_duration_s,
-                avg_s_per_article=avg,
-                error=error,
-            )
-        )
-
-
-async def _reaper_reset_enriching() -> int:
-    """Recover articles stuck in ``'enriching'`` from a previous crash.
-
-    Returns the number of rows reset. Called once at lifespan startup, before
-    the scheduler fires — guarantees the first scheduled run sees a clean
-    pending set. An in-flight worker that crashed mid-enrichment will leave
-    rows in this transient status; without the reaper they'd be invisible to
-    every code path.
-    """
-    async with session_scope() as session:
-        result = await session.execute(
-            update(Article)
-            .where(Article.status == STATUS_ENRICHING)
-            .values(status=STATUS_PENDING)
-        )
-        return result.rowcount or 0
-
-
-# ── article-level status transitions ──────────────────────────────────────
-
-
-async def _mark_enriching(article_id: uuid.UUID) -> bool:
-    """Flip ``pending → enriching`` in its own short transaction.
-
-    Returns True when the flip happened, False if the article disappeared or
-    was already past pending (defensive — concurrent runs are gated by
-    ``_lock`` but the check costs nothing). The commit is intentional: it
-    makes the article visible to ``/stats`` as in-progress without polling
-    memory.
-    """
-    async with session_scope() as session:
-        article = await session.get(Article, article_id)
-        if article is None or article.status != STATUS_PENDING:
-            return False
-        article.status = STATUS_ENRICHING
-        return True
-
-
-async def _reset_to_pending(article_id: uuid.UUID) -> None:
-    """Rollback ``enriching → pending`` after a failed enrichment.
-
-    The article is freed for a future run instead of staying stuck in the
-    transient status (which would require a worker restart to recover via
-    the reaper).
-    """
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "niouzou.crons.run_once", *args
+    )
     try:
-        async with session_scope() as session:
-            article = await session.get(Article, article_id)
-            if article is not None and article.status == STATUS_ENRICHING:
-                article.status = STATUS_PENDING
-    except Exception:
-        # Best effort: the next reaper pass will pick this up.
-        logger.exception(
-            "refresh_worker: failed to reset article %s back to pending",
-            article_id,
+        await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        logger.error(
+            "refresh_worker: run_once %s exceeded %.0fs — killing",
+            args or ("(pipeline)",),
+            timeout_s,
         )
-
-
-# ── main pipeline ─────────────────────────────────────────────────────────
-
-
-async def _run_pipeline() -> None:
-    """Fetch + enrich one batch, recording telemetry in ``pipeline_runs``.
-
-    The run row is created up front so a catastrophic early failure (e.g.
-    Miniflux unreachable in ``cron_fetch``) is still observable via /stats.
-    """
-    run_id = await _create_pipeline_run()
-    started = time.perf_counter()
-    articles_fetched = 0
-    articles_enriched = 0
-    articles_failed = 0
-    articles_in_run = 0
-    error: str | None = None
-    try:
-        logger.info("refresh_worker: pipeline run %s started", run_id)
-
-        # 1. Fetch — articles_fetched is the count of entries we just ingested.
-        articles_fetched = await cron_fetch.run()
-        await _update_pipeline_run(run_id, articles_fetched=articles_fetched)
-
-        # 2. Snapshot pending capped to batch size; freeze articles_in_run so a
-        #    concurrent fetch ingesting more pending rows doesn't make the
-        #    progress bar denominator drift mid-run.
-        settings = get_settings()
-        async with cron_enrich.enrichment_resources() as resources:
-            async with session_scope() as session:
-                pending_ids = await cron_enrich._pending_article_ids(
-                    session, settings.enrich_batch_size
-                )
-            articles_in_run = len(pending_ids)
-            await _update_pipeline_run(run_id, articles_in_run=articles_in_run)
-            logger.info(
-                "refresh_worker: %d pending article(s) to enrich",
-                articles_in_run,
-            )
-
-            # 3. Per-article enrichment. Each article is wrapped in two short
-            #    transactions: 'enriching' transition (committed for /stats
-            #    visibility) and the actual work (committed on success).
-            for idx, article_id in enumerate(pending_ids, start=1):
-                t0 = time.perf_counter()
-                logger.info(
-                    "refresh_worker: [%d/%d] start %s",
-                    idx,
-                    articles_in_run,
-                    article_id,
-                )
-
-                # The mark step is outside the try below: a failure here
-                # means the article was never claimed, so there's nothing
-                # to reset and nothing to count.
-                if not await _mark_enriching(article_id):
-                    logger.info(
-                        "refresh_worker: [%d/%d] skipped (already handled)",
-                        idx,
-                        articles_in_run,
-                    )
-                    continue
-
-                counters_changed = False
-                try:
-                    enriched_ok = False
-                    async with session_scope() as session:
-                        article = await session.get(Article, article_id)
-                        if article is not None and article.status == STATUS_ENRICHING:
-                            await cron_enrich.enrich_article(
-                                session,
-                                article,
-                                enrichment=resources.enrichment,
-                                scoring=resources.scoring,
-                                openrouter_model=resources.openrouter_model,
-                                embedder=resources.embedder,
-                            )
-                            enriched_ok = True
-
-                    if enriched_ok:
-                        articles_enriched += 1
-                        counters_changed = True
-                        logger.info(
-                            "refresh_worker: [%d/%d] done in %.2fs",
-                            idx,
-                            articles_in_run,
-                            time.perf_counter() - t0,
-                        )
-                    else:
-                        # Defensive: the article disappeared or its status
-                        # drifted between our mark and the re-fetch. Release
-                        # the marker we set so it isn't stuck in 'enriching';
-                        # don't count this as enriched OR failed since no
-                        # work was attempted. _reset_to_pending is idempotent
-                        # on non-'enriching' statuses.
-                        logger.info(
-                            "refresh_worker: [%d/%d] skipped after mark — "
-                            "concurrent state change for %s",
-                            idx,
-                            articles_in_run,
-                            article_id,
-                        )
-                        await _reset_to_pending(article_id)
-                except Exception:
-                    articles_failed += 1
-                    counters_changed = True
-                    logger.exception(
-                        "refresh_worker: [%d/%d] failed for %s",
-                        idx,
-                        articles_in_run,
-                        article_id,
-                    )
-                    await _reset_to_pending(article_id)
-
-                # Only persist when the counters actually moved — avoids a
-                # redundant DB roundtrip per skipped article. /stats can
-                # afford to wait one iteration if a skip happens.
-                if counters_changed:
-                    await _update_pipeline_run(
-                        run_id,
-                        articles_enriched=articles_enriched,
-                        articles_failed=articles_failed,
-                    )
-
-        logger.info(
-            "refresh_worker: pipeline done — fetched=%d enriched=%d failed=%d",
-            articles_fetched,
-            articles_enriched,
-            articles_failed,
-        )
-    except Exception as exc:
-        logger.exception("refresh_worker: pipeline failed")
-        error = f"{type(exc).__name__}: {exc}"
-    finally:
-        await _finalize_pipeline_run(
-            run_id,
-            status_value=STATUS_FAILED if error else STATUS_COMPLETED,
-            articles_fetched=articles_fetched,
-            articles_enriched=articles_enriched,
-            articles_failed=articles_failed,
-            articles_in_run=articles_in_run,
-            total_duration_s=time.perf_counter() - started,
-            error=error,
-        )
+        proc.kill()
+        await proc.wait()
+        return -1
+    return proc.returncode if proc.returncode is not None else 0
 
 
 async def _guarded_run() -> None:
-    """Acquire ``_lock`` then run the pipeline; skip cleanly if locked.
+    """Acquire ``_lock`` then spawn the fetch+enrich child; skip if locked.
 
-    The lock is shared with ``POST /run`` so the two entry points
-    (scheduler + manual trigger) are mutually exclusive. ``_lock.locked()``
-    is checked before ``await _lock.acquire()`` so we never queue a second
-    run behind a slow one — if a previous run is still in flight, this one
-    is dropped and reported in the logs.
+    The lock is shared with ``POST /run`` so scheduler + manual trigger are
+    mutually exclusive. ``_lock.locked()`` is checked before acquiring so we
+    never queue a second run behind a slow one — a still-running child means
+    this tick is dropped and logged. The lock is held until the child exits.
     """
     if _lock.locked():
         logger.info("refresh_worker: scheduled run skipped — already running")
         return
     async with _lock:
-        try:
-            await _run_pipeline()
-        finally:
-            # E17-S4 — the worker is always-on; release the ~1.2 GB embedding
-            # model between runs so idle RAM stays near zero. Reloads lazily on
-            # the next run. Run off-loop: unload + gc can briefly block.
-            await asyncio.to_thread(unload_embedding_model)
+        rc = await _spawn_run_once(timeout_s=_PIPELINE_TIMEOUT_S)
+        if rc != 0:
+            logger.warning("refresh_worker: pipeline child exited with code %d", rc)
 
 
 async def _nightly_refresh_job() -> None:
-    """Daily weights recompute + dual-score rescore (E16-S9). Independent of
-    the pipeline lock."""
-    try:
-        logger.info("refresh_worker: cron_nightly_refresh start")
-        await cron_nightly_refresh.run()
-        logger.info("refresh_worker: cron_nightly_refresh done")
-    except Exception:
-        logger.exception("refresh_worker: cron_nightly_refresh failed")
+    """Daily weights recompute + dual-score rescore (E16-S9), as a subprocess.
+
+    Takes the same ``_lock`` as the pipeline so the two never overlap (one
+    child at a time). The nightly child does NOT load the embedding model.
+    """
+    async with _lock:
+        rc = await _spawn_run_once("--nightly", timeout_s=_NIGHTLY_TIMEOUT_S)
+        if rc != 0:
+            logger.warning("refresh_worker: nightly child exited with code %d", rc)
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Wire APScheduler with the current cron settings.
 
-    Triggers are CronTrigger (wall-clock aligned) rather than
-    IntervalTrigger so the next fire time is predictable — the PWA renders
-    "Next run" against the live ``cron_fetch_interval_minutes`` from /stats.
+    Triggers are CronTrigger (wall-clock aligned) rather than IntervalTrigger
+    so the next fire time is predictable — the PWA renders "Next run" against
+    the live ``cron_fetch_interval_minutes`` from /stats.
 
-    The reaper runs once here, before the scheduler starts, so any article
-    left in ``'enriching'`` by a previous crash is rolled back to pending
-    before the first scheduled run starts a fresh batch.
+    The reaper runs once here, before the scheduler starts, so any article left
+    in ``'enriching'`` by a previous crash is rolled back to pending before the
+    first scheduled run starts a fresh batch.
     """
     global _scheduler
     reaped = await _reaper_reset_enriching()
@@ -549,7 +299,11 @@ async def compact_apply(body: _CompactApplyBody) -> JSONResponse:
 
 
 async def _apply_in_background(run_id: uuid.UUID) -> None:
-    """Acquire the pipeline lock and run ``CompactionService.apply``."""
+    """Acquire the pipeline lock and run ``CompactionService.apply``.
+
+    LLM + DB only (no torch), so this stays in the parent rather than going
+    through ``run_once``; the pipeline ``_lock`` keeps it exclusive with runs.
+    """
     async with _lock:
         try:
             async with session_scope() as session:

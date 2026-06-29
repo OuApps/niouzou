@@ -12,18 +12,21 @@
 │  └──────────┘    └──────┬───────┘    └──────────────────────┘   │
 │                         │  POST /admin/refresh                   │
 │                  ┌──────▼────────────┐                          │
-│                  │  Refresh Worker   │  ← always-on             │
-│                  │  :8000 (internal) │                          │
-│                  │  POST /run        │                          │
-│                  │  ├─ cron_fetch    │  every 15 min            │
-│                  │  ├─ cron_enrich   │  chained after fetch     │
-│                  │  └─ refresh_wts   │  daily 03:00             │
-│                  └──────┬────────────┘                          │
-│                         │                                        │
-│                  ┌──────▼───────┐                               │
-│                  │  PostgreSQL  │                               │
-│                  │   :5432      │                               │
-│                  └──────────────┘                               │
+│                  │  Refresh Worker   │  ← always-on, LIGHT      │
+│                  │  :8000 (internal) │    (~120-150 MB,         │
+│                  │  POST /run        │     never imports torch) │
+│                  │  APScheduler ─────┼──┐ spawns per run        │
+│                  └──────┬────────────┘  │                       │
+│                         │      ┌─────────▼──────────────────┐   │
+│                         │      │ run_once  (one-shot CHILD) │   │
+│                         │      │ fetch + enrich + embedding │   │
+│                         │      │ loads model, works, DIES → │   │
+│                         │      │ OS reclaims its RAM        │   │
+│                         │      └─────────┬──────────────────┘   │
+│                  ┌──────▼────────────────▼───┐                  │
+│                  │        PostgreSQL          │                 │
+│                  │          :5432             │                 │
+│                  └────────────────────────────┘                 │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 
@@ -32,12 +35,16 @@ External:
   Miniflux        (RSS collection, official Docker image)
 ```
 
-> **Note — E8-S6 consolidation complete (2026-05-30)**: The three cron jobs
-> (`cron_fetch`, `cron_enrich`, `cron_nightly_refresh` — formerly
-> `cron_refresh_weights`, renamed in E16-S9) have been consolidated into the
-> `refresh-worker` service using APScheduler. The old Railway cron services
-> have been removed. The diagram above reflects the current (simplified)
-> topology: 4 services total (`api`, `pwa`, `refresh-worker`, PostgreSQL).
+> **Note — E8-S6 consolidation (2026-05-30) + E20 frugal worker (2026-06-28)**:
+> The three cron jobs (`cron_fetch`, `cron_enrich`, `cron_nightly_refresh` —
+> formerly `cron_refresh_weights`, renamed in E16-S9) were consolidated into
+> the `refresh-worker` service using APScheduler. Since E20 the worker is a
+> **light always-on supervisor** that never imports torch: each run is executed
+> in a short-lived child process (`python -m niouzou.crons.run_once`) that loads
+> the embedding model, does the work, then **exits** so the OS reclaims its RAM
+> (killing the process is the only reliable way to release torch's resident
+> pages — an in-process unload + `gc` does not, see E17-S4). Topology unchanged:
+> 4 services total (`api`, `pwa`, `refresh-worker`, PostgreSQL).
 
 ---
 
@@ -81,17 +88,30 @@ External:
 - Managed by Railway in production, Docker volume in self-hosted
 
 ### Cron Jobs
-- Three cron jobs, all run from the same Docker image as FastAPI:
-  - `python -m niouzou.crons.fetch`
-  - `python -m niouzou.crons.enrich`
-  - `python -m niouzou.crons.nightly_refresh`
-- E16 — the enrichment path also computes the article embedding. The model
-  (~1.2 GB in fp16) loads lazily in the worker process on the first embed;
-  budget ~1.5 GB extra RAM for the worker. The web API process never loads it.
-  E17-S4 — the always-on worker now **unloads the model after each run**
-  (`embedding_service.unload_embedding_model()` in `_guarded_run`'s `finally`)
-  so idle RAM stays near zero; it reloads lazily on the next run (small
-  cold-start). `CRON_FETCH_INTERVAL` defaults to 30 min in prod.
+- The pipeline runs from the same Docker image as FastAPI, via a single
+  one-shot entrypoint the worker spawns per run (E20):
+  - `python -m niouzou.crons.run_once` — one fetch + enrich cycle
+  - `python -m niouzou.crons.run_once --nightly` — weights recompute + rescore
+  - The lower-level `niouzou.crons.{fetch,enrich,nightly_refresh}` modules
+    still exist (and stay CLI-runnable) — `run_once` orchestrates them and owns
+    the `pipeline_runs` telemetry + per-article `'enriching'` transitions.
+- E16/E20 — the enrichment path computes the article embedding. The model
+  (~1.2 GB in fp16) loads lazily on the first embed **in the `run_once` child
+  process only**; budget ~1.5 GB extra RAM during a run. Neither the web API
+  nor the always-on worker parent ever loads it. Because the child **exits**
+  after each run, the OS reclaims 100 % of that RAM — at rest the worker sits
+  at its floor RSS (~120-150 MB), no model resident. (This replaced E17-S4's
+  in-process `unload_embedding_model()`, which freed Python references but did
+  not return torch's pages to the OS, so a 24/7 process kept paying for them.)
+  `CRON_FETCH_INTERVAL` defaults to 30 min in prod.
+- **Subprocess supervision** (`workers/refresh_worker.py`): the scheduler tick
+  and `POST /run` both call `_spawn_run_once()`, which runs the child with
+  `asyncio.create_subprocess_exec` and holds the in-process `_lock` for the
+  child's whole lifetime (`await proc.wait()` under the lock) → only one child
+  at a time, scheduled + manual + nightly + compaction-apply all mutually
+  exclusive. A child overrunning its timeout (20 min pipeline / 60 min nightly)
+  is killed so it can't wedge the lock. The child inherits stdout/stderr (logs
+  surface in Railway) and the parent's env (DATABASE_URL, OPENROUTER_*, …).
 - One-shot ops CLIs:
   - `python -m niouzou.tools.backfill_embeddings` embeds legacy articles
     (batch 50, newest first, idempotent/resumable).
@@ -341,10 +361,14 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
     - `cron_nightly_refresh` daily at hour `CRON_NIGHTLY_REFRESH_HOUR` UTC (default 03:00) — renamed from `cron_refresh_weights` in E16-S9; the legacy `CRON_REFRESH_WEIGHTS_HOUR` env var is still read as a fallback
   - Mutual exclusion lock (`asyncio.Lock`) between scheduled runs and manual `POST /admin/refresh` prevents concurrent execution.
   - Configuration (fetch interval, nightly refresh hour) is overridable via `PATCH /admin/config` (E8-S3) and persisted in `app_settings` table (E8-S2).
+- **Frugal worker — subprocess execution (E20, 2026-06-28)**:
+  - The pipeline (and nightly refresh) moved out of the always-on worker process into a short-lived child (`python -m niouzou.crons.run_once[ --nightly]`). The worker parent stays light and **never imports torch** — there is a test (`test_worker_module_does_not_import_torch`) pinning that invariant. Motivation: torch's resident ~1.2 GB never returns to the OS via an in-process unload, so a 24/7 process paid for a sleeping model. Killing the child reclaims it.
+  - The `asyncio.Lock` is held for the child's entire lifetime (`await proc.wait()` under the lock), so scheduled + manual + nightly + compaction-apply remain mutually exclusive with a single in-process lock (one replica). A child past its timeout (20 min pipeline / 60 min nightly) is killed.
+  - `run_once` writes `pipeline_runs` itself and owns the `'enriching'` transitions; `/stats` is unchanged. The child inherits stdio (Railway logs) and env. It closes the Postgres pool (`engine.dispose`) before exiting.
 - **Pipeline observability (E10-S1, 2026-06-01)**:
   - Every fetch+enrich cycle is recorded in `pipeline_runs`: when it ran, how long it took, how many articles it processed, whether it failed. `GET /stats` exposes the most recent row in its global `pipeline` block.
-  - The refresh worker drives the per-article enrich loop directly (rather than calling `cron_enrich.run()`) so it can update the run row after each article and flip `articles.status` to a transient `'enriching'` for live progress visibility in `/stats`.
-  - **Startup reaper**: before the scheduler starts, `UPDATE articles SET status='pending' WHERE status='enriching'` recovers any article left mid-flight by a previous worker crash.
+  - `run_once` drives the per-article enrich loop directly (rather than calling `cron_enrich.run()`) so it can update the run row after each article and flip `articles.status` to a transient `'enriching'` for live progress visibility in `/stats`.
+  - **Reaper**: at the worker parent's startup *and* at each child's startup, `UPDATE articles SET status='pending' WHERE status='enriching'` recovers any article left mid-flight by a previous crash or a killed (timed-out) child.
   - **LLM retry**: the enrichment service retries a failing LLM call twice (backoff 1s, 3s) before giving up — transient OpenRouter blips don't leave articles without keywords (`keyword_score = NULL`) needlessly.
   - The old "Feed may be stalled" heuristic (based on the latest article's `created_at`) is gone; staleness is now driven by `pipeline_runs.completed_at` vs `cron_fetch_interval`, so a healthy cron tick producing nothing new no longer triggers a false alert.
 - **OpenRouter cost tracking (E10-S7, 2026-06-14)**:

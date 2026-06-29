@@ -4579,7 +4579,7 @@ re-archi plus lourde, écartée pour l'instant. **App Sleeping** du worker : ina
 
 ### Stories
 
-#### [ ] E20-S1 — Entrypoint pipeline one-shot (le process qui meurt)
+#### [x] E20-S1 — Entrypoint pipeline one-shot (le process qui meurt)
 
 **But** : un module exécutable autonome (ex. `python -m niouzou.crons.run_once`) qui exécute **un
 cycle fetch + enrich complet** (extraction contenu + LLM + **embedding local**), écrit la télémétrie
@@ -4598,7 +4598,7 @@ dans `pipeline_runs` comme aujourd'hui, **ferme proprement le pool Postgres**, p
 télémétrie, et **se termine** (code 0) en libérant toute sa RAM ; aucun handle Postgres laissé
 ouvert ; tests du one-shot (embedder injecté, jamais le vrai modèle — cf. tripwire conftest).
 
-#### [ ] E20-S2 — Parent léger : APScheduler + `/run` lancent un subprocess (jamais torch en parent)
+#### [x] E20-S2 — Parent léger : APScheduler + `/run` lancent un subprocess (jamais torch en parent)
 
 **But** : refondre `workers/refresh_worker.py` pour que le process always-on **n'importe jamais
 torch** et ne charge **jamais** le modèle. Le planning et le déclenchement manuel **spawnent**
@@ -4624,7 +4624,7 @@ un tick planifié et le bouton « Refresh now » déclenchent bien un cycle (via
 cycle à la fois ; la compaction et le pipeline ne se chevauchent jamais ; après chaque run le RSS
 parent revient au plancher.
 
-#### [ ] E20-S3 — Nightly refresh : même modèle d'exécution
+#### [x] E20-S3 — Nightly refresh : même modèle d'exécution
 
 **But** : exécuter `cron_nightly_refresh` (recompute des poids + rescore dual) **aussi** en
 subprocess one-shot, pour garder le parent uniformément léger et isoler les pannes.

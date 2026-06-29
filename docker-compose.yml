@@ -126,15 +126,19 @@ services:
     depends_on:
       - api
 
-  # ── Refresh worker (E8-S6) ──────────────────────────────────────────────────
-  # Single always-on service that:
+  # ── Refresh worker (E8-S6, frugal subprocess model E20) ─────────────────────
+  # Light always-on supervisor (never imports torch / loads the embedding model)
+  # that:
   #   * exposes POST /run for the API's "Run now" admin trigger (E7-S16)
   #   * schedules fetch+enrich every CRON_FETCH_INTERVAL minutes via APScheduler
   #   * schedules the nightly refresh (weights + dual-score rescore) at
   #     CRON_NIGHTLY_REFRESH_HOUR (renamed in E16-S9)
-  # The scheduler shares an asyncio.Lock with /run, so manual + scheduled runs
-  # are mutually exclusive — replaces the three one-shot cron containers we had
-  # before E8-S6.
+  # Each run is executed in a short-lived child process
+  # (python -m niouzou.crons.run_once[ --nightly]) that loads the model, does
+  # the work, then exits so the OS reclaims its RAM (E20). The scheduler holds
+  # an asyncio.Lock for the child's whole lifetime, so manual + scheduled +
+  # nightly runs are mutually exclusive — one child at a time. The start command
+  # (the uvicorn parent) is unchanged.
   worker:
     <<: *api-build
     restart: unless-stopped

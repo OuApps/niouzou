@@ -522,9 +522,9 @@ async def test_stats_llm_cost_windows_zero_when_no_rows(db_session):
 @pytest.mark.asyncio
 async def test_run_pipeline_records_completed_with_counters(db_session, monkeypatch):
     """A clean fetch+enrich cycle produces a 'completed' run with counters."""
-    import niouzou.workers.refresh_worker as rw
     from niouzou.crons import enrich as cron_enrich
     from niouzou.crons import fetch as cron_fetch
+    from niouzou.crons import run_once
 
     user = await make_user(db_session)
     source = await make_source(db_session, user)
@@ -560,7 +560,7 @@ async def test_run_pipeline_records_completed_with_counters(db_session, monkeypa
 
     monkeypatch.setattr(cron_enrich, "enrich_article", _fake_enrich)
 
-    await rw._run_pipeline()
+    await run_once._run_pipeline()
 
     # Latest run should be 'completed' with counters set.
     run = await db_session.scalar(
@@ -589,9 +589,9 @@ async def test_run_pipeline_counts_failed_and_resets_status(
 ):
     """An uncaught exception in enrich_article increments articles_failed and
     rolls the article back to pending."""
-    import niouzou.workers.refresh_worker as rw
     from niouzou.crons import enrich as cron_enrich
     from niouzou.crons import fetch as cron_fetch
+    from niouzou.crons import run_once
 
     user = await make_user(db_session)
     source = await make_source(db_session, user)
@@ -622,7 +622,7 @@ async def test_run_pipeline_counts_failed_and_resets_status(
 
     monkeypatch.setattr(cron_enrich, "enrich_article", _exploding_enrich)
 
-    await rw._run_pipeline()
+    await run_once._run_pipeline()
 
     run = await db_session.scalar(
         select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(1)
@@ -644,8 +644,8 @@ async def test_run_pipeline_marks_failed_when_fetch_raises(
     db_session, monkeypatch
 ):
     """A global exception (cron_fetch raises) → status='failed' with error."""
-    import niouzou.workers.refresh_worker as rw
     from niouzou.crons import fetch as cron_fetch
+    from niouzou.crons import run_once
 
     user = await make_user(db_session)
     await make_source(db_session, user)
@@ -656,7 +656,7 @@ async def test_run_pipeline_marks_failed_when_fetch_raises(
 
     monkeypatch.setattr(cron_fetch, "run", _exploding_fetch)
 
-    await rw._run_pipeline()
+    await run_once._run_pipeline()
 
     run = await db_session.scalar(
         select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(1)
