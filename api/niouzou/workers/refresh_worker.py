@@ -40,10 +40,12 @@ stays visible to the feed and the next run.
 
 import asyncio
 import logging
+import os
 import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -83,6 +85,68 @@ _scheduler: AsyncIOScheduler | None = None
 # +enrich batch is normally a few minutes; the nightly is given more head-room.
 _PIPELINE_TIMEOUT_S = 20 * 60
 _NIGHTLY_TIMEOUT_S = 60 * 60
+
+
+# ── page-cache hygiene (E20 follow-up) ──────────────────────────────────────
+#
+# Killing the run_once child frees the embedding model's RSS, but the model
+# file (~1.2 GB, mmap'd by safetensors) stays in the container's cgroup page
+# cache after the child exits — and Railway counts page cache in its Memory
+# metric. So idle memory never returned to the parent's floor (~150 MB); it sat
+# at ~1.2 GB. The fix: after each run, advise the kernel to drop those clean,
+# now-unmapped pages. Verified on Linux: reading a file populates page cache,
+# posix_fadvise(DONTNEED) from a fresh fd evicts it exactly. The next run
+# re-reads the model from local disk (small cold-start, already accepted by
+# E20). The parent does this itself — no torch, just os + the HF cache path.
+
+
+def _hf_cache_dir() -> Path | None:
+    """Resolve the HuggingFace cache dir without importing huggingface_hub.
+
+    Mirrors HF's own precedence so the parent stays torch/HF-free. Returns the
+    most specific existing dir (the ``hub`` subdir when present), or None.
+    """
+    for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        value = os.environ.get(var)
+        if value and Path(value).exists():
+            return Path(value)
+    hf_home = os.environ.get("HF_HOME")
+    base = Path(hf_home) if hf_home else Path.home() / ".cache" / "huggingface"
+    hub = base / "hub"
+    if hub.exists():
+        return hub
+    if base.exists():
+        return base
+    return None
+
+
+def _drop_model_page_cache() -> None:
+    """Evict the embedding-model files from the OS page cache (Linux only).
+
+    No-op where ``posix_fadvise`` is absent (macOS/local dev) or the cache dir
+    doesn't exist yet (no model ever loaded). Best-effort per file — a failure
+    on one file must not abort the sweep.
+    """
+    fadvise = getattr(os, "posix_fadvise", None)
+    if fadvise is None:
+        return
+    cache = _hf_cache_dir()
+    if cache is None:
+        return
+    dropped = 0
+    for path in cache.rglob("*"):
+        try:
+            if not path.is_file():
+                continue
+            with open(path, "rb") as fh:
+                fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            dropped += 1
+        except OSError:
+            continue
+    if dropped:
+        logger.info(
+            "refresh_worker: evicted %d model file(s) from page cache", dropped
+        )
 
 
 # ── subprocess supervision ─────────────────────────────────────────────────
@@ -129,6 +193,9 @@ async def _guarded_run() -> None:
         rc = await _spawn_run_once(timeout_s=_PIPELINE_TIMEOUT_S)
         if rc != 0:
             logger.warning("refresh_worker: pipeline child exited with code %d", rc)
+        # Return the model's page cache to the OS so idle memory drops back to
+        # the parent's floor (off-loop: it walks the HF cache dir).
+        await asyncio.to_thread(_drop_model_page_cache)
 
 
 async def _nightly_refresh_job() -> None:

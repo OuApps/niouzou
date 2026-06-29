@@ -146,6 +146,50 @@ async def test_spawn_kills_child_on_timeout(monkeypatch):
     assert killed.is_set()
 
 
+def test_drop_model_page_cache_fadvises_each_file(monkeypatch, tmp_path):
+    """E20 follow-up — every file under the HF cache is advised DONTNEED.
+
+    Cross-platform: posix_fadvise is monkeypatched (it doesn't exist on macOS),
+    so this exercises the cache-walk + per-file fadvise logic everywhere.
+    """
+    import os
+
+    from niouzou.workers import refresh_worker as rw
+
+    hub = tmp_path / "hub" / "models--Qwen--Qwen3-Embedding-0.6B" / "blobs"
+    hub.mkdir(parents=True)
+    (hub / "weights.safetensors").write_bytes(b"x" * 4096)
+    (hub / "config.json").write_bytes(b"{}")
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+
+    advices: list[int] = []
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+
+    def _fake_fadvise(fd, offset, length, advice):
+        advices.append(advice)
+
+    monkeypatch.setattr(os, "posix_fadvise", _fake_fadvise, raising=False)
+
+    rw._drop_model_page_cache()
+
+    assert len(advices) == 2  # both files evicted
+    assert all(a == os.POSIX_FADV_DONTNEED for a in advices)
+
+
+def test_drop_model_page_cache_noop_without_posix_fadvise(monkeypatch):
+    """Where posix_fadvise is absent (macOS), the helper is a clean no-op."""
+    import os
+
+    from niouzou.workers import refresh_worker as rw
+
+    monkeypatch.delattr(os, "posix_fadvise", raising=False)
+    # Must not raise even with a bogus cache dir.
+    monkeypatch.setenv("HF_HOME", "/nonexistent/path/xyz")
+    rw._drop_model_page_cache()
+
+
 def test_worker_module_does_not_import_torch():
     """E20-S2 — the always-on parent must never pull torch transitively.
 

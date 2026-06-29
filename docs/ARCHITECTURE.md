@@ -99,11 +99,16 @@ External:
   (~1.2 GB in fp16) loads lazily on the first embed **in the `run_once` child
   process only**; budget ~1.5 GB extra RAM during a run. Neither the web API
   nor the always-on worker parent ever loads it. Because the child **exits**
-  after each run, the OS reclaims 100 % of that RAM — at rest the worker sits
-  at its floor RSS (~120-150 MB), no model resident. (This replaced E17-S4's
-  in-process `unload_embedding_model()`, which freed Python references but did
-  not return torch's pages to the OS, so a 24/7 process kept paying for them.)
-  `CRON_FETCH_INTERVAL` defaults to 30 min in prod.
+  after each run, the OS reclaims 100 % of that *anonymous* RAM. (This replaced
+  E17-S4's in-process `unload_embedding_model()`, which freed Python references
+  but did not return torch's pages to the OS, so a 24/7 process kept paying for
+  them.) **Page-cache caveat:** the model file (mmap'd by safetensors) stays in
+  the cgroup **page cache** after the child dies, and Railway counts page cache
+  in its Memory metric — so the parent calls `posix_fadvise(DONTNEED)` on the
+  HF cache files after each run (`_drop_model_page_cache`) to evict them and
+  return idle memory to the parent's floor RSS (~120-150 MB). The next run
+  re-reads the model from local disk (small cold-start). `CRON_FETCH_INTERVAL`
+  defaults to 30 min in prod.
 - **Subprocess supervision** (`workers/refresh_worker.py`): the scheduler tick
   and `POST /run` both call `_spawn_run_once()`, which runs the child with
   `asyncio.create_subprocess_exec` and holds the in-process `_lock` for the
