@@ -21,8 +21,8 @@ from niouzou.models import (
     PipelineRun,
     Source,
 )
-from niouzou.models.compaction_run import STATUS_APPLIED, STATUS_PREVIEW
 from niouzou.models.article import STATUS_ENRICHED
+from niouzou.models.compaction_run import STATUS_APPLIED, STATUS_PREVIEW
 from niouzou.models.pipeline_run import STATUS_COMPLETED, STATUS_RUNNING
 from niouzou.schemas.stats import (
     ArticlesStats,

@@ -84,8 +84,8 @@ def test_idf_downweights_terms_common_across_corpus():
 
 
 def test_pipeline_selects_tfidf_without_api_key(monkeypatch):
-    from niouzou.config import Settings
     import niouzou.scoring.pipeline as pipeline_module
+    from niouzou.config import Settings
 
     # Patch get_settings in the pipeline module — pydantic-settings also reads
     # from .env so delenv alone is not enough when a .env file is present, and

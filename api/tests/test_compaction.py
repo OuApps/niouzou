@@ -1,6 +1,5 @@
 """Tests for keyword compaction (E10-S3)."""
 
-import pytest
 from sqlalchemy import select
 
 from niouzou.models import ArticleKeyword, CompactionRun, KeywordWeight
@@ -20,7 +19,6 @@ from tests.factories import (
     make_user,
 )
 from tests.test_ai_keyword import FakeClient
-
 
 # ── _parse_groups (unit) ────────────────────────────────────────────────────
 

@@ -38,8 +38,8 @@ from niouzou.db import session_scope
 from niouzou.models import Article, ArticleKeyword
 from niouzou.models.article import STATUS_ENRICHED, STATUS_PENDING
 from niouzou.services.enrichment_service import _strip_html
-from niouzou.services.miniflux_client import MinifluxClient
 from niouzou.services.miniflux_bootstrap import get_miniflux_token
+from niouzou.services.miniflux_client import MinifluxClient
 
 logger = logging.getLogger("niouzou.backfill_boilerplate")
 

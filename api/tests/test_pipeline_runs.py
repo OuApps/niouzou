@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select, text
 
-from niouzou.models import Article, LLMUsageLog, PipelineRun
+from niouzou.models import LLMUsageLog, PipelineRun
 from niouzou.models.article import STATUS_ENRICHED, STATUS_ENRICHING, STATUS_PENDING
 from niouzou.models.pipeline_run import (
     STATUS_COMPLETED,
@@ -22,7 +22,6 @@ from niouzou.services.enrichment_service import EnrichmentService
 from niouzou.services.openrouter_client import OpenRouterError
 from tests.factories import make_article, make_source, make_user
 from tests.test_ai_keyword import FakeClient
-
 
 # ── EnrichmentService — LLM retry policy (E10-S1) ───────────────────────────
 

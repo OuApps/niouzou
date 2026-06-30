@@ -19,7 +19,7 @@ async def test_search_matches_title_case_insensitive_seen_and_unseen(db_session)
     user = await make_user(db_session)
     source = await make_source(db_session, user)
     seen = await make_article(db_session, source, title="Rust memory safety")
-    unseen = await make_article(db_session, source, title="Why RUST wins")
+    await make_article(db_session, source, title="Why RUST wins")
     nope = await make_article(db_session, source, title="Python typing")
     await set_relevance(db_session, seen, user, 0.4)
     db_session.add(

@@ -10,11 +10,10 @@ from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
 
-from niouzou.config import get_settings
-from niouzou.db import Base
-
 # Import all models so their tables are registered on Base.metadata.
 import niouzou.models  # noqa: F401
+from niouzou.config import get_settings
+from niouzou.db import Base
 
 config = context.config
 if config.config_file_name is not None:
