@@ -48,6 +48,13 @@ class LlmPromptsService:
         row = await self.get(name)
         row.body = body
         await self.session.flush()
+        # ``updated_at`` is server-computed (onupdate=now()), so the flush
+        # expires it. Load the new value here, inside the async session, so the
+        # router's *synchronous* ``LlmPromptOut.model_validate(row)`` doesn't
+        # trigger a lazy SELECT — which raises MissingGreenlet on the async
+        # engine and surfaces as a 500 (no CORS headers → "cannot reach the
+        # server" in the PWA).
+        await self.session.refresh(row, attribute_names=["updated_at"])
         return row
 
 
