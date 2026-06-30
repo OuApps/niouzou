@@ -6,7 +6,9 @@ Per pending article:
   1. Extract clean content with newspaper4k, falling back to the RSS body.
   2. Enrich via a single combined LLM call — ``summary_executive`` bullets +
      keywords when AI is on; neither when AI is off or the call fails
-     (keyword extraction is LLM-only since E16-S8 — no TF-IDF fallback).
+     (keyword extraction is LLM-only since E16-S8 — no TF-IDF fallback). The
+     LLM sees both the RSS teaser and the fetched body (deduped + labeled),
+     not one as a fallback for the other.
   3. Store the keywords when the LLM produced some.
   4. Compute and store the semantic embedding (local model, AI-independent).
   5. Score the article for its source's owner — BOTH methods at once
@@ -247,8 +249,13 @@ async def enrich_article(
     # 1. Content extraction (blocking) off the event loop.
     t0 = time.perf_counter()
     logger.info("enrich[%s]: extracting content from %s", article.id, article.url)
+    # The RSS teaser (publisher-written, clean, on-topic) is the article's
+    # content at this point — captured before extraction overwrites it so the
+    # LLM gets BOTH the teaser and the fetched body (anti-hallucination anchor),
+    # not one as a mere fallback for the other.
+    rss_teaser = article.content
     extracted = await asyncio.to_thread(
-        enrichment.extract_content, article.url, rss_fallback=article.content
+        enrichment.extract_content, article.url, rss_fallback=rss_teaser
     )
     logger.info(
         "enrich[%s]: content extracted (%d chars) in %.2fs",
@@ -265,7 +272,10 @@ async def enrich_article(
     t0 = time.perf_counter()
     logger.info("enrich[%s]: generating enrichment (summaries + keywords)...", article.id)
     enriched = await asyncio.to_thread(
-        enrichment.generate_enrichment, article.title, article.content
+        enrichment.generate_enrichment,
+        article.title,
+        article.content,
+        rss_teaser=rss_teaser,
     )
     logger.info(
         "enrich[%s]: enrichment generated in %.2fs (exec=%d, keywords=%s)",

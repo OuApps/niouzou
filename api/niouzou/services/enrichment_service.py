@@ -331,8 +331,18 @@ class EnrichmentService:
             og_image_url=_first_img_from_html(rss_fallback),
         )
 
-    def generate_enrichment(self, title: str, content: str | None) -> Enrichment:
+    def generate_enrichment(
+        self, title: str, content: str | None, *, rss_teaser: str | None = None
+    ) -> Enrichment:
         """One combined LLM call: summaries + keywords. Newspaper fallback otherwise.
+
+        ``content`` is the fetched article body (newspaper4k, or the stripped
+        RSS body when extraction failed). ``rss_teaser`` is the *original* RSS
+        body (HTML) — publisher-written, clean and guaranteed on-topic. Both
+        are fed to the LLM (deduped + labeled via ``_combine_sources``) rather
+        than one being a fallback for the other: the teaser is a reliable
+        anchor that survives truncation to the char budget, which curbs
+        hallucination when extraction is partial or paywalled.
 
         Never raises: after up to 3 attempts (initial + 2 retries with 1s/3s
         backoff — E10-S1) a failed LLM call degrades to a fallback ``Enrichment``
@@ -350,10 +360,11 @@ class EnrichmentService:
             summary_executive=None,
             keywords=None,
         )
-        if self._client is None or not (content and content.strip()):
+        source_text = _combine_sources(content, _strip_html(rss_teaser))
+        if self._client is None or not source_text.strip():
             return fallback
 
-        lang = _detect_language(title, content)
+        lang = _detect_language(title, source_text)
         header = f"Language: {lang}\n" if lang else ""
         # E10-S2 — vocab nudge. The original version pasted all 200 terms
         # then relied on ``body[:_MAX_INPUT_CHARS]`` to trim, but with avg
@@ -374,7 +385,7 @@ class EnrichmentService:
             vocab_line = f"Existing vocabulary (reuse when applicable): {joined}\n"
         prefix = f"{header}{vocab_line}Title: {title}\n\n"
         budget = max(0, self._max_input_chars - len(prefix))
-        body = prefix + (content[:budget] if budget else "")
+        body = prefix + (source_text[:budget] if budget else "")
         last_exc: Exception | None = None
         # Tries: 1 initial + len(_LLM_BACKOFFS_S) retries = 3 total.
         for attempt in range(len(_LLM_BACKOFFS_S) + 1):
@@ -481,6 +492,27 @@ def _strip_html(html: str | None) -> str | None:
     text = re.sub(r"<[^>]+>", " ", html)
     text = " ".join(text.split())
     return text or None
+
+
+def _combine_sources(body: str | None, teaser: str | None) -> str:
+    """Merge the fetched article body and the RSS teaser into the LLM input.
+
+    The teaser leads (so it survives truncation to the char budget) and the
+    body follows, both labeled so the model knows the two blocks describe the
+    same article. When they overlap — extraction fell back to the RSS body, or
+    the teaser is just the article's opening, verbatim inside the body — the
+    teaser block is dropped so the budget isn't spent on a duplicate. Returns
+    a plain string (``""`` when both are empty); callers guard on emptiness.
+    """
+    body = (body or "").strip()
+    teaser = (teaser or "").strip()
+    if not teaser:
+        return body
+    if not body:
+        return teaser
+    if teaser == body or teaser in body:
+        return body
+    return f"RSS summary: {teaser}\n\nArticle body: {body}"
 
 
 _OG_IMAGE_RE = re.compile(

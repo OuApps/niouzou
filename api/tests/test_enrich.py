@@ -429,6 +429,54 @@ def test_generate_enrichment_respects_max_input_chars():
     assert len(wide.last_user) <= 8000
 
 
+def test_generate_enrichment_combines_rss_teaser_and_body():
+    """A distinct RSS teaser is sent alongside the fetched body, both labeled."""
+
+    class _RecordingClient(FakeClient):
+        def __init__(self, replies):
+            super().__init__(replies)
+            self.last_user: str | None = None
+
+        def complete(self, *, system, user, temperature=0.2):
+            self.last_user = user
+            return super().complete(system=system, user=user, temperature=temperature)
+
+    client = _RecordingClient(['{"summary_executive": "- x", "keywords": []}'])
+    svc = EnrichmentService(openrouter_client=client)
+    svc.generate_enrichment(
+        "Title",
+        "Full fetched article body with all the details.",
+        rss_teaser="<p>Publisher teaser blurb.</p>",
+    )
+    assert client.last_user is not None
+    assert "RSS summary: Publisher teaser blurb." in client.last_user
+    assert "Article body: Full fetched article body" in client.last_user
+
+
+def test_generate_enrichment_dedupes_rss_teaser_contained_in_body():
+    """When the teaser is already inside the body, the teaser block is dropped."""
+
+    class _RecordingClient(FakeClient):
+        def __init__(self, replies):
+            super().__init__(replies)
+            self.last_user: str | None = None
+
+        def complete(self, *, system, user, temperature=0.2):
+            self.last_user = user
+            return super().complete(system=system, user=user, temperature=temperature)
+
+    client = _RecordingClient(['{"summary_executive": "- x", "keywords": []}'])
+    svc = EnrichmentService(openrouter_client=client)
+    body = "Publisher teaser blurb. And then much more detail follows here."
+    svc.generate_enrichment(
+        "Title", body, rss_teaser="<p>Publisher teaser blurb.</p>"
+    )
+    assert client.last_user is not None
+    # No duplicated teaser block; the body (which contains it) is sent as-is.
+    assert "RSS summary:" not in client.last_user
+    assert "Publisher teaser blurb." in client.last_user
+
+
 def test_parse_executive_nested_list_drops_inner_lists():
     result = _parse_enrichment(
         {"summary_executive": ["valid", ["nested", "stuff"], "also valid"]}
