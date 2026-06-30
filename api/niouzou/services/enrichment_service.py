@@ -111,9 +111,11 @@ def _text_is_boilerplate(
 # between them.
 _LLM_BACKOFFS_S: tuple[float, ...] = (1.0, 3.0)
 
-# Input cap for the combined LLM call. The lede + first paragraphs carry the
-# topic; sending more just inflates latency and cost on slow models. Down from
-# the previous 8000/6000 split for summaries/keywords.
+# Default input cap for the combined LLM call. The lede + first paragraphs
+# carry the topic; sending more just inflates latency and cost on slow models.
+# Down from the previous 8000/6000 split for summaries/keywords. Admin-tunable
+# at runtime via ``enrichment_input_max_chars`` (passed to the constructor by
+# ``enrichment_resources``); this constant is the fallback default.
 _MAX_INPUT_CHARS = 2500
 # Hard cap on the vocab nudge — leaves enough room in the 2500-char user
 # prompt for the title + a meaningful article excerpt. ~800 chars is about
@@ -216,9 +218,18 @@ class Enrichment:
 
 
 class EnrichmentService:
-    def __init__(self, openrouter_client: OpenRouterClient | None = None) -> None:
+    def __init__(
+        self,
+        openrouter_client: OpenRouterClient | None = None,
+        *,
+        max_input_chars: int = _MAX_INPUT_CHARS,
+    ) -> None:
         # None → AI disabled; summaries come from the newspaper fallback.
         self._client = openrouter_client
+        # Admin-tunable char cap on the combined LLM input (E8/anti-hallucination
+        # tuning). Defaults to the module constant; ``enrichment_resources``
+        # passes the effective value from app_settings per run.
+        self._max_input_chars = max_input_chars
         # Cached snapshot of the most-frequent ``article_keywords.term``s for
         # the prompt's ``Existing vocabulary`` hint (E10-S2). Loaded once at
         # the start of a cron run by ``set_vocab`` so the LLM is nudged
@@ -362,7 +373,7 @@ class EnrichmentService:
                 joined = full[:_MAX_VOCAB_CHARS].rsplit(",", 1)[0]
             vocab_line = f"Existing vocabulary (reuse when applicable): {joined}\n"
         prefix = f"{header}{vocab_line}Title: {title}\n\n"
-        budget = max(0, _MAX_INPUT_CHARS - len(prefix))
+        budget = max(0, self._max_input_chars - len(prefix))
         body = prefix + (content[:budget] if budget else "")
         last_exc: Exception | None = None
         # Tries: 1 initial + len(_LLM_BACKOFFS_S) retries = 3 total.

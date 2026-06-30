@@ -18,6 +18,7 @@ class AdminConfig(BaseModel):
     cron_fetch_interval: int
     cron_nightly_refresh_hour: int
     score_threshold: float
+    enrichment_input_max_chars: int
     # E16-S4/S9 — active score selector ('keyword' | 'smart') + instance-wide
     # embedding coverage so the admin can judge whether a backfill is worth
     # running before switching to Smart Match.
@@ -40,6 +41,7 @@ class AdminConfigPatch(BaseModel):
     cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
     cron_nightly_refresh_hour: int | None = Field(default=None, ge=0, le=23)
     score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    enrichment_input_max_chars: int | None = Field(default=None, ge=500, le=20000)
     # Value-validated in SettingsService.validate (422 when 'smart' is not
     # runnable on this instance), not by the schema.
     scoring_mode: str | None = None

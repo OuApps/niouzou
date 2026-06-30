@@ -72,6 +72,7 @@ def _config_response(  # type: ignore[no-untyped-def]
         cron_fetch_interval=effective.cron_fetch_interval,
         cron_nightly_refresh_hour=effective.cron_nightly_refresh_hour,
         score_threshold=effective.score_threshold,
+        enrichment_input_max_chars=effective.enrichment_input_max_chars,
         scoring_mode=effective.scoring_mode,
         embeddings_done=embeddings_done,
         articles_total=articles_total,

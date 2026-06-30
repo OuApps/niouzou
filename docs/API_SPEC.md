@@ -939,6 +939,7 @@ Sensitive fields (API keys) are masked.
   "cron_fetch_interval": 15,
   "cron_nightly_refresh_hour": 3,
   "score_threshold": 0.0,
+  "enrichment_input_max_chars": 2500,
   "scoring_mode": "keyword",
   "embeddings_done": 1240,
   "articles_total": 1312
@@ -969,6 +970,7 @@ the next cron run.
   "cron_fetch_interval": 15,
   "cron_nightly_refresh_hour": 3,
   "score_threshold": 0.6,
+  "enrichment_input_max_chars": 4000,
   "scoring_mode": "smart"
 }
 ```
@@ -976,6 +978,7 @@ the next cron run.
 > `openrouter_api_key` accepts the full secret key (or empty string to disable AI).
 > `cron_fetch_interval` is in minutes (1–1440).
 > `cron_nightly_refresh_hour` is 0–23 (UTC hour).
+> `enrichment_input_max_chars` is an int in `[500, 20000]` (default `2500`); caps the combined LLM enrichment input (header + vocab + title + article excerpt). Raising it grounds summaries on more real text (fewer hallucinations) at the cost of more tokens/article; takes effect on the next pipeline run.
 > `score_threshold` is a float in `[0.0, 1.0]`; takes effect on the very next `GET /feed` request (no worker restart needed). The PWA admin screen edits it as a percentage (0–100 %) for parity with the score badge; the wire format stays float.
 > `scoring_mode` (E16-S4/S9) accepts `"keyword"` or `"smart"` (`"classic"`
 > is tolerated as a legacy alias of `"keyword"`). `"smart"` is refused with
