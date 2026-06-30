@@ -198,6 +198,32 @@ async def test_llm_prompts_service_list_get_update(db_session):
     assert (await svc.get("a.prompt")).body == "a-body-v2"
 
 
+async def test_llm_prompt_update_row_serializes_without_lazy_io(db_session):
+    """Regression: the router serializes the updated row synchronously via
+    ``LlmPromptOut.model_validate``. ``updated_at`` is server-computed
+    (onupdate=now()) and is expired by the flush, so without an explicit
+    refresh that sync attribute access triggers a lazy SELECT on the async
+    engine — ``MissingGreenlet`` → 500 (seen in prod as "cannot reach the
+    server"). ``update`` must return a row whose ``updated_at`` is loaded."""
+    from sqlalchemy import delete
+
+    from niouzou.models import LlmPrompt
+    from niouzou.schemas.admin import LlmPromptOut
+    from niouzou.services.llm_prompts_service import LlmPromptsService
+
+    await db_session.execute(delete(LlmPrompt))
+    db_session.add(LlmPrompt(name="enrichment.combined", body="old"))
+    await db_session.commit()
+
+    svc = LlmPromptsService(db_session)
+    row = await svc.update("enrichment.combined", "new body")
+
+    # Exactly what the router does — must not raise MissingGreenlet.
+    out = LlmPromptOut.model_validate(row)
+    assert out.body == "new body"
+    assert out.updated_at is not None
+
+
 async def test_llm_prompts_service_get_unknown_raises_404(db_session):
     from niouzou.errors import APIError as _APIError
     from niouzou.services.llm_prompts_service import LlmPromptsService
