@@ -144,7 +144,6 @@ async def test_update_feed_sends_disabled():
 async def test_update_feed_requires_at_least_one_flag():
     # E14-S2 — accidental no-op calls would silently no-op the API; surface
     # them as programmer errors instead.
-    import pytest
 
     async with MinifluxClient(BASE, "k") as client:
         with pytest.raises(ValueError):

@@ -24,7 +24,6 @@ from niouzou.services.scoring_service import ScoringService
 from tests.factories import make_article, make_source, make_user
 from tests.fake_embeddings import HashEncoder
 
-
 # ── build_article_text ────────────────────────────────────────────────────────
 
 

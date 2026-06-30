@@ -20,7 +20,6 @@ from niouzou.services.settings_service import SettingsService
 from niouzou.services.stats_service import StatsService
 from tests.factories import make_article, make_source, make_user, set_relevance
 
-
 # ── /explore/new ────────────────────────────────────────────────────────────
 
 

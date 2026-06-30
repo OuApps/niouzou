@@ -15,8 +15,8 @@ from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.errors import APIError
 from niouzou.models import Source
-from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.models.article import STATUS_ENRICHED
+from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.explore import (
     ExploreHistoryArticle,
     ExploreHistoryResponse,

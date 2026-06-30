@@ -28,7 +28,6 @@ from niouzou.models import Article, ArticleFeedback, ArticleImpression, Source
 from niouzou.models.article import STATUS_ENRICHED
 from niouzou.pagination import decode_cursor, encode_cursor
 from niouzou.schemas.feed import FeedArticle, FeedResponse
-from niouzou.services.settings_service import SettingsService
 from niouzou.services.ranked_query import (
     FROM_JOINS,
     build_ranked_query,
@@ -38,6 +37,7 @@ from niouzou.services.ranked_query import (
     ranked_columns,
     row_to_article,
 )
+from niouzou.services.settings_service import SettingsService
 
 
 class FeedService:
