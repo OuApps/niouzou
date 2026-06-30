@@ -134,7 +134,9 @@ async def enrichment_resources() -> AsyncIterator[EnrichmentResources]:
     client = OpenRouterClient.from_overrides(
         effective.openrouter_api_key, effective.openrouter_model
     )
-    enrichment = EnrichmentService(client)
+    enrichment = EnrichmentService(
+        client, max_input_chars=effective.enrichment_input_max_chars
+    )
     enrichment.set_vocab(vocab)
     if "enrichment.combined" in prompts:
         enrichment.set_system_prompt(prompts["enrichment.combined"])

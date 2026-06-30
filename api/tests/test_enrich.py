@@ -399,6 +399,36 @@ def test_generate_enrichment_huge_vocab_preserves_article():
     assert "ArticleBodyMarker" in client.last_user
 
 
+def test_generate_enrichment_respects_max_input_chars():
+    """The configurable cap bounds the combined LLM input: a body longer than
+    ``max_input_chars`` is truncated, a higher cap lets more through."""
+
+    class _RecordingClient(FakeClient):
+        def __init__(self, replies):
+            super().__init__(replies)
+            self.last_user: str | None = None
+
+        def complete(self, *, system, user, temperature=0.2):
+            self.last_user = user
+            return super().complete(system=system, user=user, temperature=temperature)
+
+    long_body = "x" * 10000
+    replies = ['{"summary_executive": "- x", "keywords": []}']
+
+    tight = _RecordingClient(list(replies))
+    svc_tight = EnrichmentService(openrouter_client=tight, max_input_chars=1000)
+    svc_tight.generate_enrichment("Title", long_body)
+    assert tight.last_user is not None
+    assert len(tight.last_user) <= 1000
+
+    wide = _RecordingClient(list(replies))
+    svc_wide = EnrichmentService(openrouter_client=wide, max_input_chars=8000)
+    svc_wide.generate_enrichment("Title", long_body)
+    assert wide.last_user is not None
+    assert len(wide.last_user) > 1000
+    assert len(wide.last_user) <= 8000
+
+
 def test_parse_executive_nested_list_drops_inner_lists():
     result = _parse_enrichment(
         {"summary_executive": ["valid", ["nested", "stuff"], "also valid"]}

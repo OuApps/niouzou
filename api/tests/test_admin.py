@@ -25,6 +25,17 @@ async def test_settings_get_falls_back_to_env_defaults(db_session):
     assert await svc.get("max_keywords_per_article") == 6
     assert await svc.get("cron_fetch_interval") == 15
     assert await svc.get("cron_nightly_refresh_hour") == 3
+    assert await svc.get("enrichment_input_max_chars") == 2500
+
+
+async def test_enrichment_input_max_chars_override_typed_and_effective(db_session):
+    svc = SettingsService(db_session)
+    await svc.set("enrichment_input_max_chars", 6000)
+    await db_session.commit()
+
+    # Stored as TEXT but typed back as int per INT_KEYS.
+    assert await svc.get("enrichment_input_max_chars") == 6000
+    assert (await svc.get_effective()).enrichment_input_max_chars == 6000
 
 
 async def test_settings_set_then_get_returns_typed_override(db_session):

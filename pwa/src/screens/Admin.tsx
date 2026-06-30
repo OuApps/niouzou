@@ -152,6 +152,15 @@ export const Admin = () => {
                 max={100}
                 onSave={reloadConfig}
               />
+              <ConfigRow
+                label="LLM input max (chars)"
+                config={config}
+                field="enrichment_input_max_chars"
+                type="number"
+                min={500}
+                max={20000}
+                onSave={reloadConfig}
+              />
             </div>
           ) : null}
         </AdminSection>

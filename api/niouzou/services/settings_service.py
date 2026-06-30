@@ -36,6 +36,7 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
         "cron_fetch_interval",
         "cron_nightly_refresh_hour",
         "score_threshold",
+        "enrichment_input_max_chars",
         # E16 — Smart Match engine + its tuning knobs.
         "scoring_mode",
         "smart_topk",
@@ -55,6 +56,7 @@ INT_KEYS: Final[frozenset[str]] = frozenset(
         "max_keywords_per_article",
         "cron_fetch_interval",
         "cron_nightly_refresh_hour",
+        "enrichment_input_max_chars",
         "smart_topk",
         "smart_decay_halflife_days",
         "smart_rescore_window_days",
@@ -76,6 +78,7 @@ _DEFAULT_FROM_SETTINGS = {
     "cron_fetch_interval": lambda s: s.cron_fetch_interval,
     "cron_nightly_refresh_hour": lambda s: s.cron_nightly_refresh_hour,
     "score_threshold": lambda s: s.score_threshold,
+    "enrichment_input_max_chars": lambda s: s.enrichment_input_max_chars,
     "scoring_mode": lambda s: s.scoring_mode,
     "smart_topk": lambda s: s.smart_topk,
     "smart_lambda": lambda s: s.smart_lambda,
@@ -99,6 +102,9 @@ class EffectiveConfig:
     cron_fetch_interval: int
     cron_nightly_refresh_hour: int
     score_threshold: float
+    # Defaulted so existing call sites (and tests) that build the snapshot by
+    # hand keep working; get_effective() always fills it in.
+    enrichment_input_max_chars: int = 2500
     # E16 — defaulted so existing call sites (and tests) that build the
     # snapshot by hand keep working; get_effective() always fills them in.
     scoring_mode: str = "keyword"
@@ -260,6 +266,7 @@ class SettingsService:
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
             cron_nightly_refresh_hour=resolve("cron_nightly_refresh_hour"),  # type: ignore[arg-type]
             score_threshold=resolve("score_threshold"),  # type: ignore[arg-type]
+            enrichment_input_max_chars=resolve("enrichment_input_max_chars"),  # type: ignore[arg-type]
             scoring_mode=normalize_scoring_mode(resolve("scoring_mode")),
             smart_topk=resolve("smart_topk"),  # type: ignore[arg-type]
             smart_lambda=resolve("smart_lambda"),  # type: ignore[arg-type]

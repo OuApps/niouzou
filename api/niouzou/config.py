@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # substrings within a group by `&&`.
     enrichment_boilerplate_exact: str = ""
     enrichment_boilerplate_markers: str = ""
+    # Char cap on the combined LLM enrichment input (header + vocab + title +
+    # article excerpt). The lede + first paragraphs carry the topic; sending
+    # more inflates latency/cost on slow models. Raising it gives the model
+    # more real text to ground its summary on (fewer hallucinations) at the
+    # cost of more tokens per article. Admin-overridable via app_settings.
+    enrichment_input_max_chars: int = 2500
     cron_fetch_interval: int = 15
     cron_enrich_interval: int = 30
     # UTC hour for the nightly refresh: keyword-weight recompute + rescore of
