@@ -153,6 +153,15 @@ export const Admin = () => {
                 onSave={reloadConfig}
               />
               <ConfigRow
+                label="Random surfacing (%)"
+                config={config}
+                field="random_surface_rate"
+                type="percent"
+                min={0}
+                max={100}
+                onSave={reloadConfig}
+              />
+              <ConfigRow
                 label="LLM input max (chars)"
                 config={config}
                 field="enrichment_input_max_chars"

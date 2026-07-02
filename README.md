@@ -123,7 +123,7 @@ immediately.
 | OpenRouter timeout | `OPENROUTER_TIMEOUT` | `60` | — | Per-request timeout (seconds). |
 | Scoring mode | `SCORING_MODE` | `keyword` | ✅ | Active score: `keyword` or `smart`. |
 | Score threshold | `SCORE_THRESHOLD` | `0.0` | ✅ | Min active score to surface (0–1). |
-| Random surface rate | `RANDOM_SURFACE_RATE` | `0.05` | — | Share of random low-score articles (anti-bubble). |
+| Random surface rate | `RANDOM_SURFACE_RATE` | `0.05` | ✅ | Share of random low-score articles slipped into the feed to break the echo chamber (only bites when the score threshold is > 0). |
 | Feed gravity | `FEED_GRAVITY` | `1.5` | — | How fast older articles drop in ranking. |
 | Cold-start threshold | `COLD_START_THRESHOLD` | `10` | — | Feedbacks below which the threshold is bypassed. |
 | Max keywords / article | `MAX_KEYWORDS_PER_ARTICLE` | `6` | ✅ | Keyword cap stored per article. |

@@ -81,15 +81,26 @@ class FeedService:
 
         # E16-S9 — the active score column (filter + ranking) follows the
         # admin-tunable scoring_mode, read per request so a flip is instant.
-        scoring_mode = str(
-            await SettingsService(self.session).get("scoring_mode")
+        settings_svc = SettingsService(self.session)
+        scoring_mode = str(await settings_svc.get("scoring_mode"))
+
+        # Anti echo chamber: the share of sub-threshold articles randomly let
+        # through is admin-tunable live via PATCH /admin/config (env var stays
+        # the fallback default), so an operator can widen exploration without a
+        # redeploy. Inert while cold_start forces threshold 0.0 (nothing is
+        # sub-threshold to surface).
+        random_override = await settings_svc.get("random_surface_rate")
+        random_rate = float(
+            random_override
+            if random_override is not None
+            else settings.random_surface_rate
         )
 
         params: dict = {
             "user_id": user_id,
             "gravity": settings.feed_gravity,
             "threshold": threshold,
-            "random_rate": settings.random_surface_rate,
+            "random_rate": random_rate,
             "limit": page_size + 1,  # +1 row tells us whether more remain
             "premium_max_chars": settings.premium_content_max_chars,
         }
