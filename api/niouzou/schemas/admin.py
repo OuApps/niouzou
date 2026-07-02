@@ -18,6 +18,9 @@ class AdminConfig(BaseModel):
     cron_fetch_interval: int
     cron_nightly_refresh_hour: int
     score_threshold: float
+    # Share of sub-threshold articles randomly surfaced to break the filter
+    # bubble (anti echo chamber). 0.0 disables it.
+    random_surface_rate: float
     enrichment_input_max_chars: int
     # E16-S4/S9 — active score selector ('keyword' | 'smart') + instance-wide
     # embedding coverage so the admin can judge whether a backfill is worth
@@ -41,6 +44,10 @@ class AdminConfigPatch(BaseModel):
     cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
     cron_nightly_refresh_hour: int | None = Field(default=None, ge=0, le=23)
     score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Anti echo chamber: fraction (0-1) of sub-threshold articles randomly let
+    # into the feed. Only bites when score_threshold > 0 (with the default 0.0
+    # every article already clears the threshold).
+    random_surface_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     enrichment_input_max_chars: int | None = Field(default=None, ge=500, le=20000)
     # Value-validated in SettingsService.validate (422 when 'smart' is not
     # runnable on this instance), not by the schema.

@@ -38,6 +38,19 @@ async def test_enrichment_input_max_chars_override_typed_and_effective(db_sessio
     assert (await svc.get_effective()).enrichment_input_max_chars == 6000
 
 
+async def test_random_surface_rate_override_typed_and_effective(db_session):
+    svc = SettingsService(db_session)
+    # Default falls back to the env value (0.05) with no override set.
+    assert await svc.get("random_surface_rate") == 0.05
+
+    await svc.set("random_surface_rate", 0.2)
+    await db_session.commit()
+
+    # Stored as TEXT but typed back as float per FLOAT_KEYS.
+    assert await svc.get("random_surface_rate") == 0.2
+    assert (await svc.get_effective()).random_surface_rate == 0.2
+
+
 async def test_settings_set_then_get_returns_typed_override(db_session):
     svc = SettingsService(db_session)
     await svc.set("openrouter_model", "openai/gpt-4o")

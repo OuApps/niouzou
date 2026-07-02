@@ -453,6 +453,8 @@ export interface AdminConfig {
   cron_fetch_interval: number
   cron_nightly_refresh_hour: number
   score_threshold: number
+  // Anti echo chamber: share (0-1) of sub-threshold articles randomly surfaced.
+  random_surface_rate: number
   enrichment_input_max_chars: number
   // E16-S4/S9 — active score selector + instance-wide embedding coverage.
   scoring_mode: 'keyword' | 'smart'
@@ -467,6 +469,7 @@ export interface AdminConfigPatch {
   cron_fetch_interval?: number
   cron_nightly_refresh_hour?: number
   score_threshold?: number
+  random_surface_rate?: number
   enrichment_input_max_chars?: number
   scoring_mode?: 'keyword' | 'smart'
 }

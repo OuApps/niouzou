@@ -36,6 +36,7 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
         "cron_fetch_interval",
         "cron_nightly_refresh_hour",
         "score_threshold",
+        "random_surface_rate",
         "enrichment_input_max_chars",
         # E16 — Smart Match engine + its tuning knobs.
         "scoring_mode",
@@ -65,7 +66,7 @@ INT_KEYS: Final[frozenset[str]] = frozenset(
 
 # Keys parsed as floats — same TEXT column, different cast on read/write.
 FLOAT_KEYS: Final[frozenset[str]] = frozenset(
-    {"score_threshold", "smart_lambda", "smart_beta"}
+    {"score_threshold", "random_surface_rate", "smart_lambda", "smart_beta"}
 )
 
 # Env-default lookups: SettingsService.get(key) falls back to these when no DB
@@ -78,6 +79,7 @@ _DEFAULT_FROM_SETTINGS = {
     "cron_fetch_interval": lambda s: s.cron_fetch_interval,
     "cron_nightly_refresh_hour": lambda s: s.cron_nightly_refresh_hour,
     "score_threshold": lambda s: s.score_threshold,
+    "random_surface_rate": lambda s: s.random_surface_rate,
     "enrichment_input_max_chars": lambda s: s.enrichment_input_max_chars,
     "scoring_mode": lambda s: s.scoring_mode,
     "smart_topk": lambda s: s.smart_topk,
@@ -103,7 +105,8 @@ class EffectiveConfig:
     cron_nightly_refresh_hour: int
     score_threshold: float
     # Defaulted so existing call sites (and tests) that build the snapshot by
-    # hand keep working; get_effective() always fills it in.
+    # hand keep working; get_effective() always fills them in.
+    random_surface_rate: float = 0.05
     enrichment_input_max_chars: int = 2500
     # E16 — defaulted so existing call sites (and tests) that build the
     # snapshot by hand keep working; get_effective() always fills them in.
@@ -266,6 +269,7 @@ class SettingsService:
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
             cron_nightly_refresh_hour=resolve("cron_nightly_refresh_hour"),  # type: ignore[arg-type]
             score_threshold=resolve("score_threshold"),  # type: ignore[arg-type]
+            random_surface_rate=resolve("random_surface_rate"),  # type: ignore[arg-type]
             enrichment_input_max_chars=resolve("enrichment_input_max_chars"),  # type: ignore[arg-type]
             scoring_mode=normalize_scoring_mode(resolve("scoring_mode")),
             smart_topk=resolve("smart_topk"),  # type: ignore[arg-type]

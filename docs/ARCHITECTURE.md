@@ -416,7 +416,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `OPENROUTER_API_KEY` | ❌ | Enables AI enrichment and scoring |
 | `OPENROUTER_MODEL` | ❌ | Model to use (default: `google/gemma-4-26b-a4b-it:free`) |
 | `SCORE_THRESHOLD` | ❌ | Minimum *active* score to surface an article (0.0–1.0, default: `0.0`; cold/NULL rows bypass it) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
-| `RANDOM_SURFACE_RATE` | ❌ | % of random articles in feed (default: `0.05`) |
+| `RANDOM_SURFACE_RATE` | ❌ | Share (0.0–1.0) of sub-threshold articles randomly slipped into the feed to break the echo chamber (default: `0.05`) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request). Only bites when `SCORE_THRESHOLD > 0`, since with the default `0.0` every article already clears the threshold |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
 | `COLD_START_THRESHOLD` | ❌ | Number of feedbacks below which `SCORE_THRESHOLD` is bypassed — prevents an empty feed on day one (default: `10`) |
 | `MAX_KEYWORDS_PER_ARTICLE` | ❌ | Cap on keywords stored per article — applied after extraction (default: `6`) |
