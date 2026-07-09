@@ -134,6 +134,71 @@ async function rawRequest(path: string, opts: RequestOptions, accessToken: strin
 }
 
 /**
+ * E21-S4 — Perform an API request whose success body is a stream (SSE), with
+ * the same auth + one-shot-refresh + typed-error behaviour as `request`.
+ * Returns the raw `Response` (guaranteed `ok`) so the caller can consume
+ * `res.body`; error statuses are surfaced as `ApiError` before any streaming.
+ */
+export async function streamRequest(
+  path: string,
+  opts: RequestOptions = {},
+  signal?: AbortSignal,
+): Promise<Response> {
+  const doFetch = async (token: string | null) => {
+    const url = new URL(`${BASE_URL}${path}`)
+    const headers: Record<string, string> = { Accept: 'text/event-stream' }
+    if (opts.body !== undefined) headers['Content-Type'] = 'application/json'
+    if (opts.auth !== false && token) headers['Authorization'] = `Bearer ${token}`
+    return fetch(url.toString(), {
+      method: opts.method ?? 'POST',
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal,
+    })
+  }
+
+  let res: Response
+  try {
+    res = await doFetch(tokens.access())
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') throw e
+    throw new ApiError(0, NETWORK_ERROR, 'Cannot reach the server. Check your connection.')
+  }
+
+  if (res.status === 401 && opts.auth !== false) {
+    const fresh = await refreshAccessToken()
+    if (fresh) {
+      try {
+        res = await doFetch(fresh)
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') throw e
+        throw new ApiError(0, NETWORK_ERROR, 'Cannot reach the server. Check your connection.')
+      }
+    }
+    if (res.status === 401) {
+      redirectToLogin()
+      throw new ApiError(401, 'unauthorized', 'Your session has expired. Please sign in again.')
+    }
+  }
+
+  if (!res.ok) {
+    let body: { error?: string; message?: string } | null = null
+    try {
+      body = (await res.json()) as { error?: string; message?: string }
+    } catch {
+      // Non-JSON error body — fall through to the generic message.
+    }
+    throw new ApiError(
+      res.status,
+      body?.error ?? 'error',
+      body?.message ?? `Request failed (${res.status})`,
+    )
+  }
+
+  return res
+}
+
+/**
  * Perform an API request with auth + refresh + typed errors.
  * Returns parsed JSON, or `undefined` for 204 No Content responses.
  */

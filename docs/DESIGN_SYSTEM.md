@@ -37,6 +37,17 @@
   — reuse `Modal` so confirmations never drift again.
 - The feed's `ScoreDebugSheet` is a **bottom sheet**, a deliberately distinct
   pattern — not a `Modal`.
+- The article chat (`ArticleChatSheet`, E21-S4) is the second bottom sheet:
+  fixed to the bottom of the centred 480px column, `height: 78dvh`,
+  `border-radius: 24 24 0 0`, grabber on top, slide-up animation
+  (`chat-sheet-up`). Closes on backdrop tap, Escape, and swipe-down on the
+  header. Thread bubbles: user = solid accent fill (text `#0c1018`,
+  `border-bottom-right-radius: 5`), assistant = glass
+  (`border-bottom-left-radius: 5`). A three-dot typing indicator
+  (`.chat-typing-dot`, `chat-dot-bob` animation) shows until the first
+  streamed token. Composer input is **16px** (not the app's usual 13) so
+  iOS Safari doesn't zoom on focus. The conversation is ephemeral — closing
+  the sheet drops it.
 
 ---
 
@@ -213,6 +224,7 @@ The feed is a vertical scroll-snap container; each article fills the screen.
 │  Summary (14px, muted)         │
 │  Crawled content (when present)│
 │  [Lire l'article complet ↗]    │
+│  [💬 Chat about this article]  │  AI-only (E21-S3) — orange→cyan tint
 │  ── scroll boundary ──         │
 │  ▼ Niouzou logo ▼              │
 │  ── ─────────── ──             │
@@ -414,6 +426,7 @@ Library: **Lucide React** (`lucide-react`) for React components.
 | Clock / time | `Clock` |
 | Score chip (keyword method) | `Hash` |
 | Score chip (Smart Match method) | `Radar` |
+| Article chat (entry + send) | `MessageCircle` / `Send` |
 | Edit keyword | `Pencil` |
 | Menu arrow | `ChevronRight` |
 | Sign out | `LogOut` |

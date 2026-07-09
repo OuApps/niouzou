@@ -4788,7 +4788,7 @@ d'enrichissement quand non configuré ; masqué comme les autres réglages si be
 **Acceptance** : un POST avec un fil renvoie une réponse ancrée sur l'article en streaming ;
 403/404 sur article étranger/inexistant ; 409 sans clé ; le coût remonte dans `/stats`.
 
-#### [ ] E21-S3 — Point d'entrée sur la slide article
+#### [x] E21-S3 — Point d'entrée sur la slide article
 
 **But** : déclencher le chat depuis l'article.
 
@@ -4800,11 +4800,15 @@ d'enrichissement quand non configuré ; masqué comme les autres réglages si be
 - (Optionnel, à trancher à l'implémentation) 4ᵉ bouton `MessageCircle` dans la barre
   d'action `👎 / 🔖 / 👍`. Les deux affordances peuvent coexister ; par défaut on livre
   **seulement le bouton sous le résumé** (barre d'action laissée à 3 pour ne pas la serrer).
+- *Implémentation* : libellé anglais « Chat about this article » (conventions : strings EN),
+  gate = `summary_executive` présent (même signal AI-only que la carte résumé — pas de
+  bouton qui répondrait 409 sur une instance sans clé). Le 4ᵉ bouton de la barre d'action
+  n'a **pas** été livré (barre laissée à 3).
 
 **Acceptance** : le bouton ouvre le sheet (E21-S4) ; invisible sans IA ; conforme au
 design system (radius 14, `--accent-border`, `--accent-subtle`).
 
-#### [ ] E21-S4 — Bottom sheet de conversation (composant `ArticleChatSheet`)
+#### [x] E21-S4 — Bottom sheet de conversation (composant `ArticleChatSheet`)
 
 **But** : la surface de chat, calquée sur `ScoreDebugSheet` (bottom sheet, **pas** `Modal`).
 
@@ -4830,15 +4834,19 @@ design system (radius 14, `--accent-border`, `--accent-subtle`).
 avec l'indicateur de frappe, le fil scrolle, se ferme d'un swipe et rend au feed ; l'article
 reste visible derrière.
 
-#### [ ] E21-S5 — Tests
+#### [x] E21-S5 — Tests
 
 - **Back** *(livré avec S1/S2 — `tests/test_chat.py`)* : `ChatService` — construction du
   system prompt (troncature, fallback résumé seul), garde-fous (article étranger → 403,
   inexistant → 404, historique invalide → 422, IA absente → 409). OpenRouter mocké en
   respx (flux SSE simulé — jamais d'appel réseau réel). Écriture `llm_usage_log` vérifiée
   (coût lu dans le chunk d'usage in-stream, pas de lookup `/generation` différé).
-- **Front** : rendu des états du sheet (typing / streaming / erreur), point d'entrée masqué
-  sans IA. Pas de vrai LLM.
+- **Front** : le repo n'a **aucune infra de test front** (pas de vitest ; la CI `test-pwa`
+  = eslint + `tsc -b` + build, voir `CONVENTIONS.md`). Introduire vitest juste pour cette
+  story serait hors périmètre — la couverture front est donc lint + typecheck + build,
+  complétée côté API par **3 tests endpoint-level** (ASGITransport + respx) qui valident le
+  câblage HTTP complet : SSE 200 relayé, 422 sur fil invalide, 409 sans clé. À revisiter si
+  une infra vitest arrive.
 
 **Acceptance** : suite verte ; aucun test ne tape OpenRouter ni ne charge le modèle
 d'embedding.

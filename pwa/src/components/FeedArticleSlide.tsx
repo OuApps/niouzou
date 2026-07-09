@@ -7,8 +7,10 @@ import {
   ChevronUp,
   ExternalLink,
   Lock,
+  MessageCircle,
   Sparkles,
 } from 'lucide-react'
+import { ArticleChatSheet } from './ArticleChatSheet'
 import { ScoreBadge } from './ScoreBadge'
 import { ScoreDebugSheet } from './ScoreDebugSheet'
 import { KeywordTag } from './KeywordTag'
@@ -76,6 +78,11 @@ export const FeedArticleSlide = ({
   // short scroll to the action bar, not a marathon. Anything past
   // CONTENT_PREVIEW_CHARS is hidden behind "Lire plus" until they ask.
   const [contentExpanded, setContentExpanded] = useState(false)
+  // E21-S3/S4 — article chat sheet. Mounted lazily on first open; the
+  // conversation state lives inside the sheet and dies with it (v1 is
+  // ephemeral by design). Declared before the render-reset block below so
+  // the reset can reference the setter.
+  const [chatOpen, setChatOpen] = useState(false)
   // Collapse the "Lire plus" expansion when we switch to a different article.
   // Done during render (React's recommended pattern for resetting state on a
   // prop change) rather than synchronously in an Effect.
@@ -83,6 +90,7 @@ export const FeedArticleSlide = ({
   if (article.id !== renderedArticleId) {
     setRenderedArticleId(article.id)
     setContentExpanded(false)
+    setChatOpen(false)
   }
   // E10-S2 — open/closed state of the score-debug bottom sheet. The sheet
   // itself owns its fetch; we only pass the article id when open.
@@ -448,6 +456,35 @@ export const FeedArticleSlide = ({
               </>
             )}
           </button>
+
+          {/* E21-S3 — chat entry point. AI-only: `summary_executive` doubles
+              as the "this article was AI-enriched" signal (same gate as the
+              summary card above), so instances without an OpenRouter key
+              never show a button that would 409. Orange→cyan tint per the
+              E21 mockups: related to the accent, distinct from the CTA. */}
+          {article.summary_executive && (
+            <button
+              type="button"
+              onClick={() => setChatOpen(true)}
+              className="flex items-center justify-center gap-2"
+              style={{
+                width: '100%',
+                marginTop: 10,
+                padding: '12px 16px',
+                borderRadius: 14,
+                border: '1px solid var(--accent-border)',
+                background:
+                  'linear-gradient(120deg, rgba(244,162,97,0.20), rgba(72,202,228,0.14))',
+                color: 'var(--text-primary)',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              <MessageCircle size={14} />
+              Chat about this article
+            </button>
+          )}
         </div>
 
         {/* ── Scroll boundary hint ─────────────────────────────────────────
@@ -535,6 +572,12 @@ export const FeedArticleSlide = ({
         articleId={debugOpen ? article.id : null}
         onClose={() => setDebugOpen(false)}
       />
+
+      {/* E21-S4 — article chat sheet, mounted lazily on open. Unmounting on
+          close aborts the in-flight stream and drops the ephemeral thread. */}
+      {chatOpen && (
+        <ArticleChatSheet article={article} onClose={() => setChatOpen(false)} />
+      )}
     </article>
   )
 }

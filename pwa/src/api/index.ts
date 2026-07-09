@@ -1,7 +1,7 @@
 // Typed endpoint functions for the Niouzou API.
 // One function per endpoint in docs/API_SPEC.md. Screens import from here only.
 
-import { request, tokens } from './http'
+import { ApiError, request, streamRequest, tokens } from './http'
 import type {
   AuthTokens,
   FeedArticle,
@@ -227,6 +227,87 @@ export interface ScoreDebug {
 
 export function getScoreDebug(articleId: string): Promise<ScoreDebug> {
   return request<ScoreDebug>(`/articles/${articleId}/score-debug`)
+}
+
+// ── Article chat (E21-S2/S4) ────────────────────────────────────────────────
+
+export interface ChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatDoneInfo {
+  model: string
+  prompt_tokens: number
+  completion_tokens: number
+}
+
+export interface ChatStreamHandlers {
+  /** One incremental text fragment of the assistant reply. */
+  onToken: (delta: string) => void
+  /** Stream completed normally. */
+  onDone?: (info: ChatDoneInfo) => void
+  /** Upstream failure *mid-stream* (HTTP status was already 200). Pre-stream
+   *  failures (403/404/409/422/network) reject the promise with ApiError. */
+  onError?: (message: string) => void
+}
+
+/**
+ * POST /articles/{id}/chat — stream the LLM reply for the given thread.
+ * v1 is stateless: pass the whole conversation (ending with a user turn) on
+ * every call. Resolves when the stream ends; abort via `signal` to cancel
+ * (closing the sheet, sending a new message).
+ */
+export async function streamArticleChat(
+  articleId: string,
+  messages: ChatTurn[],
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await streamRequest(
+    `/articles/${articleId}/chat`,
+    { method: 'POST', body: { messages } },
+    signal,
+  )
+  const reader = res.body?.getReader()
+  if (!reader) throw new ApiError(0, 'stream_error', 'Streaming not supported.')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // SSE events are separated by a blank line.
+    for (;;) {
+      const boundary = buffer.indexOf('\n\n')
+      if (boundary === -1) break
+      const rawEvent = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      let event = 'message'
+      let data = ''
+      for (const line of rawEvent.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data += line.slice(5).trim()
+      }
+      if (!data) continue
+      let payload: unknown
+      try {
+        payload = JSON.parse(data)
+      } catch {
+        continue
+      }
+      if (event === 'token') {
+        const delta = (payload as { delta?: string }).delta
+        if (delta) handlers.onToken(delta)
+      } else if (event === 'done') {
+        handlers.onDone?.(payload as ChatDoneInfo)
+      } else if (event === 'error') {
+        const err = payload as { message?: string }
+        handlers.onError?.(err.message ?? 'The assistant is unavailable.')
+      }
+    }
+  }
 }
 
 // ── Saved ──────────────────────────────────────────────────────────────────
