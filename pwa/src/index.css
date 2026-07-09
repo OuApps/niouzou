@@ -246,6 +246,39 @@ html, body, #root {
   to   { transform: translate(-50%, 0); }
 }
 
+/* The sheet panel. A CSS class (not inline style) because the height needs
+   the dvh → svh → vh fallback chain (see "Viewport" in DESIGN_SYSTEM.md) —
+   inline styles can't express fallbacks. Rendered in a portal on
+   document.body: mounted inside the feed slide it would be trapped in the
+   `.feed-snap` z-10 stacking context, where the BottomNav (z-40, root level)
+   paints over it and hides the composer. */
+.chat-sheet {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Mirror the app's centred phone column (E19-S1). */
+  width: 100%;
+  max-width: 480px;
+  height: 78vh;
+  height: 78svh;
+  height: 78dvh;
+  z-index: 51;
+  display: flex;
+  flex-direction: column;
+  /* Fully opaque — the article context lives in the header recap, the
+     backdrop provides the "article behind" effect. */
+  background: #141822;
+  border-radius: 24px 24px 0 0;
+  border: 1px solid var(--glass-border);
+  border-bottom: none;
+  box-shadow: 0 -20px 50px rgba(0, 0, 0, 0.5);
+  animation: chat-sheet-up 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-sheet { animation: none; }
+}
+
 /* Typing indicator: three dots bobbing while the LLM hasn't produced its
    first token yet. */
 @keyframes chat-dot-bob {

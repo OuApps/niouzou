@@ -38,16 +38,23 @@
 - The feed's `ScoreDebugSheet` is a **bottom sheet**, a deliberately distinct
   pattern — not a `Modal`.
 - The article chat (`ArticleChatSheet`, E21-S4) is the second bottom sheet:
-  fixed to the bottom of the centred 480px column, `height: 78dvh`,
-  `border-radius: 24 24 0 0`, grabber on top, slide-up animation
-  (`chat-sheet-up`). Closes on backdrop tap, Escape, and swipe-down on the
-  header. Thread bubbles: user = solid accent fill (text `#0c1018`,
+  fixed to the bottom of the centred 480px column (`.chat-sheet` class —
+  height `78dvh` with the `svh`/`vh` fallback chain), solid `#141822`
+  panel, `border-radius: 24 24 0 0`, grabber on top, slide-up animation
+  (`chat-sheet-up`). **Rendered in a portal on `document.body`**: mounted
+  inside a feed slide it would be trapped in the `.feed-snap` `z-10`
+  stacking context, where the root-level `BottomNav` (`z-40`) paints over
+  the sheet and hides the composer — any future overlay opened from inside
+  the feed must either portal out the same way or accept the nav on top.
+  Closes on backdrop tap, Escape, and swipe-down on the header. Thread
+  bubbles: user = solid accent fill (text `#0c1018`,
   `border-bottom-right-radius: 5`), assistant = glass
   (`border-bottom-left-radius: 5`). A three-dot typing indicator
   (`.chat-typing-dot`, `chat-dot-bob` animation) shows until the first
-  streamed token. Composer input is **16px** (not the app's usual 13) so
-  iOS Safari doesn't zoom on focus. The conversation is ephemeral — closing
-  the sheet drops it.
+  streamed token; a 45 s first-token watchdog aborts and offers a retry so
+  a queued/dead upstream never leaves the dots spinning forever. Composer
+  input is **16px** (not the app's usual 13) so iOS Safari doesn't zoom on
+  focus. The conversation is ephemeral — closing the sheet drops it.
 
 ---
 
