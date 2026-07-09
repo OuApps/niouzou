@@ -17,7 +17,7 @@ Every route here is guarded by ``CurrentAdmin``: non-admin users receive
 import logging
 import os
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, status
@@ -68,6 +68,7 @@ def _config_response(  # type: ignore[no-untyped-def]
     return AdminConfig(
         openrouter_model=effective.openrouter_model,
         chat_model=effective.chat_model,
+        chat_web_search=effective.chat_web_search,
         openrouter_api_key=mask_api_key(effective.openrouter_api_key),
         max_keywords_per_article=effective.max_keywords_per_article,
         cron_fetch_interval=effective.cron_fetch_interval,
@@ -136,10 +137,16 @@ async def patch_config(
 
 @router.get("/models", response_model=list[AdminModel])
 async def get_models(
-    _: CurrentAdmin, service: SettingsServiceDep
+    _: CurrentAdmin,
+    service: SettingsServiceDep,
+    usage: Literal["enrichment", "chat"] = "enrichment",
 ) -> list[AdminModel]:
+    """Curated model list. ``usage=chat`` (E21-S7) widens the price caps so
+    reasoning-tier models appear, and sorts them first."""
     api_key = await service.get("openrouter_api_key")
-    return await fetch_models(api_key if isinstance(api_key, str) else None)
+    return await fetch_models(
+        api_key if isinstance(api_key, str) else None, usage=usage
+    )
 
 
 @router.get("/users", response_model=list[AdminUser])

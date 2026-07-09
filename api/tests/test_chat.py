@@ -275,6 +275,116 @@ async def test_stream_upstream_http_error_yields_error_event(db_session):
     assert (await db_session.execute(select(LLMUsageLog))).first() is None
 
 
+# ── E21-S7 — chat model curation + web search ───────────────────────────────
+
+
+def _catalogue_item(
+    id_,
+    *,
+    # OpenRouter prices are $/token: 5e-8 = $0.05/M — under the enrichment cap.
+    prompt="0.00000005",
+    completion="0.0000002",
+    supported=None,
+    web_price=None,
+):
+    pricing = {"prompt": prompt, "completion": completion}
+    if web_price is not None:
+        pricing["web_search"] = web_price
+    return {
+        "id": id_,
+        "name": id_,
+        "context_length": 32000,
+        "description": "chat model",
+        "pricing": pricing,
+        "supported_parameters": supported or [],
+    }
+
+
+@respx.mock
+async def test_models_chat_usage_widens_caps_and_flags_capabilities():
+    from niouzou.services import admin_models_service as ams
+
+    ams.reset_cache()
+    respx.get("https://openrouter.ai/api/v1/models").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [
+                    # Cheap model, fits both curations.
+                    _catalogue_item("cheap/instruct"),
+                    # Reasoning-tier: $3/M in — above the enrichment cap
+                    # (0.10) but within the chat cap (5.0).
+                    _catalogue_item(
+                        "big/reasoner",
+                        prompt="0.000003",
+                        completion="0.000015",
+                        supported=["reasoning"],
+                    ),
+                    # Native web search via pricing.
+                    _catalogue_item("sonar/online", web_price="0.000004"),
+                ]
+            },
+        )
+    )
+
+    enrichment = await ams.fetch_models("sk-test", usage="enrichment")
+    assert [m.id for m in enrichment] == ["cheap/instruct", "sonar/online"]
+
+    chat = await ams.fetch_models("sk-test", usage="chat")
+    # Reasoning models sort first in the chat curation.
+    assert [m.id for m in chat] == [
+        "big/reasoner",
+        "cheap/instruct",
+        "sonar/online",
+    ]
+    by_id = {m.id: m for m in chat}
+    assert by_id["big/reasoner"].reasoning is True
+    assert by_id["big/reasoner"].web_search is False
+    assert by_id["sonar/online"].web_search is True
+    assert by_id["cheap/instruct"].reasoning is False
+    ams.reset_cache()
+
+
+async def test_chat_web_search_setting_bool_round_trip(db_session):
+    svc = SettingsService(db_session)
+    # Env default.
+    assert await svc.get("chat_web_search") is False
+    assert (await svc.get_effective()).chat_web_search is False
+
+    await svc.set("chat_web_search", True)
+    await db_session.commit()
+    assert await svc.get("chat_web_search") is True
+    assert (await svc.get_effective()).chat_web_search is True
+
+    await svc.set("chat_web_search", False)
+    await db_session.commit()
+    assert await svc.get("chat_web_search") is False
+
+
+@respx.mock
+async def test_stream_sends_web_plugin_when_enabled(db_session):
+    from niouzou.services.chat_service import ChatContext
+
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            content=_openrouter_sse("ok"),
+            headers={"content-type": "text/event-stream"},
+        )
+    )
+    service = ChatService(db_session)
+
+    ctx = ChatContext(
+        api_key="sk", model="m", payload_messages=[], web_search=True
+    )
+    [c async for c in service.stream(ctx)]
+    assert json.loads(route.calls[0].request.content)["plugins"] == [{"id": "web"}]
+
+    ctx_off = ChatContext(api_key="sk", model="m", payload_messages=[])
+    [c async for c in service.stream(ctx_off)]
+    assert "plugins" not in json.loads(route.calls[1].request.content)
+
+
 # ── Endpoint wiring — full HTTP round-trip through the app ──────────────────
 # httpx.AsyncClient + ASGITransport (the test_pipeline_runs.py pattern —
 # TestClient would corrupt the shared asyncpg pool). respx only patches the

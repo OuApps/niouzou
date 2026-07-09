@@ -76,7 +76,7 @@ pwa/src/
 
 See `docs/ARCHITECTURE.md` for the full list.
 Required: `DATABASE_URL`, `MINIFLUX_URL`, `JWT_SECRET`
-Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `CHAT_MODEL` (article chat, falls back to `OPENROUTER_MODEL` — E21), `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`, `SCORING_MODE` (`keyword`|`smart`), `CRON_NIGHTLY_REFRESH_HOUR` (legacy `CRON_REFRESH_WEIGHTS_HOUR` still read as fallback), `SMART_*` (E16 knobs)
+Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `CHAT_MODEL` (article chat, falls back to `OPENROUTER_MODEL` — E21), `CHAT_WEB_SEARCH` (internet search in the chat — E21-S7), `SCORE_THRESHOLD`, `RANDOM_SURFACE_RATE`, `FEED_GRAVITY`, `SCORING_MODE` (`keyword`|`smart`), `CRON_NIGHTLY_REFRESH_HOUR` (legacy `CRON_REFRESH_WEIGHTS_HOUR` still read as fallback), `SMART_*` (E16 knobs)
 
 The Miniflux API token is provisioned automatically from Miniflux's own DB
 (`api/niouzou/services/miniflux_bootstrap.py`) — no env var.

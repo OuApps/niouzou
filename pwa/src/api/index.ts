@@ -532,6 +532,8 @@ export interface AdminConfig {
   // E21-S1 — model used by the article chat (falls back to openrouter_model
   // server-side when unset).
   chat_model: string
+  // E21-S7 — OpenRouter web plugin on chat completions (internet search).
+  chat_web_search: boolean
   openrouter_api_key: string | null
   max_keywords_per_article: number
   cron_fetch_interval: number
@@ -549,6 +551,7 @@ export interface AdminConfig {
 export interface AdminConfigPatch {
   openrouter_model?: string
   chat_model?: string
+  chat_web_search?: boolean
   openrouter_api_key?: string
   max_keywords_per_article?: number
   cron_fetch_interval?: number
@@ -565,6 +568,11 @@ export interface AdminModel {
   input_price_per_m: number
   output_price_per_m: number
   context_length: number
+  // E21-S7 — capability flags for the chat selector. `web_search` marks
+  // *native* search; any model can also search via the chat_web_search
+  // plugin toggle.
+  reasoning: boolean
+  web_search: boolean
 }
 
 export function getAdminConfig(): Promise<AdminConfig> {
@@ -575,8 +583,10 @@ export function patchAdminConfig(body: AdminConfigPatch): Promise<AdminConfig> {
   return request<AdminConfig>('/admin/config', { method: 'PATCH', body })
 }
 
-export function getAdminModels(): Promise<AdminModel[]> {
-  return request<AdminModel[]>('/admin/models')
+export function getAdminModels(
+  usage: 'enrichment' | 'chat' = 'enrichment',
+): Promise<AdminModel[]> {
+  return request<AdminModel[]>('/admin/models', { query: { usage } })
 }
 
 // ── Admin users (E8-S5) ──────────────────────────────────────────────────────

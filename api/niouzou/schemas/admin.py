@@ -16,6 +16,8 @@ class AdminConfig(BaseModel):
     # E21-S1 — model used by the article chat. Always resolved (falls back
     # to ``openrouter_model`` when no override / env value is set).
     chat_model: str
+    # E21-S7 — OpenRouter web plugin on chat completions (internet search).
+    chat_web_search: bool
     openrouter_api_key: str | None
     max_keywords_per_article: int
     cron_fetch_interval: int
@@ -45,6 +47,7 @@ class AdminConfigPatch(BaseModel):
     # E21-S1 — empty string clears the override (chat falls back to the
     # enrichment model).
     chat_model: str | None = None
+    chat_web_search: bool | None = None
     openrouter_api_key: str | None = None
     max_keywords_per_article: int | None = Field(default=None, ge=1, le=50)
     cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
@@ -68,6 +71,11 @@ class AdminModel(BaseModel):
     input_price_per_m: float
     output_price_per_m: float
     context_length: int
+    # E21-S7 — capability flags for the chat selector: the model supports
+    # reasoning, / has *native* web search (any model can also search via the
+    # ``chat_web_search`` plugin toggle). Defaulted for backward compat.
+    reasoning: bool = False
+    web_search: bool = False
 
 
 class AdminUser(BaseModel):

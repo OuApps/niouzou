@@ -20,14 +20,22 @@ from niouzou.schemas.admin import AdminModel
 logger = logging.getLogger("niouzou.admin_models")
 
 # Caps from EPICS.md (E8-S3): cheap text-to-text instruct models only.
-_MAX_INPUT_PRICE_PER_M = 0.10
-_MAX_OUTPUT_PRICE_PER_M = 0.40
+# Enrichment runs on every article, so the price gate is tight. The chat
+# (E21-S7) is an on-demand, per-question usage where reasoning quality
+# matters — its caps are much wider so reasoning-tier models (DeepSeek R1,
+# o4-mini, Sonnet-class…) actually appear in the selector, while the
+# unaffordable flagship tier stays out.
+_PRICE_CAPS_PER_M = {
+    "enrichment": (0.10, 0.40),  # (input, output)
+    "chat": (5.0, 20.0),
+}
 _MIN_CONTEXT_LENGTH = 8000
 
-# In-process cache: a single dict shared across requests on this worker.
-# Replaced atomically on refresh so concurrent readers don't see a half list.
+# In-process cache: one entry per usage profile, shared across requests on
+# this worker. Replaced atomically on refresh so concurrent readers don't
+# see a half list.
 _CACHE_TTL_SECONDS = 3600.0
-_cache: tuple[float, list[AdminModel]] | None = None
+_cache: dict[str, tuple[float, list[AdminModel]]] = {}
 
 
 def _price_per_m(raw: object) -> float:
@@ -70,13 +78,14 @@ def _looks_chat_capable(item: dict) -> bool:
     return context_length >= _MIN_CONTEXT_LENGTH
 
 
-def _passes_filters(item: dict) -> bool:
+def _passes_filters(item: dict, usage: str) -> bool:
     pricing = item.get("pricing") or {}
     input_price = _price_per_m(pricing.get("prompt"))
     output_price = _price_per_m(pricing.get("completion"))
-    if input_price > _MAX_INPUT_PRICE_PER_M:
+    max_input, max_output = _PRICE_CAPS_PER_M[usage]
+    if input_price > max_input:
         return False
-    if output_price > _MAX_OUTPUT_PRICE_PER_M:
+    if output_price > max_output:
         return False
     if not _accepts_text_to_text(item.get("architecture")):
         return False
@@ -85,26 +94,55 @@ def _passes_filters(item: dict) -> bool:
     return True
 
 
+def _capabilities(item: dict) -> tuple[bool, bool]:
+    """(reasoning, web_search) read from the catalogue entry (E21-S7).
+
+    ``supported_parameters`` advertises reasoning support; native web search
+    shows up either as a ``web_search`` price or as the
+    ``web_search_options`` parameter. Any model can *also* search via
+    OpenRouter's web plugin (the ``chat_web_search`` setting) — this flag
+    only marks the ones with search built in.
+    """
+    params = item.get("supported_parameters") or []
+    if not isinstance(params, list):
+        params = []
+    reasoning = "reasoning" in params or "include_reasoning" in params
+    pricing = item.get("pricing") or {}
+    web = "web_search_options" in params or _price_per_m(pricing.get("web_search")) > 0
+    return reasoning, web
+
+
 def _to_admin_model(item: dict) -> AdminModel:
     pricing = item.get("pricing") or {}
+    reasoning, web_search = _capabilities(item)
     return AdminModel(
         id=item["id"],
         name=item.get("name") or item["id"],
         input_price_per_m=round(_price_per_m(pricing.get("prompt")), 4),
         output_price_per_m=round(_price_per_m(pricing.get("completion")), 4),
         context_length=int(item.get("context_length") or 0),
+        reasoning=reasoning,
+        web_search=web_search,
     )
 
 
-async def fetch_models(api_key: str | None) -> list[AdminModel]:
+async def fetch_models(
+    api_key: str | None, usage: str = "enrichment"
+) -> list[AdminModel]:
     """Hit the OpenRouter catalogue and apply the curation filters.
+
+    ``usage`` selects the curation profile: ``"enrichment"`` (tight price
+    caps — the historical E8-S3 list) or ``"chat"`` (E21-S7 — wider caps so
+    reasoning-tier models appear, sorted reasoning-first).
 
     Raises ``APIError(424)`` when the key is missing — the caller surfaces
     that to the admin so they wire up a key before picking a model.
     """
-    global _cache
-    if _cache is not None:
-        cached_at, items = _cache
+    if usage not in _PRICE_CAPS_PER_M:
+        raise APIError(422, "validation_error", f"Unknown usage: {usage}")
+    cached = _cache.get(usage)
+    if cached is not None:
+        cached_at, items = cached
         if time.monotonic() - cached_at < _CACHE_TTL_SECONDS:
             return items
 
@@ -140,13 +178,22 @@ async def fetch_models(api_key: str | None) -> list[AdminModel]:
             "OpenRouter returned an unexpected payload",
         )
 
-    curated = [_to_admin_model(item) for item in raw if isinstance(item, dict) and _passes_filters(item)]
-    curated.sort(key=lambda m: (m.input_price_per_m, m.name.lower()))
-    _cache = (time.monotonic(), curated)
+    curated = [
+        _to_admin_model(item)
+        for item in raw
+        if isinstance(item, dict) and _passes_filters(item, usage)
+    ]
+    if usage == "chat":
+        # Reasoning models first — that's what the chat selector is for.
+        curated.sort(
+            key=lambda m: (not m.reasoning, m.input_price_per_m, m.name.lower())
+        )
+    else:
+        curated.sort(key=lambda m: (m.input_price_per_m, m.name.lower()))
+    _cache[usage] = (time.monotonic(), curated)
     return curated
 
 
 def reset_cache() -> None:
     """Test helper — clear the in-process cache between runs."""
-    global _cache
-    _cache = None
+    _cache.clear()
