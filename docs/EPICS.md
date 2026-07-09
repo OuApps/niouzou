@@ -4851,17 +4851,37 @@ reste visible derrière.
 **Acceptance** : suite verte ; aucun test ne tape OpenRouter ni ne charge le modèle
 d'embedding.
 
-#### [ ] E21-S6 — (Suivi, hors v1) Persistance & reprise des conversations
+#### ~~E21-S6 — (Suivi, hors v1) Persistance & reprise des conversations~~ — abandonnée
 
-**But** : historiser les fils pour les rouvrir / reprendre, et/ou « promouvoir » un fil en
-plein écran (option B des maquettes).
+**Abandonnée le 2026-07-09** — décision mainteneur : les conversations restent éphémères,
+pas de besoin d'historisation. Conservée barrée comme trace de la décision (ne pas la
+re-proposer).
 
-- Tables `chat_conversation` (user, article, created_at) + `chat_message` (role, content,
-  created_at) ; endpoints list/get ; reprise du fil à l'ouverture du sheet.
-- Décision à prendre : rétention, quota par article/user, purge.
+#### [x] E21-S7 — (Bonus) Sélecteur de modèle adapté au chat : reasoning + recherche web
 
-**Acceptance** : à définir quand la story sera priorisée. Sert de marqueur pour ne pas
-sur-concevoir la v1.
+**But** : le sélecteur « Chat Model » de l'Admin proposait la même curation que
+l'enrichissement — des caps de prix serrés (≤ $0.10/M in, ≤ $0.40/M out) pensés pour un
+batch sur chaque article, qui excluaient de fait tous les modèles de reasoning. Le chat
+est un usage ponctuel où la qualité de raisonnement (et l'accès à Internet) compte.
+
+- `GET /admin/models?usage=chat` : profil de curation dédié — caps élargis
+  (≤ $5/M in, ≤ $20/M out : la classe DeepSeek R1 / o4-mini / Sonnet entre, les flagships
+  hors de prix restent dehors), cache séparé par profil. `usage=enrichment` (défaut)
+  inchangé.
+- `AdminModel` gagne deux flags lus du catalogue OpenRouter : `reasoning`
+  (`supported_parameters` contient `reasoning`/`include_reasoning`) et `web_search`
+  (recherche **native** : `web_search_options` ou `pricing.web_search > 0`). En curation
+  chat, tri reasoning-first ; les options du sélecteur affichent « · reasoning » /
+  « · web search ».
+- Nouveau réglage bool `chat_web_search` (env `CHAT_WEB_SEARCH`, overridable — premier
+  usage de `BOOL_KEYS` dans `SettingsService`) : quand actif, `ChatService` ajoute
+  `plugins: [{"id": "web"}]` au payload OpenRouter → **recherche Internet avec n'importe
+  quel modèle** (facturée à la recherche par OpenRouter). Toggle « Chat web search » dans
+  l'Admin sous le Chat Model, sauvegarde au clic (pas de dance edit/confirm pour un bool).
+
+**Acceptance** : le sélecteur chat liste des modèles reasoning au-dessus des caps
+d'enrichissement avec leurs tags ; le toggle web injecte le plugin dans l'appel (vérifié
+par capture du payload en test) ; l'enrichissement garde sa curation historique.
 
 > **Docs à mettre à jour à l'implémentation** (pas maintenant) :
 > `API_SPEC.md` (nouvel endpoint `POST /articles/{id}/chat`, champ `chat_model` dans

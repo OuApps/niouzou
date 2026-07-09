@@ -100,6 +100,9 @@ class ChatContext:
     api_key: str
     model: str
     payload_messages: list[dict[str, str]]
+    # E21-S7 — attach OpenRouter's web plugin so the assistant can search
+    # the internet (works with any model; billed per search by OpenRouter).
+    web_search: bool = False
 
 
 def _sse(event: str, data: dict) -> str:
@@ -166,6 +169,7 @@ class ChatService:
                 {"role": "system", "content": system},
                 *({"role": m.role, "content": m.content} for m in messages),
             ],
+            web_search=effective.chat_web_search,
         )
 
     async def stream(self, ctx: ChatContext) -> AsyncIterator[str]:
@@ -199,6 +203,12 @@ class ChatService:
                         # Ask OpenRouter to append usage (incl. cost) to the
                         # final chunk — spares the deferred /generation lookup.
                         "usage": {"include": True},
+                        # E21-S7 — OpenRouter web plugin (internet search).
+                        **(
+                            {"plugins": [{"id": "web"}]}
+                            if ctx.web_search
+                            else {}
+                        ),
                     },
                 ) as response:
                     if response.status_code >= 400:

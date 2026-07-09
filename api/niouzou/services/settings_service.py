@@ -35,6 +35,9 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
         # E21-S1 — dedicated model for the article chat; empty/unset falls
         # back to openrouter_model (see ``get`` / ``get_effective``).
         "chat_model",
+        # E21-S7 — enable OpenRouter's web plugin on chat completions so the
+        # assistant can search the internet (works with any model).
+        "chat_web_search",
         "max_keywords_per_article",
         "cron_fetch_interval",
         "cron_nightly_refresh_hour",
@@ -72,6 +75,13 @@ FLOAT_KEYS: Final[frozenset[str]] = frozenset(
     {"score_threshold", "random_surface_rate", "smart_lambda", "smart_beta"}
 )
 
+# Keys parsed as booleans — stored as "true"/"false" in the TEXT column.
+BOOL_KEYS: Final[frozenset[str]] = frozenset({"chat_web_search"})
+
+
+def _parse_bool(raw: str) -> bool:
+    return raw.strip().lower() in ("true", "1", "yes", "on")
+
 # Env-default lookups: SettingsService.get(key) falls back to these when no DB
 # override exists. Kept as a small registry so ``GET /admin/config`` can show
 # the user the same values the rest of the app would observe.
@@ -82,6 +92,7 @@ _DEFAULT_FROM_SETTINGS = {
     # in ``get`` / ``get_effective`` so a DB-overridden enrichment model is
     # honoured too (env-level fallback alone would miss it).
     "chat_model": lambda s: s.chat_model,
+    "chat_web_search": lambda s: s.chat_web_search,
     "max_keywords_per_article": lambda s: s.max_keywords_per_article,
     "cron_fetch_interval": lambda s: s.cron_fetch_interval,
     "cron_nightly_refresh_hour": lambda s: s.cron_nightly_refresh_hour,
@@ -118,6 +129,8 @@ class EffectiveConfig:
     # env CHAT_MODEL → effective openrouter_model), so consumers read this
     # field directly. The default only serves hand-built snapshots.
     chat_model: str = "openrouter/auto"
+    # E21-S7 — when true, chat completions carry OpenRouter's web plugin.
+    chat_web_search: bool = False
     enrichment_input_max_chars: int = 2500
     # E16 — defaulted so existing call sites (and tests) that build the
     # snapshot by hand keep working; get_effective() always fills them in.
@@ -190,6 +203,8 @@ class SettingsService:
             return int(override)
         if key in FLOAT_KEYS:
             return float(override)
+        if key in BOOL_KEYS:
+            return _parse_bool(override)
         if key == "scoring_mode":
             return normalize_scoring_mode(override)
         return override
@@ -238,7 +253,13 @@ class SettingsService:
         if value is None or value == "":
             await self.delete(key)
             return
-        stored = str(value)
+        # Booleans are normalised to "true"/"false" (str(True) would store
+        # "True", which reads back fine but keeps the column consistent).
+        stored = (
+            ("true" if value else "false")
+            if key in BOOL_KEYS and isinstance(value, bool)
+            else str(value)
+        )
         if key in INT_KEYS:
             # Validate now so an admin typo isn't silently persisted.
             int(stored)
@@ -276,6 +297,8 @@ class SettingsService:
                 return int(raw)
             if key in FLOAT_KEYS:
                 return float(raw)
+            if key in BOOL_KEYS:
+                return _parse_bool(raw)
             return raw
 
         return EffectiveConfig(
@@ -284,6 +307,7 @@ class SettingsService:
             # E21-S1 — same fallback chain as ``get``: DB override → env
             # CHAT_MODEL → effective openrouter_model.
             chat_model=resolve("chat_model") or resolve("openrouter_model"),  # type: ignore[arg-type]
+            chat_web_search=bool(resolve("chat_web_search")),
             max_keywords_per_article=resolve("max_keywords_per_article"),  # type: ignore[arg-type]
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
             cron_nightly_refresh_hour=resolve("cron_nightly_refresh_hour"),  # type: ignore[arg-type]

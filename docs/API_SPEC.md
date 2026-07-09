@@ -988,6 +988,7 @@ Sensitive fields (API keys) are masked.
 {
   "openrouter_model": "openrouter/auto",
   "chat_model": "anthropic/claude-sonnet-5",
+  "chat_web_search": false,
   "openrouter_api_key": "sk-...a3f9",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
@@ -1021,6 +1022,7 @@ the next cron run.
 {
   "openrouter_model": "openrouter/auto",
   "chat_model": "anthropic/claude-sonnet-5",
+  "chat_web_search": true,
   "openrouter_api_key": "sk-...",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
@@ -1037,6 +1039,9 @@ the next cron run.
 > Empty string clears the override; unset falls back to the **effective**
 > `openrouter_model` (DB override included), so the chat follows the enrichment
 > model until explicitly configured.
+> `chat_web_search` (E21-S7) attaches OpenRouter's web plugin to chat
+> completions so the assistant can search the internet — works with any model,
+> billed per search by OpenRouter. Default `false`.
 > `cron_fetch_interval` is in minutes (1–1440).
 > `cron_nightly_refresh_hour` is 0–23 (UTC hour).
 > `enrichment_input_max_chars` is an int in `[500, 20000]` (default `2500`); caps the combined LLM enrichment input (header + vocab + title + article excerpt). Raising it grounds summaries on more real text (fewer hallucinations) at the cost of more tokens/article; takes effect on the next pipeline run.
@@ -1056,29 +1061,45 @@ the next cron run.
 
 ### GET /admin/models
 Fetch the curated list of OpenRouter models available for selection.
-Fetched from the OpenRouter API (once per hour), filtered by price and capability.
+Fetched from the OpenRouter API (once per hour per profile), filtered by
+price and capability.
 
 **Requires admin role (E8-S1)**
+
+**Query parameters**
+
+| Param | Type | Required | Description |
+|---|---|---|---|
+| `usage` | `"enrichment" \| "chat"` | No | **E21-S7** — curation profile. `enrichment` (default): tight price caps for the per-article batch. `chat`: wider caps so reasoning-tier models appear, sorted reasoning-first. |
 
 **Response `200`**
 ```json
 [
   {
+    "id": "deepseek/deepseek-r1",
+    "name": "DeepSeek R1",
+    "input_price_per_m": 0.5,
+    "output_price_per_m": 2.15,
+    "context_length": 128000,
+    "reasoning": true,
+    "web_search": false
+  },
+  {
     "id": "openrouter/auto",
     "name": "Auto (best value)",
     "input_price_per_m": 0.0,
     "output_price_per_m": 0.0,
-    "context_length": 128000
-  },
-  {
-    "id": "anthropic/claude-3-5-sonnet",
-    "name": "Claude 3.5 Sonnet",
-    "input_price_per_m": 0.003,
-    "output_price_per_m": 0.015,
-    "context_length": 200000
+    "context_length": 128000,
+    "reasoning": false,
+    "web_search": false
   }
 ]
 ```
+
+> `reasoning` / `web_search` (E21-S7) are capability flags read from the
+> OpenRouter catalogue. `web_search` marks **native** search support — any
+> model can also search via the `chat_web_search` setting (OpenRouter web
+> plugin).
 
 ---
 

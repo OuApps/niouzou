@@ -46,6 +46,9 @@ export const Admin = () => {
     [],
   )
   const { data: models } = useApiData(getAdminModels, [])
+  // E21-S7 — the chat selector gets its own curation (wider price caps so
+  // reasoning-tier models appear, reasoning-first sort, capability flags).
+  const { data: chatModels } = useApiData(() => getAdminModels('chat'), [])
   const { data: users, loading: usersLoading, error: usersError, reload: reloadUsers } = useApiData(
     () => getAdminUsers(),
     [],
@@ -125,16 +128,18 @@ export const Admin = () => {
                 models={models ?? []}
                 onSave={reloadConfig}
               />
-              {/* E21-S1 — dedicated model for the article chat; defaults to
-                  the enrichment model server-side when never configured. */}
+              {/* E21-S1/S7 — dedicated model for the article chat; defaults
+                  to the enrichment model server-side when never configured.
+                  Uses the chat curation (reasoning-first, capability tags). */}
               <ConfigRow
                 label="Chat Model"
                 config={config}
                 field="chat_model"
                 type="model"
-                models={models ?? []}
+                models={chatModels ?? []}
                 onSave={reloadConfig}
               />
+              <ChatWebSearchRow config={config} onSave={reloadConfig} />
               <ConfigRow
                 label="Fetch Interval (minutes)"
                 config={config}
@@ -471,6 +476,9 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name} — ${m.input_price_per_m.toFixed(2)} in / ${m.output_price_per_m.toFixed(2)} out per M tokens
+                  {/* E21-S7 — capability tags in the chat curation */}
+                  {m.reasoning ? ' · reasoning' : ''}
+                  {m.web_search ? ' · web search' : ''}
                 </option>
               ))}
             </select>
@@ -556,6 +564,63 @@ const ConfigRow = ({ label, config, field, type, models = [], min, max, onSave }
 }
 
 // ── E16-S4 — Scoring engine toggle ────────────────────────────────────────────
+
+/**
+ * E21-S7 — toggle for OpenRouter's web plugin on chat completions. Lets the
+ * article chat search the internet with any model (OpenRouter bills per
+ * search). A checkbox row, saved on change — no edit/confirm dance needed
+ * for a boolean.
+ */
+const ChatWebSearchRow = ({
+  config,
+  onSave,
+}: {
+  config: AdminConfig
+  onSave: () => void
+}) => {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const toggle = async () => {
+    if (saving) return
+    setError(null)
+    setSaving(true)
+    try {
+      await patchAdminConfig({ chat_web_search: !config.chat_web_search })
+      onSave()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="glass-sm flex flex-col" style={{ borderRadius: 16, padding: '12px 14px' }}>
+      <label
+        className="flex items-center justify-between"
+        style={{ cursor: saving ? 'default' : 'pointer', gap: 10 }}
+      >
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          Chat web search
+          <span style={{ display: 'block', fontSize: 10, color: 'var(--text-tertiary)', marginTop: 2 }}>
+            Let the chat search the internet (any model, billed per search by OpenRouter)
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={config.chat_web_search}
+          disabled={saving}
+          onChange={toggle}
+          style={{ accentColor: 'var(--accent)', width: 16, height: 16, flexShrink: 0 }}
+        />
+      </label>
+      {error && (
+        <span style={{ fontSize: 11, color: 'var(--action-dislike)', marginTop: 6 }}>{error}</span>
+      )}
+    </div>
+  )
+}
 
 interface ScoringEngineSectionProps {
   config: AdminConfig

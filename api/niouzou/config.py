@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # working without touching their config. Admin-overridable via
     # app_settings like the rest.
     chat_model: str | None = None
+    # E21-S7 — attach OpenRouter's web plugin to chat completions so the
+    # assistant can search the internet (billed per search by OpenRouter;
+    # works with any model). Admin-overridable via app_settings.
+    chat_web_search: bool = False
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5

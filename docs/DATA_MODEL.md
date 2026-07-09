@@ -37,7 +37,7 @@ CREATE TABLE users (
 ### app_settings
 ```sql
 CREATE TABLE app_settings (
-  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, chat_model, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article, score_threshold, scoring_mode, smart_topk, smart_lambda, smart_beta, smart_decay_halflife_days, smart_rescore_window_days)
+  key           VARCHAR NOT NULL PRIMARY KEY,      -- setting key (openrouter_api_key, openrouter_model, chat_model, chat_web_search, cron_fetch_interval, cron_refresh_weights_hour, max_keywords_per_article, score_threshold, scoring_mode, smart_topk, smart_lambda, smart_beta, smart_decay_halflife_days, smart_rescore_window_days)
   value         TEXT NOT NULL,                     -- setting value (overrides env var at runtime)
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
