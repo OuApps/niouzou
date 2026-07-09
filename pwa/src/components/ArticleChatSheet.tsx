@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Send, Sparkles, X } from 'lucide-react'
 import { ApiError, streamArticleChat } from '../api'
 import type { ChatTurn } from '../api'
@@ -19,6 +20,11 @@ const SUGGESTIONS = [
 
 // Swipe-down on the header region closes the sheet past this distance.
 const SWIPE_CLOSE_PX = 60
+
+// Abort the request if the first token hasn't arrived after this long —
+// free-tier OpenRouter models can queue for minutes, and an infinite typing
+// indicator with no way out is worse than an error + retry.
+const FIRST_TOKEN_TIMEOUT_MS = 45_000
 
 type Phase = 'idle' | 'waiting' | 'streaming'
 
@@ -77,12 +83,22 @@ export const ArticleChatSheet = ({ article, onClose }: Props) => {
       setPhase('waiting')
       setError(null)
 
+      // Watchdog: a model that never produces a first token (queued free
+      // tier, dead upstream) must not leave the typing indicator spinning
+      // forever — abort and surface a retry instead.
+      let stalled = false
+      const watchdog = window.setTimeout(() => {
+        stalled = true
+        controller.abort()
+      }, FIRST_TOKEN_TIMEOUT_MS)
+
       let acc = ''
       streamArticleChat(
         article.id,
         messages,
         {
           onToken: (delta) => {
+            window.clearTimeout(watchdog)
             acc += delta
             setPhase('streaming')
             setThread([...messages, { role: 'assistant', content: acc }])
@@ -96,7 +112,13 @@ export const ArticleChatSheet = ({ article, onClose }: Props) => {
       )
         .then(() => setPhase('idle'))
         .catch((e: unknown) => {
-          if (e instanceof DOMException && e.name === 'AbortError') return
+          window.clearTimeout(watchdog)
+          if (e instanceof DOMException && e.name === 'AbortError') {
+            if (!stalled) return // closed / superseded by a new send
+            setPhase('idle')
+            setError('The assistant is not responding. Try again.')
+            return
+          }
           setPhase('idle')
           setError(
             e instanceof ApiError ? e.message : 'The assistant is unavailable.',
@@ -137,7 +159,10 @@ export const ArticleChatSheet = ({ article, onClose }: Props) => {
 
   const busy = phase !== 'idle'
 
-  return (
+  // Portal to <body>: mounted inside the feed slide the sheet would live in
+  // the `.feed-snap` z-10 stacking context, where the root-level BottomNav
+  // (z-40) paints OVER it — hiding the composer behind the nav (E21 fix).
+  return createPortal(
     <>
       {/* Backdrop — tap to dismiss, article stays visible behind. */}
       <div
@@ -153,26 +178,7 @@ export const ArticleChatSheet = ({ article, onClose }: Props) => {
       <div
         role="dialog"
         aria-label={`Chat about: ${article.title}`}
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          // Mirror the app's centred phone column (E19-S1) so the sheet
-          // never stretches wider than the content it belongs to.
-          width: '100%',
-          maxWidth: 480,
-          height: '78dvh',
-          zIndex: 51,
-          display: 'flex',
-          flexDirection: 'column',
-          background: 'rgba(20, 24, 34, 0.98)',
-          borderRadius: '24px 24px 0 0',
-          border: '1px solid var(--glass-border)',
-          borderBottom: 'none',
-          boxShadow: '0 -20px 50px rgba(0,0,0,0.5)',
-          animation: 'chat-sheet-up 0.3s cubic-bezier(0.32, 0.72, 0, 1)',
-        }}
+        className="chat-sheet"
       >
         {/* Grabber + article context header — also the swipe-down handle. */}
         <div onTouchStart={onHeaderTouchStart} onTouchEnd={onHeaderTouchEnd}>
@@ -407,7 +413,8 @@ export const ArticleChatSheet = ({ article, onClose }: Props) => {
           </button>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   )
 }
 
