@@ -25,6 +25,7 @@
 | EPIC 11 | Filtres Explore | EPIC 9, EPIC 10 |
 | EPIC 12 | ~~Robustesse des keywords~~ (remplacée par EPIC 16) | EPIC 5, EPIC 9 |
 | EPIC 16 | Smart Match — scoring sémantique par embeddings | EPIC 5, EPIC 9, EPIC 10 |
+| EPIC 21 | Chat IA sur un article (bottom sheet) | EPIC 5, EPIC 9 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -4694,3 +4695,170 @@ pas** l'être (planning APScheduler interne → endormi, rien ne le réveille). 
 worker serait un **Railway Cron Job** lançant `run_once` (conteneur éteint entre runs, 0 € idle) —
 mais impose le modèle embarqué dans l'image (S4, +1,2 Go) sinon re-DL à chaque run, et la perte des
 endpoints `/run` + `/compact`. Écarté au profit du correctif page-cache (2026-06-29).
+
+---
+
+## EPIC 21 — Chat IA sur un article (bottom sheet)
+
+**But** : depuis n'importe quel article, ouvrir une conversation avec un LLM dont le
+**contexte de départ est l'article** (résumé + texte crawlé). L'utilisateur pose des
+questions, obtient des précisions, ou élargit le sujet — un fil de discussion classique,
+ancré sur l'article. Le placement retenu (maquettes du 2026-07-09, option A choisie par le
+mainteneur) est un **bottom sheet** qui remonte du bas et laisse l'article visible,
+assombri, derrière — le même geste que le `ScoreDebugSheet` déjà en place.
+
+**Reference** : `docs/DESIGN_SYSTEM.md` (bottom sheet = pattern existant), `docs/API_SPEC.md`,
+`docs/ARCHITECTURE.md` (OpenRouter, variables d'env), `docs/DATA_MODEL.md` (app_settings).
+
+**Dépend de** : EPIC 5 (enrichment / OpenRouter), EPIC 9 (slide plein écran = point d'entrée).
+
+### Décisions produit (v1) — tranchées par défaut, à confirmer par le mainteneur
+
+Les trois arbitrages ouverts de la phase maquettes ont été fixés pour une v1 livrable ;
+chacun est réversible sans jeter le socle :
+
+1. **Persistance : éphémère (en mémoire côté PWA).** La conversation vit dans le state du
+   composant, rien en base. Rouvrir le sheet (ou changer d'article) repart d'un fil vide.
+   → Motif : zéro migration, zéro nouvelle table, endpoint sans état. La persistance DB
+   (reprise du fil, historique) est explicitement une **story de suivi** (E21-S6), pas la v1.
+2. **Contexte injecté : résumé exécutif ⊕ texte crawlé, tronqué.** Le *system prompt*
+   combine `summary_executive` et `content` de l'article, plafonné à
+   `enrichment_input_max_chars` (réutilise le knob existant, même logique que
+   l'enrichissement). Fallback sur le résumé seul quand `content` est absent.
+   → Motif : meilleur ancrage, moins d'hallucinations, aucune nouvelle config.
+3. **Rendu : streaming SSE.** La réponse s'écrit token par token (l'effet « en train
+   d'écrire » demandé). Un indicateur de frappe (3 points) précède le premier token. Le
+   mode « réponse d'un bloc » (JSON simple) reste le repli si le streaming coûte trop cher
+   à livrer — le contrat d'API est pensé pour dégrader proprement (cf. E21-S2).
+
+### Contraintes d'architecture à respecter
+
+- **Le chat est un appel live depuis le service `api` (uvicorn), pas le worker.** Or
+  `services/openrouter_client.py` est **synchrone** et pensé pour le batch d'enrichissement
+  (worker). Le chat a besoin d'un **chemin async** : soit un petit client async dédié
+  (`httpx.AsyncClient` sur `/chat/completions`, `stream=True`), soit exécuter le SDK sync
+  dans un threadpool. **Ne pas importer torch / embeddings** dans ce chemin — le service
+  `api` doit rester léger (cf. EPIC 20).
+- **Réutiliser le suivi de coût OpenRouter** (`llm_usage_log`, E10-S7) pour que le chat
+  apparaisse dans « Coût OpenRouter » du panel System. En streaming, la comptabilité se fait
+  sur l'événement final d'usage renvoyé par OpenRouter (ou via `/generation` en différé,
+  comme l'enrichissement).
+- **AI-only.** Sans clé OpenRouter, le chat est indisponible : le back renvoie une erreur
+  explicite (`ai_disabled`) et le front **masque le point d'entrée** — cohérent avec les
+  pins / l'écran Keywords / la compaction, déjà AI-only.
+
+### Stories
+
+#### [ ] E21-S1 — Réglage : modèle de conversation (`chat_model`)
+
+**But** : un modèle OpenRouter dédié au chat, distinct de celui de l'enrichissement
+(le chat veut du dialogue/raisonnement ; l'enrichissement veut rapide + bon marché).
+
+- Nouvelle clé overridable `chat_model` dans `SettingsService.OVERRIDABLE_KEYS`
+  (`settings_service.py`), avec son défaut env `CHAT_MODEL` dans `config.py`. Défaut :
+  reprendre `openrouter_model` si non défini (pas de régression pour les instances
+  existantes), sinon `openrouter/auto`.
+- Exposé par `GET /admin/config` et modifiable via `PATCH /admin/config` (champ
+  `chat_model`, même validation qu'`openrouter_model`).
+- Écran Admin : un `ConfigRow type="model"` (réutilise `GET /admin/models`) placé **juste
+  sous** le modèle d'enrichissement, libellé « Modèle de conversation ».
+
+**Acceptance** : `chat_model` lisible/modifiable via l'API et l'écran Admin ; défaut = modèle
+d'enrichissement quand non configuré ; masqué comme les autres réglages si besoin.
+
+#### [ ] E21-S2 — Endpoint chat streaming `POST /articles/{id}/chat`
+
+**But** : relayer une conversation vers OpenRouter, contexte article injecté.
+
+- Router mince `articles.py` → nouveau `ChatService` (`services/chat_service.py`, toute la
+  logique). Jamais d'appel LLM ou DB direct depuis le router.
+- **Requête** : `{ "messages": [{ "role": "user"|"assistant", "content": "..." }] }` —
+  l'historique complet du fil (v1 éphémère : le client renvoie tout à chaque tour).
+- **System prompt** construit par `ChatService` : consigne (« réponds en te basant sur cet
+  article, en français, concis ») ⊕ titre ⊕ `summary_executive` ⊕ `content` tronqué à
+  `enrichment_input_max_chars`. Fallback résumé seul si pas de contenu.
+- **Garde-fous** : l'article doit appartenir à une source de l'utilisateur (`404`/`403`
+  sinon, comme `score-debug`) ; historique borné (nb de messages + longueur totale) ;
+  `messages` non vide et se terminant par un tour `user`.
+- **Réponse** : `text/event-stream` (SSE) — événements `token` puis un `done` final.
+  Contrat pensé pour un repli non-streaming (même payload agrégé) si E21-S4 le choisit.
+- **AI absente** : `409 { "error": "ai_disabled", ... }` quand pas de clé OpenRouter.
+- Coût loggé dans `llm_usage_log` (réutilise E10-S7).
+
+**Acceptance** : un POST avec un fil renvoie une réponse ancrée sur l'article en streaming ;
+403/404 sur article étranger/inexistant ; 409 sans clé ; le coût remonte dans `/stats`.
+
+#### [ ] E21-S3 — Point d'entrée sur la slide article
+
+**But** : déclencher le chat depuis l'article.
+
+- Bouton pleine largeur **« Discuter de cet article »** dans `FeedArticleSlide.tsx`, juste
+  sous « Lire l'article complet », teinté accent (dégradé orange→cyan léger pour se
+  distinguer sans crier). Icône `MessageCircle` (lucide).
+- Masqué quand l'IA est absente (pas de `summary_executive` **et** signal AI-off) — même
+  règle que le résumé IA / les pins.
+- (Optionnel, à trancher à l'implémentation) 4ᵉ bouton `MessageCircle` dans la barre
+  d'action `👎 / 🔖 / 👍`. Les deux affordances peuvent coexister ; par défaut on livre
+  **seulement le bouton sous le résumé** (barre d'action laissée à 3 pour ne pas la serrer).
+
+**Acceptance** : le bouton ouvre le sheet (E21-S4) ; invisible sans IA ; conforme au
+design system (radius 14, `--accent-border`, `--accent-subtle`).
+
+#### [ ] E21-S4 — Bottom sheet de conversation (composant `ArticleChatSheet`)
+
+**But** : la surface de chat, calquée sur `ScoreDebugSheet` (bottom sheet, **pas** `Modal`).
+
+- Nouveau composant `components/ArticleChatSheet.tsx`, monté paresseusement (comme
+  `ScoreDebugSheet`) : ferme sur backdrop, Escape, swipe-down. Hauteur ~78 %,
+  `border-radius: 24 24 0 0`, `--bg-elevated`, grabber en tête.
+- **En-tête de contexte** : miniature + titre de l'article (line-clamp 2) + libellé
+  « ✦ Contexte : l'article » + bouton fermer.
+- **Fil** : bulles user (fill accent, texte `#0c1018`) / assistant (glass), scroll auto vers
+  le bas à chaque token. Indicateur de frappe (3 points, anim `bob`) avant le 1er token.
+- **Suggestions de départ** (pastilles) : 2-3 amorces (« Un exemple ? », « Et les
+  perfs ? »…) tant que le fil est vide.
+- **Composer** : champ arrondi + bouton envoi (rond, fill accent). Gestion du clavier mobile
+  (le sheet reste utilisable, input visible).
+- **États** : chargement (typing), streaming (texte qui s'écrit), erreur (message + retry),
+  IA absente (le point d'entrée n'aurait pas dû s'afficher, mais garde défensive).
+- Client API typé dans `pwa/src/api/` (lecture du flux SSE via `fetch` + `ReadableStream`),
+  types dans `pwa/src/types/`.
+- `BlobBackground` : le sheet est au-dessus de la slide qui le porte déjà — pas d'écran plein
+  nouveau, donc rien à ajouter.
+
+**Acceptance** : depuis un article, le sheet s'ouvre, la 1ʳᵉ réponse s'écrit en streaming
+avec l'indicateur de frappe, le fil scrolle, se ferme d'un swipe et rend au feed ; l'article
+reste visible derrière.
+
+#### [ ] E21-S5 — Tests
+
+- **Back** : `ChatService` — construction du system prompt (troncature, fallback résumé
+  seul), garde-fous (article étranger → 403, inexistant → 404, historique invalide → 422,
+  IA absente → 409). Mock OpenRouter (pas d'appel réseau réel ; injecter un faux client).
+  Vérifier l'écriture `llm_usage_log`.
+- **Front** : rendu des états du sheet (typing / streaming / erreur), point d'entrée masqué
+  sans IA. Pas de vrai LLM.
+
+**Acceptance** : suite verte ; aucun test ne tape OpenRouter ni ne charge le modèle
+d'embedding.
+
+#### [ ] E21-S6 — (Suivi, hors v1) Persistance & reprise des conversations
+
+**But** : historiser les fils pour les rouvrir / reprendre, et/ou « promouvoir » un fil en
+plein écran (option B des maquettes).
+
+- Tables `chat_conversation` (user, article, created_at) + `chat_message` (role, content,
+  created_at) ; endpoints list/get ; reprise du fil à l'ouverture du sheet.
+- Décision à prendre : rétention, quota par article/user, purge.
+
+**Acceptance** : à définir quand la story sera priorisée. Sert de marqueur pour ne pas
+sur-concevoir la v1.
+
+> **Docs à mettre à jour à l'implémentation** (pas maintenant) :
+> `API_SPEC.md` (nouvel endpoint `POST /articles/{id}/chat`, champ `chat_model` dans
+> `GET/PATCH /admin/config` et `GET /admin/models`), `DATA_MODEL.md` (clé `chat_model` dans
+> `app_settings` ; tables chat **seulement** si E21-S6 est faite), `ARCHITECTURE.md`
+> (variable d'env `CHAT_MODEL`, note « client OpenRouter async côté api », le chat dans la
+> liste des consommateurs OpenRouter / coût), `DESIGN_SYSTEM.md` (pattern « bottom sheet de
+> chat », point d'entrée sur la slide, réglage Admin « Modèle de conversation »),
+> `CONVENTIONS.md` si un pattern de client SSE async est introduit.
