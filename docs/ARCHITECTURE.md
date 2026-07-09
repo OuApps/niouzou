@@ -415,6 +415,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | ⚙️ compose | App database credentials (defaults: `niouzou`/`niouzou`/`niouzou`) |
 | `OPENROUTER_API_KEY` | ❌ | Enables AI enrichment and scoring |
 | `OPENROUTER_MODEL` | ❌ | Model to use (default: `google/gemma-4-26b-a4b-it:free`) |
+| `CHAT_MODEL` | ❌ | E21-S1 — OpenRouter model for the article chat (`POST /articles/{id}/chat`). Unset → falls back to the **effective** `OPENROUTER_MODEL` (DB override included). Overridable via `PATCH /admin/config`. Unlike enrichment (sync client on the worker), the chat streams from the `api` process via its own async httpx path (`services/chat_service.py`) — never imports torch |
 | `SCORE_THRESHOLD` | ❌ | Minimum *active* score to surface an article (0.0–1.0, default: `0.0`; cold/NULL rows bypass it) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
 | `RANDOM_SURFACE_RATE` | ❌ | Share (0.0–1.0) of sub-threshold articles randomly slipped into the feed to break the echo chamber (default: `0.05`) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request). Only bites when `SCORE_THRESHOLD > 0`, since with the default `0.0` every article already clears the threshold |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |

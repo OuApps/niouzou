@@ -4749,7 +4749,7 @@ chacun est réversible sans jeter le socle :
 
 ### Stories
 
-#### [ ] E21-S1 — Réglage : modèle de conversation (`chat_model`)
+#### [x] E21-S1 — Réglage : modèle de conversation (`chat_model`)
 
 **But** : un modèle OpenRouter dédié au chat, distinct de celui de l'enrichissement
 (le chat veut du dialogue/raisonnement ; l'enrichissement veut rapide + bon marché).
@@ -4766,7 +4766,7 @@ chacun est réversible sans jeter le socle :
 **Acceptance** : `chat_model` lisible/modifiable via l'API et l'écran Admin ; défaut = modèle
 d'enrichissement quand non configuré ; masqué comme les autres réglages si besoin.
 
-#### [ ] E21-S2 — Endpoint chat streaming `POST /articles/{id}/chat`
+#### [x] E21-S2 — Endpoint chat streaming `POST /articles/{id}/chat`
 
 **But** : relayer une conversation vers OpenRouter, contexte article injecté.
 
@@ -4832,10 +4832,11 @@ reste visible derrière.
 
 #### [ ] E21-S5 — Tests
 
-- **Back** : `ChatService` — construction du system prompt (troncature, fallback résumé
-  seul), garde-fous (article étranger → 403, inexistant → 404, historique invalide → 422,
-  IA absente → 409). Mock OpenRouter (pas d'appel réseau réel ; injecter un faux client).
-  Vérifier l'écriture `llm_usage_log`.
+- **Back** *(livré avec S1/S2 — `tests/test_chat.py`)* : `ChatService` — construction du
+  system prompt (troncature, fallback résumé seul), garde-fous (article étranger → 403,
+  inexistant → 404, historique invalide → 422, IA absente → 409). OpenRouter mocké en
+  respx (flux SSE simulé — jamais d'appel réseau réel). Écriture `llm_usage_log` vérifiée
+  (coût lu dans le chunk d'usage in-stream, pas de lookup `/generation` différé).
 - **Front** : rendu des états du sheet (typing / streaming / erreur), point d'entrée masqué
   sans IA. Pas de vrai LLM.
 

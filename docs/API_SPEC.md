@@ -354,6 +354,59 @@ user's `keyword_weights`).
 
 ---
 
+### POST /articles/{id}/chat
+**E21-S2** — Discuss the article with the LLM. The server injects the article
+(title + `summary_executive` + `content` truncated to
+`enrichment_input_max_chars`) as the system prompt and relays the thread to
+OpenRouter using the `chat_model` setting. **Stateless in v1** — the client
+sends the whole thread on every turn; nothing is persisted server-side.
+
+**Request**
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Pourquoi la sûreté mémoire compte autant ?" },
+    { "role": "assistant", "content": "En C++, ~70 % des failles…" },
+    { "role": "user", "content": "Un exemple concret ?" }
+  ]
+}
+```
+
+Bounds (422 on violation): 1–40 messages, ≤ 4 000 chars per message,
+≤ 24 000 chars total, roles `user | assistant` only, **last message must be a
+`user` turn**.
+
+**Response `200`** — `text/event-stream` (SSE):
+```
+event: token
+data: {"delta": "Prends "}
+
+event: token
+data: {"delta": "l'exemple du…"}
+
+event: done
+data: {"model": "anthropic/claude-sonnet-5", "prompt_tokens": 812, "completion_tokens": 164}
+```
+
+A mid-stream upstream failure (OpenRouter down, key revoked…) can no longer
+change the HTTP status — it surfaces as a final event instead:
+```
+event: error
+data: {"error": "upstream_error", "message": "OpenRouter unreachable"}
+```
+
+Every completed exchange is appended to `llm_usage_log` (cost included via
+OpenRouter's in-stream usage accounting) so chat spend shows up in the System
+panel's OpenRouter bill.
+
+**Errors** (regular JSON, emitted before any streaming starts)
+- `403 forbidden` — article belongs to another user's source.
+- `404 not_found` — no article with that id.
+- `409 ai_disabled` — no OpenRouter API key configured (the chat is AI-only).
+- `422 validation_error` — thread bounds violated (see above).
+
+---
+
 ## Saved Articles
 
 ### GET /saved
@@ -934,6 +987,7 @@ Sensitive fields (API keys) are masked.
 ```json
 {
   "openrouter_model": "openrouter/auto",
+  "chat_model": "anthropic/claude-sonnet-5",
   "openrouter_api_key": "sk-...a3f9",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
@@ -966,6 +1020,7 @@ the next cron run.
 ```json
 {
   "openrouter_model": "openrouter/auto",
+  "chat_model": "anthropic/claude-sonnet-5",
   "openrouter_api_key": "sk-...",
   "max_keywords_per_article": 25,
   "cron_fetch_interval": 15,
@@ -978,6 +1033,10 @@ the next cron run.
 ```
 
 > `openrouter_api_key` accepts the full secret key (or empty string to disable AI).
+> `chat_model` (E21-S1) is the OpenRouter model used by `POST /articles/{id}/chat`.
+> Empty string clears the override; unset falls back to the **effective**
+> `openrouter_model` (DB override included), so the chat follows the enrichment
+> model until explicitly configured.
 > `cron_fetch_interval` is in minutes (1–1440).
 > `cron_nightly_refresh_hour` is 0–23 (UTC hour).
 > `enrichment_input_max_chars` is an int in `[500, 20000]` (default `2500`); caps the combined LLM enrichment input (header + vocab + title + article excerpt). Raising it grounds summaries on more real text (fewer hallucinations) at the cost of more tokens/article; takes effect on the next pipeline run.

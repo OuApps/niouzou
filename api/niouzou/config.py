@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     # Per-request timeout for OpenRouter calls; free models can be slow.
     openrouter_timeout: float = 60.0
+    # E21-S1 — OpenRouter model for the article chat (conversation wants a
+    # dialogue/reasoning model; enrichment wants cheap + fast). None → falls
+    # back to the effective openrouter_model so existing instances keep
+    # working without touching their config. Admin-overridable via
+    # app_settings like the rest.
+    chat_model: str | None = None
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5
