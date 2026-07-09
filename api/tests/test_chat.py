@@ -275,6 +275,95 @@ async def test_stream_upstream_http_error_yields_error_event(db_session):
     assert (await db_session.execute(select(LLMUsageLog))).first() is None
 
 
+# ── Endpoint wiring — full HTTP round-trip through the app ──────────────────
+# httpx.AsyncClient + ASGITransport (the test_pipeline_runs.py pattern —
+# TestClient would corrupt the shared asyncpg pool). respx only patches the
+# *default* transports, so it mocks the app's outbound OpenRouter call while
+# leaving the explicit ASGITransport untouched.
+
+
+async def _app_client(user_id):
+    import httpx
+
+    from niouzou.deps import get_current_user
+    from niouzou.main import app
+
+    class _FakeUser:
+        id = user_id
+        is_admin = False
+
+    app.dependency_overrides[get_current_user] = lambda: _FakeUser()
+    transport = httpx.ASGITransport(app=app)
+    return app, httpx.AsyncClient(transport=transport, base_url="http://t")
+
+
+@respx.mock
+async def test_chat_endpoint_streams_sse(db_session):
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await make_article(db_session, source, title="Rust vs C++")
+    await SettingsService(db_session).set("openrouter_api_key", "sk-test")
+    await db_session.commit()
+
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            content=_openrouter_sse("Hello", usage={"prompt_tokens": 1, "completion_tokens": 1}),
+            headers={"content-type": "text/event-stream"},
+        )
+    )
+
+    app, client = await _app_client(user.id)
+    try:
+        async with client:
+            resp = await client.post(
+                f"/api/v1/articles/{article.id}/chat",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = resp.text
+        assert 'event: token\ndata: {"delta": "Hello"}' in body
+        assert "event: done" in body
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_chat_endpoint_422_on_assistant_last_turn(db_session):
+    user = await make_user(db_session)
+    await db_session.commit()
+
+    app, client = await _app_client(user.id)
+    try:
+        async with client:
+            resp = await client.post(
+                "/api/v1/articles/00000000-0000-0000-0000-000000000000/chat",
+                json={"messages": [{"role": "assistant", "content": "hi"}]},
+            )
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_chat_endpoint_409_without_api_key(db_session):
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await make_article(db_session, source)
+    await db_session.commit()
+
+    app, client = await _app_client(user.id)
+    try:
+        async with client:
+            resp = await client.post(
+                f"/api/v1/articles/{article.id}/chat",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "ai_disabled"
+    finally:
+        app.dependency_overrides.clear()
+
+
 @respx.mock
 async def test_stream_missing_usage_still_completes(db_session):
     """A stream without a usage chunk logs a zero-cost row (best-effort)."""
