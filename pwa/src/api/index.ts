@@ -448,6 +448,9 @@ export function compactKeywordsReject(id: string): Promise<void> {
 
 export interface AdminConfig {
   openrouter_model: string
+  // E21-S1 — model used by the article chat (falls back to openrouter_model
+  // server-side when unset).
+  chat_model: string
   openrouter_api_key: string | null
   max_keywords_per_article: number
   cron_fetch_interval: number
@@ -464,6 +467,7 @@ export interface AdminConfig {
 
 export interface AdminConfigPatch {
   openrouter_model?: string
+  chat_model?: string
   openrouter_api_key?: string
   max_keywords_per_article?: number
   cron_fetch_interval?: number

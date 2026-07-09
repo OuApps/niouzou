@@ -125,6 +125,16 @@ export const Admin = () => {
                 models={models ?? []}
                 onSave={reloadConfig}
               />
+              {/* E21-S1 — dedicated model for the article chat; defaults to
+                  the enrichment model server-side when never configured. */}
+              <ConfigRow
+                label="Chat Model"
+                config={config}
+                field="chat_model"
+                type="model"
+                models={models ?? []}
+                onSave={reloadConfig}
+              />
               <ConfigRow
                 label="Fetch Interval (minutes)"
                 config={config}

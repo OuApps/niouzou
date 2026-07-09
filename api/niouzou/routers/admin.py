@@ -67,6 +67,7 @@ def _config_response(  # type: ignore[no-untyped-def]
 ) -> AdminConfig:
     return AdminConfig(
         openrouter_model=effective.openrouter_model,
+        chat_model=effective.chat_model,
         openrouter_api_key=mask_api_key(effective.openrouter_api_key),
         max_keywords_per_article=effective.max_keywords_per_article,
         cron_fetch_interval=effective.cron_fetch_interval,

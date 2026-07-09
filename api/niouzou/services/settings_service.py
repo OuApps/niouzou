@@ -32,6 +32,9 @@ OVERRIDABLE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "openrouter_api_key",
         "openrouter_model",
+        # E21-S1 — dedicated model for the article chat; empty/unset falls
+        # back to openrouter_model (see ``get`` / ``get_effective``).
+        "chat_model",
         "max_keywords_per_article",
         "cron_fetch_interval",
         "cron_nightly_refresh_hour",
@@ -75,6 +78,10 @@ FLOAT_KEYS: Final[frozenset[str]] = frozenset(
 _DEFAULT_FROM_SETTINGS = {
     "openrouter_api_key": lambda s: s.openrouter_api_key,
     "openrouter_model": lambda s: s.openrouter_model,
+    # May be None — the fallback onto the effective openrouter_model happens
+    # in ``get`` / ``get_effective`` so a DB-overridden enrichment model is
+    # honoured too (env-level fallback alone would miss it).
+    "chat_model": lambda s: s.chat_model,
     "max_keywords_per_article": lambda s: s.max_keywords_per_article,
     "cron_fetch_interval": lambda s: s.cron_fetch_interval,
     "cron_nightly_refresh_hour": lambda s: s.cron_nightly_refresh_hour,
@@ -107,6 +114,10 @@ class EffectiveConfig:
     # Defaulted so existing call sites (and tests) that build the snapshot by
     # hand keep working; get_effective() always fills them in.
     random_surface_rate: float = 0.05
+    # E21-S1 — get_effective() resolves the fallback chain (DB override →
+    # env CHAT_MODEL → effective openrouter_model), so consumers read this
+    # field directly. The default only serves hand-built snapshots.
+    chat_model: str = "openrouter/auto"
     enrichment_input_max_chars: int = 2500
     # E16 — defaulted so existing call sites (and tests) that build the
     # snapshot by hand keep working; get_effective() always fills them in.
@@ -169,7 +180,12 @@ class SettingsService:
             select(AppSetting.value).where(AppSetting.key == key)
         )
         if override is None:
-            return self._env_default(key)
+            default = self._env_default(key)
+            if key == "chat_model" and not default:
+                # E21-S1 — unset chat model falls back to the *effective*
+                # enrichment model (DB override included), not just the env.
+                return await self.get("openrouter_model")
+            return default
         if key in INT_KEYS:
             return int(override)
         if key in FLOAT_KEYS:
@@ -265,6 +281,9 @@ class SettingsService:
         return EffectiveConfig(
             openrouter_api_key=resolve("openrouter_api_key"),  # type: ignore[arg-type]
             openrouter_model=resolve("openrouter_model"),  # type: ignore[arg-type]
+            # E21-S1 — same fallback chain as ``get``: DB override → env
+            # CHAT_MODEL → effective openrouter_model.
+            chat_model=resolve("chat_model") or resolve("openrouter_model"),  # type: ignore[arg-type]
             max_keywords_per_article=resolve("max_keywords_per_article"),  # type: ignore[arg-type]
             cron_fetch_interval=resolve("cron_fetch_interval"),  # type: ignore[arg-type]
             cron_nightly_refresh_hour=resolve("cron_nightly_refresh_hour"),  # type: ignore[arg-type]

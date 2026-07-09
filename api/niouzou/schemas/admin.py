@@ -13,6 +13,9 @@ class AdminConfig(BaseModel):
     """
 
     openrouter_model: str
+    # E21-S1 — model used by the article chat. Always resolved (falls back
+    # to ``openrouter_model`` when no override / env value is set).
+    chat_model: str
     openrouter_api_key: str | None
     max_keywords_per_article: int
     cron_fetch_interval: int
@@ -39,6 +42,9 @@ class AdminConfigPatch(BaseModel):
     """
 
     openrouter_model: str | None = None
+    # E21-S1 — empty string clears the override (chat falls back to the
+    # enrichment model).
+    chat_model: str | None = None
     openrouter_api_key: str | None = None
     max_keywords_per_article: int | None = Field(default=None, ge=1, le=50)
     cron_fetch_interval: int | None = Field(default=None, ge=1, le=1440)
