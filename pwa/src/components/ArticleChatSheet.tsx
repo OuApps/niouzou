@@ -8,6 +8,10 @@ import type { FeedArticle } from '../types/api'
 interface Props {
   article: Pick<FeedArticle, 'id' | 'title' | 'og_image_url' | 'source'>
   onClose: () => void
+  /** E21-S8 — fired once, when the user sends their FIRST message (not on
+   *  merely opening the sheet): starting a conversation is an engagement
+   *  signal, the parent records the read-full-article bonus with it. */
+  onFirstMessage?: () => void
 }
 
 // Starter suggestions shown while the thread is empty — three generic ways
@@ -40,7 +44,7 @@ type Phase = 'idle' | 'waiting' | 'streaming'
  * conversation. Mounted lazily by the parent so nothing is fetched or built
  * before the first open.
  */
-export const ArticleChatSheet = ({ article, onClose }: Props) => {
+export const ArticleChatSheet = ({ article, onClose, onFirstMessage }: Props) => {
   const [thread, setThread] = useState<ChatTurn[]>([])
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -131,6 +135,8 @@ export const ArticleChatSheet = ({ article, onClose }: Props) => {
   const submit = (text: string) => {
     const question = text.trim()
     if (!question || phase !== 'idle') return
+    // First message of the conversation → engagement signal (E21-S8).
+    if (thread.length === 0) onFirstMessage?.()
     setInput('')
     // Strip a partial assistant tail left by an errored stream so the thread
     // we send always alternates cleanly and ends on this user turn.

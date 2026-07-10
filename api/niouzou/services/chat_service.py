@@ -36,30 +36,31 @@ from sqlalchemy import select
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.errors import APIError, not_found
-from niouzou.models import Article, Source
+from niouzou.models import Article, LlmPrompt, Source
 from niouzou.models.llm_usage_log import LLMUsageLog
 from niouzou.schemas.chat import ChatMessage
 from niouzou.services.settings_service import SettingsService
 
 logger = logging.getLogger("niouzou.chat")
 
-# The article context injected as the system prompt. Kept as a module
-# constant for v1 — promote it to the admin-editable ``llm_prompts`` table
-# (E13-S2) if operators ask to tune it.
-_SYSTEM_TEMPLATE = """\
-You are Niouzou's reading assistant. The user is reading the news article \
-below and wants to discuss it: ask for clarifications, dig into a point, or \
-broaden the topic. Ground your answers in the article; when the user goes \
-beyond it, you may use general knowledge but say you are doing so. Be \
-concise. Answer in the language the user writes in.
-
-Title: {title}
-Source: {source_name}
-{summary_block}{content_block}"""
+# Name of the admin-editable instruction in ``llm_prompts`` (E21-S8, seeded
+# by migration a1c4e7f2b9d6) and its code fallback for a mid-migration DB.
+# Only the *instruction* is editable — the article context blocks below are
+# always appended by code so an admin edit can't break the grounding.
+CHAT_PROMPT_NAME = "chat.system"
+DEFAULT_CHAT_INSTRUCTION = (
+    "You are Niouzou's reading assistant. The user is reading the news "
+    "article below and wants to discuss it: ask for clarifications, dig "
+    "into a point, or broaden the topic. Ground your answers in the "
+    "article; when the user goes beyond it, you may use general knowledge "
+    "but say you are doing so. Be concise. Answer in the language the user "
+    "writes in."
+)
 
 
 def build_system_prompt(
     *,
+    instruction: str,
     title: str,
     source_name: str,
     summary_executive: str | None,
@@ -85,11 +86,11 @@ def build_system_prompt(
     else:
         content_block = ""
 
-    return _SYSTEM_TEMPLATE.format(
-        title=title,
-        source_name=source_name,
-        summary_block=summary_block,
-        content_block=content_block,
+    return (
+        f"{instruction.strip()}\n\n"
+        f"Title: {title}\n"
+        f"Source: {source_name}\n"
+        f"{summary_block}{content_block}"
     )
 
 
@@ -155,7 +156,17 @@ class ChatService:
                 "Article chat requires an OpenRouter API key.",
             )
 
+        # E21-S8 — admin-editable instruction (Admin → LLM Prompts); code
+        # fallback covers a DB that hasn't run the seed migration yet.
+        instruction = (
+            await self.session.scalar(
+                select(LlmPrompt.body).where(LlmPrompt.name == CHAT_PROMPT_NAME)
+            )
+            or DEFAULT_CHAT_INSTRUCTION
+        )
+
         system = build_system_prompt(
+            instruction=instruction,
             title=row.title,
             source_name=row.source_name,
             summary_executive=row.summary_executive,
@@ -280,6 +291,7 @@ class ChatService:
             self.session.add(
                 LLMUsageLog(
                     model=model,
+                    usage="chat",
                     cost_usd=cost,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
