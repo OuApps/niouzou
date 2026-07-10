@@ -30,6 +30,7 @@ import {
   type AdminUser,
   type CompactionGroup,
   type CompactionPreview,
+  type LLMCostWindow,
   type LlmPrompt,
   type PipelineWindow,
   type Stats,
@@ -1507,9 +1508,9 @@ const WINDOW_HOURS: Record<PipelineWindow, number> = { '1h': 1, '6h': 6, '24h': 
 function costForWindow(
   llmCost: Stats['llm_cost'],
   window: PipelineWindow,
-): number | null {
+): LLMCostWindow | null {
   const hours = WINDOW_HOURS[window]
-  return llmCost.windows.find((w) => w.window_hours === hours)?.cost_usd ?? null
+  return llmCost.windows.find((w) => w.window_hours === hours) ?? null
 }
 
 function formatDuration(seconds: number): string {
@@ -1793,7 +1794,8 @@ const PipelineAggregatesBlock = ({
   onSelect: (next: PipelineWindow) => void
   disabled: boolean
   // E17-S6 — OpenRouter bill for the selected window (null when unavailable).
-  cost: number | null
+  // E21-S8 — the whole window object so the enrichment/chat split renders.
+  cost: LLMCostWindow | null
 }) => (
   <div
     style={{
@@ -1878,7 +1880,13 @@ const PipelineAggregatesBlock = ({
       {cost !== null && (
         <>
           <span>·</span>
-          <span style={{ color: 'var(--accent-text)' }}>{formatCost(cost)}</span>
+          <span style={{ color: 'var(--accent-text)' }}>
+            enrich {formatCost(cost.enrichment_cost_usd)}
+          </span>
+          <span>·</span>
+          <span style={{ color: 'var(--accent-text)' }}>
+            chat {formatCost(cost.chat_cost_usd)}
+          </span>
         </>
       )}
     </div>

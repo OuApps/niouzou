@@ -433,7 +433,7 @@ Library: **Lucide React** (`lucide-react`) for React components.
 | Clock / time | `Clock` |
 | Score chip (keyword method) | `Hash` |
 | Score chip (Smart Match method) | `Radar` |
-| Article chat (entry + send) | `MessageCircle` / `Send` |
+| Article chat (entry + send) | `MessageCircle` / `Send` — the entry button also carries a small accent `Sparkles`, the app's AI marker (E21-S8) |
 | Edit keyword | `Pencil` |
 | Menu arrow | `ChevronRight` |
 | Sign out | `LogOut` |

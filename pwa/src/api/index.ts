@@ -418,9 +418,13 @@ export interface PipelineStats {
 export type PipelineWindow = '1h' | '6h' | '24h'
 
 // E10-S7 — OpenRouter bill, summed over trailing windows.
+// E21-S8 — cost_usd is the window total; the two extra fields break it
+// down per usage (enrichment pipeline vs article chat).
 export interface LLMCostWindow {
   window_hours: number
   cost_usd: number
+  enrichment_cost_usd: number
+  chat_cost_usd: number
 }
 
 export interface LLMCostStats {

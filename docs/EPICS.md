@@ -4851,6 +4851,32 @@ reste visible derrière.
 **Acceptance** : suite verte ; aucun test ne tape OpenRouter ni ne charge le modèle
 d'embedding.
 
+#### [x] E21-S8 — Monitoring des coûts chat, prompt éditable, bonus d'engagement, marqueur IA
+
+**But** : quatre finitions demandées après la v1.
+
+- **Coûts chat dans le monitoring** : colonne `usage` (`'enrichment'` | `'chat'`) sur
+  `llm_usage_log` (migration `a1c4e7f2b9d6`, défaut `enrichment` pour l'existant). Chaque
+  fenêtre de `llm_cost.windows` porte maintenant `enrichment_cost_usd` + `chat_cost_usd`
+  (`cost_usd` reste le total). Le panneau System affiche « enrich $X · chat $Y » piloté par
+  le même sélecteur 1h/6h/24h que le pipeline.
+- **Prompt système du chat éditable** : nouvelle entrée `chat.system` dans `llm_prompts`
+  (seedée par la même migration), modifiable dans Admin → LLM Prompts. Décision : seule la
+  **consigne** est éditable — le code ajoute toujours titre + résumé + contenu derrière,
+  une édition ne peut pas casser l'ancrage sur l'article. Fallback code si la ligne manque.
+- **Bonus d'engagement** : envoyer le **premier message** d'une conversation déclenche le
+  même signal monotone que « Read full article » (`read_full_article=true`, +0.5 sur les
+  poids). Décision : au 1ᵉʳ message envoyé, pas à l'ouverture du sheet (ouvrir/refermer
+  sans rien demander n'est pas de l'engagement). Réutilise `onMarkRead` — optimiste,
+  fire-and-forget.
+- **Marqueur IA** : le bouton « Chat about this article » porte le `Sparkles` accent, le
+  même marqueur IA que la carte résumé.
+
+**Acceptance** : le split enrich/chat s'affiche pour la fenêtre sélectionnée ; éditer
+`chat.system` change le comportement de l'assistant au tour suivant ; le 1ᵉʳ message pose
+`read_full_article=true` ; le bouton porte le marqueur. Testé : tag `usage='chat'`,
+agrégats splittés, prompt DB prioritaire sur le fallback.
+
 #### ~~E21-S6 — (Suivi, hors v1) Persistance & reprise des conversations~~ — abandonnée
 
 **Abandonnée le 2026-07-09** — décision mainteneur : les conversations restent éphémères,

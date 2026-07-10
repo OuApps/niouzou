@@ -395,9 +395,15 @@ event: error
 data: {"error": "upstream_error", "message": "OpenRouter unreachable"}
 ```
 
-Every completed exchange is appended to `llm_usage_log` (cost included via
-OpenRouter's in-stream usage accounting) so chat spend shows up in the System
-panel's OpenRouter bill.
+Every completed exchange is appended to `llm_usage_log` with `usage='chat'`
+(cost included via OpenRouter's in-stream usage accounting) so chat spend
+shows up in the System panel's OpenRouter bill, broken down from enrichment
+(E21-S8).
+
+The system prompt's **instruction** part is admin-editable via the LLM
+Prompts editor (`PATCH /admin/prompts/chat.system`, E21-S8); the article
+context (title + summary + content) is always appended by the server, so an
+edit can't break the grounding.
 
 **Errors** (regular JSON, emitted before any streaming starts)
 - `403 forbidden` — article belongs to another user's source.
@@ -872,9 +878,9 @@ the `pipeline_runs` / `llm_usage_log` history is shared across the instance.
   },
   "llm_cost": {
     "windows": [
-      { "window_hours": 1, "cost_usd": 0.0042 },
-      { "window_hours": 6, "cost_usd": 0.0218 },
-      { "window_hours": 24, "cost_usd": 0.0871 }
+      { "window_hours": 1, "cost_usd": 0.0042, "enrichment_cost_usd": 0.0038, "chat_cost_usd": 0.0004 },
+      { "window_hours": 6, "cost_usd": 0.0218, "enrichment_cost_usd": 0.0201, "chat_cost_usd": 0.0017 },
+      { "window_hours": 24, "cost_usd": 0.0871, "enrichment_cost_usd": 0.0800, "chat_cost_usd": 0.0071 }
     ]
   }
 }
@@ -923,6 +929,10 @@ the `pipeline_runs` / `llm_usage_log` history is shared across the instance.
 > completion and is best-effort — a lookup failure just skips that row, it
 > never affects enrichment. Drives the System panel's "Coût OpenRouter"
 > display, shown unconditionally (all three windows together).
+> **E21-S8** — each window also carries the per-usage breakdown:
+> `enrichment_cost_usd` (pipeline) + `chat_cost_usd` (article chat, rows
+> tagged `usage='chat'`). `cost_usd` stays the window total. The System
+> panel shows both figures for the selected pipeline window.
 
 > **E11-S1** — `score_threshold` is the effective `SCORE_THRESHOLD` (DB
 > override else env default), a float in `[0.0, 1.0]`. The PWA reads it
