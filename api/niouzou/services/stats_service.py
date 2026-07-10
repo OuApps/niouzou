@@ -8,7 +8,7 @@ block is global: the refresh worker is single-replica and the
 
 import uuid
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import and_, case, func, select, text
 
 from niouzou.deps import SessionDep
 from niouzou.models import (
@@ -244,36 +244,48 @@ class StatsService:
     async def _llm_cost_aggregates(self) -> LLMCostStats:
         """Sum ``llm_usage_log.cost_usd`` over 1h/6h/24h (E10-S7).
 
-        All three windows in one query via conditional aggregation — cheaper
-        than three round trips, and the table is append-only/small (one row
-        per LLM call).
+        All windows and usages in one query via conditional aggregation —
+        cheaper than a round trip per combination, and the table is
+        append-only/small (one row per LLM call). ``cost_usd`` stays the
+        window TOTAL (pre-E21-S8 semantics); ``enrichment_cost_usd`` /
+        ``chat_cost_usd`` break it down per usage.
         """
+
+        def cost_sum(hours: int, usage: str | None):
+            in_window = LLMUsageLog.created_at > func.now() - text(
+                f"interval '{hours} hours'"
+            )
+            cond = (
+                in_window
+                if usage is None
+                else and_(in_window, LLMUsageLog.usage == usage)
+            )
+            label = f"cost_{hours}h" + (f"_{usage}" if usage else "")
+            return func.coalesce(
+                func.sum(case((cond, LLMUsageLog.cost_usd))), 0
+            ).label(label)
+
         row = (
             await self.session.execute(
                 select(
                     *(
-                        func.coalesce(
-                            func.sum(
-                                case(
-                                    (
-                                        LLMUsageLog.created_at
-                                        > func.now() - text(f"interval '{hours} hours'"),
-                                        LLMUsageLog.cost_usd,
-                                    )
-                                )
-                            ),
-                            0,
-                        ).label(f"cost_{hours}h")
+                        cost_sum(hours, usage)
                         for hours in (1, 6, 24)
+                        for usage in (None, "enrichment", "chat")
                     )
                 )
             )
         ).one()
+        m = row._mapping
         return LLMCostStats(
             windows=[
-                LLMCostWindow(window_hours=1, cost_usd=float(row.cost_1h)),
-                LLMCostWindow(window_hours=6, cost_usd=float(row.cost_6h)),
-                LLMCostWindow(window_hours=24, cost_usd=float(row.cost_24h)),
+                LLMCostWindow(
+                    window_hours=hours,
+                    cost_usd=float(m[f"cost_{hours}h"]),
+                    enrichment_cost_usd=float(m[f"cost_{hours}h_enrichment"]),
+                    chat_cost_usd=float(m[f"cost_{hours}h_chat"]),
+                )
+                for hours in (1, 6, 24)
             ]
         )
 

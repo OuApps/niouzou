@@ -316,6 +316,7 @@ CREATE TABLE llm_usage_log (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   model              VARCHAR NOT NULL,
+  usage              VARCHAR NOT NULL DEFAULT 'enrichment',  -- 'enrichment' | 'chat' (E21-S8)
   cost_usd           FLOAT NOT NULL DEFAULT 0,
   prompt_tokens      INTEGER NOT NULL DEFAULT 0,
   completion_tokens  INTEGER NOT NULL DEFAULT 0
@@ -325,12 +326,16 @@ CREATE INDEX ix_llm_usage_log_created_at ON llm_usage_log(created_at DESC);
 ```
 
 > Global (not user-scoped). One row per successful OpenRouter chat
-> completion made through `enrichment_resources` (cron_enrich / refresh
-> worker — combined summary+keywords call, E16-S8). `cost_usd` is read back
-> via OpenRouter's `/generation` endpoint right after the completion
-> (`OpenRouterClient._record_usage`); a lookup failure simply skips the row
-> — it never affects enrichment. `GET /stats` sums `cost_usd` over 1h/6h/24h
-> for the System panel's "Coût OpenRouter" display. Added in E10-S7.
+> completion — from `enrichment_resources` (cron_enrich / refresh worker —
+> combined summary+keywords call, E16-S8) or the article chat
+> (`ChatService`, E21-S2), told apart by `usage` (E21-S8). Enrichment costs
+> are read back via OpenRouter's `/generation` endpoint right after the
+> completion (`OpenRouterClient._record_usage`); the chat reads the cost
+> from the final stream chunk's usage accounting. Either way it's
+> best-effort — a lookup failure simply skips/zeroes the row, it never
+> affects the feature. `GET /stats` sums `cost_usd` over 1h/6h/24h with a
+> per-usage breakdown for the System panel's "Coût OpenRouter" display.
+> Added in E10-S7, split per usage in E21-S8.
 
 ---
 

@@ -1,8 +1,10 @@
-"""OpenRouter LLM usage log (E10-S7).
+"""OpenRouter LLM usage log (E10-S7, per-usage split E21-S8).
 
-One row per successful OpenRouter chat completion (enrichment only — see
-``crons/enrich.py:enrichment_resources``). ``/stats`` sums ``cost_usd`` over
-1h/6h/24h windows for the System panel's "OpenRouter bill" display.
+One row per successful OpenRouter chat completion — from the enrichment
+pipeline (``crons/enrich.py:enrichment_resources``) or the article chat
+(``services/chat_service.py``), told apart by ``usage``. ``/stats`` sums
+``cost_usd`` over 1h/6h/24h windows for the System panel's "OpenRouter
+bill" display, with a per-usage breakdown.
 """
 
 import uuid
@@ -24,6 +26,11 @@ class LLMUsageLog(Base):
         DateTime(timezone=True), server_default=text("now()"), nullable=False
     )
     model: Mapped[str] = mapped_column(String, nullable=False)
+    # E21-S8 — what spent the money: 'enrichment' (cron/worker) or 'chat'
+    # (article chat). Lets /stats break the OpenRouter bill down per usage.
+    usage: Mapped[str] = mapped_column(
+        String, nullable=False, server_default=text("'enrichment'")
+    )
     cost_usd: Mapped[float] = mapped_column(
         Float, nullable=False, server_default=text("0")
     )

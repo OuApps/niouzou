@@ -101,10 +101,17 @@ class PipelineStats(BaseModel):
 
 
 class LLMCostWindow(BaseModel):
-    """Total OpenRouter cost over a trailing window (E10-S7)."""
+    """Total OpenRouter cost over a trailing window (E10-S7).
+
+    E21-S8 — ``cost_usd`` stays the window total; ``enrichment_cost_usd`` /
+    ``chat_cost_usd`` break it down per usage (defaulted for hand-built
+    payloads and older clients).
+    """
 
     window_hours: int
     cost_usd: float
+    enrichment_cost_usd: float = 0.0
+    chat_cost_usd: float = 0.0
 
 
 class LLMCostStats(BaseModel):

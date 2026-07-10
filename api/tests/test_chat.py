@@ -14,9 +14,15 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from niouzou.errors import APIError
+from niouzou.models import LlmPrompt
 from niouzou.models.llm_usage_log import LLMUsageLog
 from niouzou.schemas.chat import ChatMessage, ChatRequest
-from niouzou.services.chat_service import ChatService, build_system_prompt
+from niouzou.services.chat_service import (
+    CHAT_PROMPT_NAME,
+    DEFAULT_CHAT_INSTRUCTION,
+    ChatService,
+    build_system_prompt,
+)
 from niouzou.services.settings_service import SettingsService
 from tests.factories import make_article, make_source, make_user
 
@@ -25,6 +31,7 @@ from tests.factories import make_article, make_source, make_user
 
 def test_prompt_includes_summary_and_content():
     prompt = build_system_prompt(
+        instruction=DEFAULT_CHAT_INSTRUCTION,
         title="Why Rust is eating C++",
         source_name="The Pragmatic Engineer",
         summary_executive="- Rust adoption up 40%",
@@ -41,6 +48,7 @@ def test_prompt_truncates_content_to_budget():
     summary = "S" * 100
     body = "x" * 5000
     prompt = build_system_prompt(
+        instruction=DEFAULT_CHAT_INSTRUCTION,
         title="T",
         source_name="Src",
         summary_executive=summary,
@@ -56,6 +64,7 @@ def test_prompt_truncates_content_to_budget():
 
 def test_prompt_falls_back_to_summary_only():
     prompt = build_system_prompt(
+        instruction=DEFAULT_CHAT_INSTRUCTION,
         title="T",
         source_name="Src",
         summary_executive="just the summary",
@@ -68,6 +77,7 @@ def test_prompt_falls_back_to_summary_only():
 
 def test_prompt_survives_no_summary_no_content():
     prompt = build_system_prompt(
+        instruction=DEFAULT_CHAT_INSTRUCTION,
         title="T", source_name="Src", summary_executive=None, content=None,
         max_chars=2500,
     )
@@ -255,6 +265,7 @@ async def test_stream_relays_tokens_and_logs_usage(db_session):
 
     row = (await db_session.execute(select(LLMUsageLog))).scalar_one()
     assert row.model == "test/chat-model"
+    assert row.usage == "chat"
     assert row.cost_usd == pytest.approx(0.00042)
     assert row.prompt_tokens == 100
     assert row.completion_tokens == 20
@@ -273,6 +284,57 @@ async def test_stream_upstream_http_error_yields_error_event(db_session):
     assert events[0][1]["error"] == "upstream_error"
     # No usage row on failure.
     assert (await db_session.execute(select(LLMUsageLog))).first() is None
+
+
+# ── E21-S8 — editable chat instruction + per-usage cost split ───────────────
+
+
+async def test_prepare_uses_admin_edited_instruction(db_session):
+    """The chat.system row (Admin → LLM Prompts) drives the system prompt."""
+    user = await make_user(db_session)
+    source = await make_source(db_session, user)
+    article = await make_article(db_session, source)
+    await SettingsService(db_session).set("openrouter_api_key", "sk-test")
+
+    row = await db_session.get(LlmPrompt, CHAT_PROMPT_NAME)
+    original = row.body if row else None
+    if row is None:
+        db_session.add(LlmPrompt(name=CHAT_PROMPT_NAME, body="x"))
+        await db_session.flush()
+        row = await db_session.get(LlmPrompt, CHAT_PROMPT_NAME)
+    row.body = "Tu es un assistant pirate. Réponds en argot."
+    await db_session.commit()
+
+    try:
+        ctx = await ChatService(db_session).prepare(user.id, article.id, _turn())
+        system = ctx.payload_messages[0]["content"]
+        assert system.startswith("Tu es un assistant pirate.")
+        # The article context is still appended by code, whatever the edit.
+        assert "Title:" in system
+    finally:
+        # llm_prompts is not truncated between tests — restore the seed.
+        if original is not None:
+            row.body = original
+            await db_session.commit()
+
+
+async def test_llm_cost_split_by_usage(db_session):
+    from niouzou.services.stats_service import StatsService
+
+    db_session.add_all(
+        [
+            LLMUsageLog(model="m", usage="enrichment", cost_usd=0.03),
+            LLMUsageLog(model="m", usage="chat", cost_usd=0.01),
+            LLMUsageLog(model="m", usage="chat", cost_usd=0.02),
+        ]
+    )
+    await db_session.commit()
+
+    stats = await StatsService(db_session)._llm_cost_aggregates()
+    for window in stats.windows:  # all rows are 'now', every window sees them
+        assert window.cost_usd == pytest.approx(0.06)
+        assert window.enrichment_cost_usd == pytest.approx(0.03)
+        assert window.chat_cost_usd == pytest.approx(0.03)
 
 
 # ── E21-S7 — chat model curation + web search ───────────────────────────────

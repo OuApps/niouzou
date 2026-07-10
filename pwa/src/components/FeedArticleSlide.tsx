@@ -483,6 +483,9 @@ export const FeedArticleSlide = ({
             >
               <MessageCircle size={14} />
               Chat about this article
+              {/* Same AI marker as the summary card — this feature is
+                  LLM-powered (E21-S8). */}
+              <Sparkles size={12} style={{ color: 'var(--accent)' }} />
             </button>
           )}
         </div>
@@ -574,9 +577,15 @@ export const FeedArticleSlide = ({
       />
 
       {/* E21-S4 — article chat sheet, mounted lazily on open. Unmounting on
-          close aborts the in-flight stream and drops the ephemeral thread. */}
+          close aborts the in-flight stream and drops the ephemeral thread.
+          E21-S8 — sending the first message counts as engagement: same
+          monotone read_full_article signal as "Read full article" (+0.5). */}
       {chatOpen && (
-        <ArticleChatSheet article={article} onClose={() => setChatOpen(false)} />
+        <ArticleChatSheet
+          article={article}
+          onClose={() => setChatOpen(false)}
+          onFirstMessage={onMarkRead}
+        />
       )}
     </article>
   )
