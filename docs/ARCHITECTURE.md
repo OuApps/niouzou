@@ -74,6 +74,13 @@ External:
 - Handles authentication, feed delivery, feedback reception
 - On each like/dislike/save API call: upserts `article_feedbacks` (idempotent — repeated likes = 1 like) then synchronously recomputes `keyword_weights` for affected keywords (row-level lock)
 - Also the base image for all cron jobs
+- Hosts the **MCP server** (E22) at the root `/mcp` — a hand-rolled,
+  stateless JSON-RPC 2.0 Streamable HTTP endpoint (no external MCP SDK) that
+  exposes read-only `list_feed` / `search_articles` / `get_article` tools.
+  Authenticated by **service account keys** (`Authorization: Bearer nzk_…`,
+  SHA-256 fingerprinted in `service_account_keys`), each acting in the context
+  of the admin who created it. Admins generate / revoke keys via
+  `/admin/mcp-keys`.
 
 ### React PWA (front)
 - Mobile-first swipe interface

@@ -4,6 +4,8 @@ Kept separate from the auth service so both the API and tests can use token
 helpers without pulling in a session.
 """
 
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -16,6 +18,27 @@ _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 TOKEN_ACCESS = "access"
 TOKEN_REFRESH = "refresh"
+
+# Service account API keys (E22). A key is a high-entropy random token, so we
+# fingerprint it with a plain SHA-256 — no need for a slow, salted password
+# hash (bcrypt) whose cost would tax every MCP request. The ``nzk_`` prefix
+# makes keys recognisable (and greppable in logs the operator controls).
+API_KEY_PREFIX = "nzk_"
+
+
+def generate_api_key() -> str:
+    """A fresh service account token: ``nzk_`` + 43 url-safe base64 chars."""
+    return API_KEY_PREFIX + secrets.token_urlsafe(32)
+
+
+def hash_api_key(raw_key: str) -> str:
+    """SHA-256 hex of the raw token — what we persist and match against."""
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def api_key_prefix(raw_key: str) -> str:
+    """Display-only fingerprint: ``nzk_`` + the first 8 body chars."""
+    return raw_key[: len(API_KEY_PREFIX) + 8]
 
 
 def hash_password(password: str) -> str:

@@ -1261,3 +1261,80 @@ Reject a preview without applying it. Marks the run `status='rejected'`.
 **Requires admin role (E8-S1)**
 
 **Response `204`** — no content.
+
+---
+
+### POST /admin/mcp-keys
+**E22** — Mint a service account key for the MCP server, bound to the calling
+admin's context (its tools read that admin's feed/articles).
+
+**Requires admin role**
+
+**Request**
+```json
+{ "name": "Claude Desktop" }
+```
+
+**Response `201`**
+```json
+{
+  "id": "uuid",
+  "name": "Claude Desktop",
+  "prefix": "nzk_AbCdEfGh",
+  "token": "nzk_AbCdEfGh…full-secret…",
+  "created_at": "2026-07-12T10:00:00Z",
+  "last_used_at": null,
+  "revoked_at": null
+}
+```
+
+> `token` is the raw secret and is returned **exactly once** — only its
+> SHA-256 is stored, so it can never be shown again.
+
+---
+
+### GET /admin/mcp-keys
+**E22** — List all service account keys, newest first. Revoked keys are
+included (with a non-null `revoked_at`) for audit.
+
+**Requires admin role**
+
+**Response `200`** — array of keys **without** the `token` field
+(`id`, `name`, `prefix`, `created_at`, `last_used_at`, `revoked_at`).
+
+---
+
+### DELETE /admin/mcp-keys/{id}
+**E22** — Revoke a key (soft: sets `revoked_at`). Subsequent MCP calls with it
+return `401`. Idempotent if already revoked; `404` if the id is unknown.
+
+**Requires admin role**
+
+**Response `204`** — no content.
+
+---
+
+## MCP server (E22)
+
+### POST /mcp
+Model Context Protocol endpoint (JSON-RPC 2.0, Streamable HTTP transport,
+stateless). Mounted at the **root** `/mcp`, *not* under `/api/v1`.
+
+**Auth**: `Authorization: Bearer nzk_…` (a service account key, not a JWT). A
+missing / invalid / revoked key returns `401`.
+
+**Methods**: `initialize`, `notifications/initialized`, `ping`, `tools/list`,
+`tools/call`. Requests get an `application/json` JSON-RPC response;
+notifications (no `id`) get `202` with an empty body. Batches (JSON arrays) are
+supported. `GET`/`DELETE /mcp` return `405` (no server-initiated SSE stream, no
+session to terminate).
+
+**Tools** (all read-only, in the key owner's context):
+- `list_feed` `{ "limit"?: int }` — the personalised, ranked feed.
+- `search_articles` `{ "query": str, "limit"?: int }` — text search.
+- `get_article` `{ "article_id": str }` — one article incl. full content.
+
+Tool results are returned as `tools/call` results with a single `text` content
+block whose text is the JSON payload. Tool-level failures (bad argument,
+missing article) come back as a result with `"isError": true` — not a JSON-RPC
+error — per the MCP spec.

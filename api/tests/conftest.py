@@ -71,7 +71,8 @@ async def db_session():
                 "TRUNCATE users, sources, articles, article_keywords, "
                 "article_relevance_scores, article_impressions, "
                 "article_feedbacks, keyword_weights, app_settings, "
-                "pipeline_runs, compaction_runs, llm_usage_log "
+                "pipeline_runs, compaction_runs, llm_usage_log, "
+                "service_account_keys "
                 "RESTART IDENTITY CASCADE"
             )
         )

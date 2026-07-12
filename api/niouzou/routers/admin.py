@@ -39,9 +39,15 @@ from niouzou.schemas.admin import (
     LlmPromptOut,
     LlmPromptUpdate,
 )
+from niouzou.schemas.service_account import (
+    ServiceAccountKeyCreate,
+    ServiceAccountKeyCreated,
+    ServiceAccountKeyOut,
+)
 from niouzou.security import hash_password
 from niouzou.services.admin_models_service import fetch_models
 from niouzou.services.llm_prompts_service import LlmPromptsServiceDep
+from niouzou.services.service_account_service import ServiceAccountService
 from niouzou.services.settings_service import (
     OVERRIDABLE_KEYS,
     InvalidSettingError,
@@ -60,6 +66,7 @@ _WORKER_URL = os.environ.get(
 )
 
 SettingsServiceDep = Annotated[SettingsService, Depends()]
+ServiceAccountServiceDep = Annotated[ServiceAccountService, Depends()]
 
 
 def _config_response(  # type: ignore[no-untyped-def]
@@ -306,6 +313,51 @@ async def update_prompt(
 ) -> LlmPromptOut:
     row = await service.update(name, body.body)
     return LlmPromptOut.model_validate(row)
+
+
+# ── E22 — MCP service account keys ───────────────────────────────────────
+
+
+@router.post(
+    "/mcp-keys",
+    response_model=ServiceAccountKeyCreated,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mcp_key(
+    body: ServiceAccountKeyCreate,
+    admin: CurrentAdmin,
+    service: ServiceAccountServiceDep,
+) -> ServiceAccountKeyCreated:
+    """Mint a service account key bound to the calling admin's context.
+
+    The raw ``token`` is returned exactly once — the DB only keeps its hash,
+    so it can never be shown again.
+    """
+    key, raw_token = await service.create(admin.id, body.name)
+    return ServiceAccountKeyCreated(
+        id=key.id,
+        name=key.name,
+        prefix=key.prefix,
+        created_at=key.created_at,
+        last_used_at=key.last_used_at,
+        revoked_at=key.revoked_at,
+        token=raw_token,
+    )
+
+
+@router.get("/mcp-keys", response_model=list[ServiceAccountKeyOut])
+async def list_mcp_keys(
+    _: CurrentAdmin, service: ServiceAccountServiceDep
+) -> list[ServiceAccountKeyOut]:
+    keys = await service.list_all()
+    return [ServiceAccountKeyOut.model_validate(k) for k in keys]
+
+
+@router.delete("/mcp-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_mcp_key(
+    key_id: uuid.UUID, _: CurrentAdmin, service: ServiceAccountServiceDep
+) -> None:
+    await service.revoke(key_id)
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

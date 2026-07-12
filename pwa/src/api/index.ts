@@ -620,6 +620,37 @@ export function deleteAdminUser(userId: string): Promise<void> {
   return request<void>(`/admin/users/${userId}`, { method: 'DELETE' })
 }
 
+// ── Admin MCP service account keys (E22) ─────────────────────────────────────
+
+export interface McpKey {
+  id: string
+  name: string
+  prefix: string
+  created_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+// Only the create response carries the raw token — shown once, never again.
+export interface McpKeyCreated extends McpKey {
+  token: string
+}
+
+export function getMcpKeys(): Promise<McpKey[]> {
+  return request<McpKey[]>('/admin/mcp-keys')
+}
+
+export function createMcpKey(name: string): Promise<McpKeyCreated> {
+  return request<McpKeyCreated>('/admin/mcp-keys', {
+    method: 'POST',
+    body: { name },
+  })
+}
+
+export function revokeMcpKey(id: string): Promise<void> {
+  return request<void>(`/admin/mcp-keys/${id}`, { method: 'DELETE' })
+}
+
 // ── Admin LLM prompts (E13-S2) ───────────────────────────────────────────────
 
 export interface LlmPrompt {

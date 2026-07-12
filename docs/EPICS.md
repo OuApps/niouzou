@@ -26,6 +26,7 @@
 | EPIC 12 | ~~Robustesse des keywords~~ (remplacée par EPIC 16) | EPIC 5, EPIC 9 |
 | EPIC 16 | Smart Match — scoring sémantique par embeddings | EPIC 5, EPIC 9, EPIC 10 |
 | EPIC 21 | Chat IA sur un article (bottom sheet) | EPIC 5, EPIC 9 |
+| EPIC 22 | Serveur MCP + clés service account | EPIC 3, EPIC 8, EPIC 9 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -4917,3 +4918,95 @@ par capture du payload en test) ; l'enrichissement garde sa curation historique.
 > liste des consommateurs OpenRouter / coût), `DESIGN_SYSTEM.md` (pattern « bottom sheet de
 > chat », point d'entrée sur la slide, réglage Admin « Modèle de conversation »),
 > `CONVENTIONS.md` si un pattern de client SSE async est introduit.
+
+---
+
+## EPIC 22 — Serveur MCP + clés service account
+
+**But** : exposer le fil Niouzou d'un utilisateur à un client MCP (Claude
+Desktop, un agent, un IDE…) via un **serveur MCP** authentifié par **clé
+d'API de type service account**. L'admin génère et révoque ces clés depuis
+le front. Une clé agit dans le contexte de l'utilisateur qui l'a créée
+(mêmes sources, mêmes scores) : le serveur MCP ne fait qu'exposer en
+lecture ce que l'API REST expose déjà à cet utilisateur.
+
+**Choix d'implémentation** : le transport **Streamable HTTP** de MCP est
+implémenté à la main comme un router FastAPI JSON-RPC 2.0 *stateless*
+(`routers/mcp.py` → `services/mcp_service.py`), plutôt que via le SDK `mcp`
+officiel. Raisons : rester dans le pattern maison (router mince → service),
+garder l'image Docker légère (Colima/Railway), et rester testable avec le
+`ASGITransport` httpx déjà utilisé partout — pas de session manager ni de
+lifespan à câbler. Le serveur ne répond qu'en `application/json` (pas de
+flux SSE côté serveur), ce qui est conforme au spec pour un serveur sans
+session.
+
+**Auth** : `Authorization: Bearer nzk_…`. La clé brute n'est jamais
+stockée : on persiste son SHA-256 (jeton haute entropie → pas besoin de
+hash lent type bcrypt) plus un `prefix` d'affichage (`nzk_` + 8 car.) pour
+identifier la clé dans l'UI. Le jeton complet n'est renvoyé **qu'une fois**,
+à la création.
+
+### Stories
+
+#### [x] E22-S1 — Modèle `service_account_keys` + migration
+
+- Table `service_account_keys` :
+  - `id` UUID PK
+  - `user_id` UUID FK → `users` (ON DELETE CASCADE) — l'utilisateur dont la
+    clé emprunte le contexte (= l'admin créateur)
+  - `name` TEXT — libellé lisible saisi à la création
+  - `prefix` TEXT — `nzk_` + 8 premiers car. base64url, pour l'affichage
+  - `key_hash` TEXT UNIQUE — SHA-256 hex du jeton complet
+  - `created_at`, `last_used_at` (nullable), `revoked_at` (nullable)
+- Migration Alembic `service_account_keys` (revises la tête courante).
+
+#### [x] E22-S2 — Service + endpoints admin (générer / lister / révoquer)
+
+- Helpers purs dans `security.py` : `generate_api_key()` (`nzk_` +
+  `secrets.token_urlsafe(32)`), `hash_api_key()` (SHA-256 hex),
+  `api_key_prefix()`.
+- `ServiceAccountService` :
+  - `create(owner_id, name)` → `(row, raw_token)` (jeton en clair une fois)
+  - `list_all()` → toutes les clés, plus récentes d'abord (panel admin)
+  - `revoke(key_id)` → pose `revoked_at` (404 si inconnue ; idempotent si
+    déjà révoquée). La ligne reste listée en « révoquée » pour l'audit.
+  - `authenticate(raw_token)` → `User | None` : hash, cherche une clé non
+    révoquée, met à jour `last_used_at`, renvoie l'utilisateur propriétaire.
+- Endpoints admin (guardés `CurrentAdmin`) :
+  - `POST /admin/mcp-keys` `{name}` → 201 `{id, name, prefix, token, …}`
+  - `GET /admin/mcp-keys` → `[{id, name, prefix, last_used_at, revoked_at,
+    created_at}]`
+  - `DELETE /admin/mcp-keys/{id}` → 204 (révocation)
+
+#### [x] E22-S3 — Endpoint MCP Streamable HTTP + outils
+
+- `POST /mcp` — JSON-RPC 2.0 stateless, auth par clé service account.
+  Méthodes : `initialize`, `notifications/initialized`, `ping`,
+  `tools/list`, `tools/call`. Notifications → 202 sans corps ; requêtes →
+  `application/json`. Batch supporté. `GET`/`DELETE /mcp` → 405 (pas de flux
+  SSE serveur / pas de session à terminer).
+- `McpService` : dispatch + définitions d'outils, délègue aux services
+  existants (`FeedService`, `ExploreService`) et lit le contenu article en
+  direct. Outils exposés (lecture seule, contexte propriétaire de la clé) :
+  - `list_feed` `{limit?}` — le fil scoré et rangé de l'utilisateur
+  - `search_articles` `{query, limit?}` — recherche texte sur ses articles
+  - `get_article` `{article_id}` — détail + contenu plein texte
+- Toute erreur outil (article introuvable, mauvais argument) est renvoyée
+  comme résultat `tools/call` avec `isError: true` (pas une erreur JSON-RPC),
+  conformément au spec.
+
+#### [x] E22-S4 — UI Admin (générer / lister / révoquer)
+
+- Section `AdminSection` « MCP / Service accounts » dans `Admin.tsx` :
+  - liste des clés (nom, prefix, dernière utilisation, badge « Révoquée »)
+  - formulaire de création (nom) → affiche le jeton **une seule fois** dans
+    un encart copiable avec avertissement « ne sera plus affiché »
+  - bouton Révoquer (confirm) par clé active
+  - rappel de l'URL du endpoint MCP (`<api>/mcp`) pour configurer le client
+- Client API : `getMcpKeys`, `createMcpKey(name)`, `revokeMcpKey(id)`.
+
+**Acceptance** : un admin génère une clé, la copie, configure un client MCP
+avec `<api>/mcp` + `Authorization: Bearer <clé>` ; `tools/list` renvoie les
+3 outils ; `list_feed` renvoie son fil ; révoquer la clé fait échouer les
+appels suivants en 401. Un non-admin reçoit 403 sur les endpoints de
+gestion. La clé brute n'apparaît jamais après la création.
