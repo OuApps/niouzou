@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowLeft, ChevronDown, ChevronUp, AlertTriangle, RefreshCw } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronUp, AlertTriangle, RefreshCw, Copy, Check, Plus } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { Modal } from '../components/Modal'
@@ -23,6 +23,9 @@ import {
   compactKeywordsGet,
   compactKeywordsApply,
   compactKeywordsReject,
+  getMcpKeys,
+  createMcpKey,
+  revokeMcpKey,
   ApiError,
   type AdminConfig,
   type AdminConfigPatch,
@@ -32,6 +35,8 @@ import {
   type CompactionPreview,
   type LLMCostWindow,
   type LlmPrompt,
+  type McpKey,
+  type McpKeyCreated,
   type PipelineWindow,
   type Stats,
 } from '../api'
@@ -222,6 +227,11 @@ export const Admin = () => {
               ))}
             </div>
           ) : null}
+        </AdminSection>
+
+        {/* E22 — MCP service account keys */}
+        <AdminSection title="MCP / Service accounts">
+          <McpKeysSection />
         </AdminSection>
 
         {/* E13-S2 — LLM prompts editor */}
@@ -1027,6 +1037,343 @@ const DeleteUserModal = ({
   )
 }
 
+
+// ── E22 — MCP service account keys ─────────────────────────────────────────
+
+/** The MCP endpoint lives at the root ``/mcp`` (not under ``/api/v1``), so
+ *  derive it from VITE_API_URL by stripping the versioned REST suffix. */
+function mcpEndpointUrl(): string {
+  const raw = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
+  const base = raw.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '')
+  if (base) return `${base}/mcp`
+  return `${window.location.origin}/mcp`
+}
+
+const McpKeysSection = () => {
+  const { data: keys, loading, error, reload } = useApiData(getMcpKeys, [])
+  const [name, setName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  // The freshly-minted key (with its raw token) — shown once until dismissed.
+  const [created, setCreated] = useState<McpKeyCreated | null>(null)
+  const [copied, setCopied] = useState(false)
+  const endpoint = mcpEndpointUrl()
+
+  const handleCreate = async () => {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      setCreateError('Name cannot be empty')
+      return
+    }
+    setCreateError(null)
+    setCreating(true)
+    try {
+      const key = await createMcpKey(trimmed)
+      setCreated(key)
+      setCopied(false)
+      setName('')
+      reload()
+    } catch (err) {
+      setCreateError(err instanceof ApiError ? err.message : 'Creation failed')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const copyToken = async () => {
+    if (!created) return
+    try {
+      await navigator.clipboard.writeText(created.token)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard unavailable (insecure context) — the token stays selectable.
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+        Generate a key to let an MCP client (Claude Desktop, an agent…) read
+        your feed. Point it at{' '}
+        <code style={{ color: 'var(--text-secondary)' }}>{endpoint}</code> with
+        header{' '}
+        <code style={{ color: 'var(--text-secondary)' }}>
+          Authorization: Bearer &lt;key&gt;
+        </code>
+        . A key acts in your account's context.
+      </p>
+
+      {/* Create form */}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleCreate()
+          }}
+          placeholder="Key name (e.g. Claude Desktop)"
+          style={{
+            flex: 1,
+            padding: '8px 10px',
+            borderRadius: 8,
+            border: '1px solid rgba(255,255,255,0.10)',
+            background: 'rgba(255,255,255,0.04)',
+            color: 'var(--text-primary)',
+            fontSize: 12,
+          }}
+        />
+        <button
+          onClick={handleCreate}
+          disabled={creating}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 8,
+            background: 'var(--accent)',
+            color: '#0c1018',
+            border: 'none',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: creating ? 'default' : 'pointer',
+            opacity: creating ? 0.6 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            flexShrink: 0,
+          }}
+        >
+          {creating ? <Spinner size={10} /> : <Plus size={12} />}
+          Generate
+        </button>
+      </div>
+      {createError && (
+        <div className="flex items-start gap-2" style={{ padding: '8px 10px', background: 'rgba(248, 113, 113, 0.10)', borderRadius: 8 }}>
+          <AlertTriangle size={12} style={{ color: 'var(--action-dislike)', flexShrink: 0, marginTop: 2 }} />
+          <p style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{createError}</p>
+        </div>
+      )}
+
+      {/* One-time token reveal */}
+      {created && (
+        <div
+          className="glass-sm flex flex-col gap-2"
+          style={{ borderRadius: 12, padding: '12px 14px', border: '1px solid var(--accent-subtle)' }}
+        >
+          <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent-text)' }}>
+            Key “{created.name}” created — copy it now, it won't be shown again.
+          </p>
+          <div className="flex items-center gap-2">
+            <code
+              style={{
+                flex: 1,
+                fontSize: 11,
+                color: 'var(--text-primary)',
+                background: 'rgba(0,0,0,0.25)',
+                padding: '8px 10px',
+                borderRadius: 8,
+                wordBreak: 'break-all',
+                userSelect: 'all',
+              }}
+            >
+              {created.token}
+            </code>
+            <button
+              onClick={copyToken}
+              aria-label="Copy key"
+              style={{
+                flexShrink: 0,
+                padding: 8,
+                borderRadius: 8,
+                background: 'rgba(255,255,255,0.08)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                color: copied ? 'var(--accent-text)' : 'var(--text-primary)',
+                cursor: 'pointer',
+              }}
+            >
+              {copied ? <Check size={14} /> : <Copy size={14} />}
+            </button>
+          </div>
+          <button
+            onClick={() => setCreated(null)}
+            style={{
+              alignSelf: 'flex-start',
+              fontSize: 11,
+              color: 'var(--text-secondary)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: 0,
+              fontWeight: 600,
+            }}
+          >
+            Done
+          </button>
+        </div>
+      )}
+
+      {/* Key list */}
+      {loading ? (
+        <div className="flex justify-center" style={{ paddingTop: 12 }}>
+          <Spinner size={20} />
+        </div>
+      ) : error ? (
+        <ErrorState message={error} onRetry={reload} />
+      ) : keys && keys.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {keys.map((key) => (
+            <McpKeyRow key={key.id} mcpKey={key} onRevoke={reload} />
+          ))}
+        </div>
+      ) : (
+        <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>No keys yet.</p>
+      )}
+    </div>
+  )
+}
+
+interface McpKeyRowProps {
+  mcpKey: McpKey
+  onRevoke: () => void
+}
+
+const McpKeyRow = ({ mcpKey, onRevoke }: McpKeyRowProps) => {
+  const [confirming, setConfirming] = useState(false)
+  const [revoking, setRevoking] = useState(false)
+  const [revokeError, setRevokeError] = useState<string | null>(null)
+  const isRevoked = mcpKey.revoked_at !== null
+
+  const handleRevoke = async () => {
+    setRevokeError(null)
+    setRevoking(true)
+    try {
+      await revokeMcpKey(mcpKey.id)
+      setConfirming(false)
+      onRevoke()
+    } catch (err) {
+      setRevokeError(err instanceof ApiError ? err.message : 'Revoke failed')
+    } finally {
+      setRevoking(false)
+    }
+  }
+
+  return (
+    <div
+      className="glass-sm flex flex-col"
+      style={{ borderRadius: 16, padding: '12px 14px', opacity: isRevoked ? 0.55 : 1 }}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex-1 min-w-0">
+          <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>{mcpKey.name}</p>
+          <div className="flex items-center gap-2" style={{ flexWrap: 'wrap' }}>
+            <code style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+              {mcpKey.prefix}…
+            </code>
+            {isRevoked ? (
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  color: 'var(--action-dislike)',
+                  background: 'rgba(248, 113, 113, 0.12)',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                }}
+              >
+                Revoked
+              </span>
+            ) : (
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                {mcpKey.last_used_at
+                  ? `Used ${formatTimeAgo(mcpKey.last_used_at)}`
+                  : 'Never used'}
+              </span>
+            )}
+          </div>
+        </div>
+        {!isRevoked && !confirming && (
+          <button
+            onClick={() => {
+              setRevokeError(null)
+              setConfirming(true)
+            }}
+            style={{
+              fontSize: 11,
+              color: 'var(--action-dislike)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: 0,
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            Revoke
+          </button>
+        )}
+      </div>
+
+      {confirming && (
+        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+            Revoke “{mcpKey.name}”? Clients using it will stop working immediately.
+          </p>
+          {revokeError && (
+            <div className="flex items-start gap-2" style={{ padding: '8px 10px', background: 'rgba(248, 113, 113, 0.10)', borderRadius: 8 }}>
+              <AlertTriangle size={12} style={{ color: 'var(--action-dislike)', flexShrink: 0, marginTop: 2 }} />
+              <p style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{revokeError}</p>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={handleRevoke}
+              disabled={revoking}
+              style={{
+                flex: 1,
+                padding: '6px 10px',
+                borderRadius: 8,
+                background: 'var(--action-dislike)',
+                color: '#0c1018',
+                border: 'none',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: revoking ? 'default' : 'pointer',
+                opacity: revoking ? 0.6 : 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+              }}
+            >
+              {revoking && <Spinner size={10} />}
+              {revoking ? 'Revoking…' : 'Revoke'}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              disabled={revoking}
+              style={{
+                flex: 1,
+                padding: '6px 10px',
+                borderRadius: 8,
+                background: 'rgba(255,255,255,0.08)',
+                color: 'var(--text-primary)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: revoking ? 'default' : 'pointer',
+                opacity: revoking ? 0.6 : 1,
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ── E13-S2 — LLM prompts editor ────────────────────────────────────────────
 

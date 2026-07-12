@@ -9,6 +9,7 @@ from niouzou.models.keyword_weight import KeywordWeight
 from niouzou.models.llm_prompt import LlmPrompt
 from niouzou.models.llm_usage_log import LLMUsageLog
 from niouzou.models.pipeline_run import PipelineRun
+from niouzou.models.service_account_key import ServiceAccountKey
 from niouzou.models.source import Source
 from niouzou.models.user import User
 
@@ -24,6 +25,7 @@ __all__ = [
     "LlmPrompt",
     "LLMUsageLog",
     "PipelineRun",
+    "ServiceAccountKey",
     "Source",
     "User",
 ]

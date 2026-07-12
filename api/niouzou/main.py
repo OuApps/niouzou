@@ -24,6 +24,7 @@ from niouzou.routers import (
     feed,
     feedback,
     keywords,
+    mcp,
     me,
     saved,
     sources,
@@ -60,6 +61,11 @@ for module in (
     admin,
 ):
     app.include_router(module.router, prefix=API_PREFIX)
+
+# E22 — the MCP server speaks a different protocol (JSON-RPC) and auth scheme
+# (service account key), so it's mounted at the root ``/mcp`` rather than under
+# the versioned REST prefix. MCP clients are configured with this URL directly.
+app.include_router(mcp.router)
 
 
 @app.get("/health", tags=["health"])
