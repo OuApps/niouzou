@@ -103,6 +103,69 @@ provisions its own Miniflux access token on first boot — no manual key step.
 
 ---
 
+## MCP server
+
+Niouzou ships an [MCP](https://modelcontextprotocol.io) server so an AI client
+(Claude Desktop, an agent, an IDE…) can read your feed. It's built on FastMCP
+and served at **`<api-base>/mcp`** (e.g. `https://api-…up.railway.app/mcp` or
+`http://localhost:8000/mcp` locally).
+
+It exposes three read-only tools, scoped to the account that owns the key:
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_feed` | `limit?` | your personalised, ranked feed |
+| `search_articles` | `query`, `limit?` | full-text search over your articles |
+| `get_article` | `article_id` | one article incl. full text content |
+
+### Authenticating with an API key
+
+The server authenticates with a **service account key** (not your login). Keys
+are managed by an admin.
+
+1. **Generate a key** — open the app → **Admin → MCP / Service accounts**, give
+   it a name, and click **Generate**. The key (`nzk_…`) is shown **once** —
+   copy it now; only its hash is stored, so it can't be shown again. You can
+   **Revoke** a key from the same screen at any time (calls with it then fail
+   with `401`).
+
+2. **Send it as a bearer token** — every request carries the key in the
+   `Authorization` header:
+
+   ```
+   Authorization: Bearer nzk_your_key_here
+   ```
+
+3. **Point your MCP client at the endpoint.** For a client that supports
+   Streamable HTTP servers with custom headers, the config looks like:
+
+   ```json
+   {
+     "mcpServers": {
+       "niouzou": {
+         "type": "http",
+         "url": "https://api-…up.railway.app/mcp",
+         "headers": { "Authorization": "Bearer nzk_your_key_here" }
+       }
+     }
+   }
+   ```
+
+   Or from the command line to sanity-check it:
+
+   ```bash
+   curl -sS https://api-…up.railway.app/mcp \
+     -H "Authorization: Bearer nzk_your_key_here" \
+     -H "Accept: application/json, text/event-stream" \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+   ```
+
+A key acts in the context of the admin who created it — it sees exactly that
+user's sources, scores and articles, read-only. Nothing else is exposed.
+
+---
+
 ## Configuration
 
 Almost every knob is an environment variable with a sane default.

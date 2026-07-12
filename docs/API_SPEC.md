@@ -1317,24 +1317,25 @@ return `401`. Idempotent if already revoked; `404` if the id is unknown.
 ## MCP server (E22)
 
 ### POST /mcp
-Model Context Protocol endpoint (JSON-RPC 2.0, Streamable HTTP transport,
-stateless). Mounted at the **root** `/mcp`, *not* under `/api/v1`.
+Model Context Protocol endpoint, built on **FastMCP** (official `mcp` SDK):
+Streamable HTTP transport, stateless, JSON responses. Served at the **root**
+`/mcp` (and `/mcp/`), *not* under `/api/v1`. Configure MCP clients with
+`<api-base>/mcp` (e.g. `https://api-…up.railway.app/mcp`).
 
 **Auth**: `Authorization: Bearer nzk_…` (a service account key, not a JWT). A
-missing / invalid / revoked key returns `401`.
+missing / invalid / revoked key returns `401` before the request reaches the
+MCP handler.
 
-**Methods**: `initialize`, `notifications/initialized`, `ping`, `tools/list`,
-`tools/call`. Requests get an `application/json` JSON-RPC response;
-notifications (no `id`) get `202` with an empty body. Batches (JSON arrays) are
-supported. `GET`/`DELETE /mcp` return `405` (no server-initiated SSE stream, no
-session to terminate).
+**Protocol**: standard MCP — `initialize`, `tools/list`, `tools/call`, `ping`,
+and notifications, all handled by the SDK. The client must send
+`Accept: application/json, text/event-stream`.
 
 **Tools** (all read-only, in the key owner's context):
 - `list_feed` `{ "limit"?: int }` — the personalised, ranked feed.
 - `search_articles` `{ "query": str, "limit"?: int }` — text search.
 - `get_article` `{ "article_id": str }` — one article incl. full content.
 
-Tool results are returned as `tools/call` results with a single `text` content
-block whose text is the JSON payload. Tool-level failures (bad argument,
-missing article) come back as a result with `"isError": true` — not a JSON-RPC
-error — per the MCP spec.
+Each tool result is a `tools/call` result with a `text` content block whose
+text is the JSON payload. Tool-level failures (bad argument, missing article)
+come back as a result with `"isError": true` — not a protocol error — per the
+MCP spec.

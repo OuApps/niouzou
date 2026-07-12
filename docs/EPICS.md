@@ -4930,15 +4930,21 @@ le front. Une clé agit dans le contexte de l'utilisateur qui l'a créée
 (mêmes sources, mêmes scores) : le serveur MCP ne fait qu'exposer en
 lecture ce que l'API REST expose déjà à cet utilisateur.
 
-**Choix d'implémentation** : le transport **Streamable HTTP** de MCP est
-implémenté à la main comme un router FastAPI JSON-RPC 2.0 *stateless*
-(`routers/mcp.py` → `services/mcp_service.py`), plutôt que via le SDK `mcp`
-officiel. Raisons : rester dans le pattern maison (router mince → service),
-garder l'image Docker légère (Colima/Railway), et rester testable avec le
-`ASGITransport` httpx déjà utilisé partout — pas de session manager ni de
-lifespan à câbler. Le serveur ne répond qu'en `application/json` (pas de
-flux SSE côté serveur), ce qui est conforme au spec pour un serveur sans
-session.
+**Choix d'implémentation** : serveur bâti sur **FastMCP** du SDK MCP officiel
+(`mcp` — `mcp.server.fastmcp.FastMCP`), en transport **Streamable HTTP**
+*stateless* + `json_response=True`. Les outils vivent dans `niouzou/mcp_app.py`
+et délèguent à `services/mcp_service.py`. Deux points d'intégration à noter :
+- **Auth** : FastMCP est enveloppé dans un petit middleware ASGI
+  (`ServiceAccountAuthMiddleware`) qui résout la clé service account et publie
+  l'`user_id` dans un `contextvar` lu par les outils — on évite ainsi toute la
+  machinerie OAuth de FastMCP pour une simple clé d'API.
+- **Montage** : monté en catch-all racine (`app.mount("", …)`, ajouté en
+  dernier) pour servir `/mcp` **et** `/mcp/` sans redirection 307 ; le
+  middleware ne prend que ces deux chemins et 404 le reste. La protection
+  DNS-rebinding de FastMCP est désactivée (elle n'autorise que localhost et
+  casserait derrière un vrai domaine — la clé est la vraie barrière).
+- Le `session_manager` de FastMCP tourne via `mcp_lifespan` câblé sur le
+  `lifespan` de l'app FastAPI.
 
 **Auth** : `Authorization: Bearer nzk_…`. La clé brute n'est jamais
 stockée : on persiste son SHA-256 (jeton haute entropie → pas besoin de
@@ -4980,20 +4986,18 @@ identifier la clé dans l'UI. Le jeton complet n'est renvoyé **qu'une fois**,
 
 #### [x] E22-S3 — Endpoint MCP Streamable HTTP + outils
 
-- `POST /mcp` — JSON-RPC 2.0 stateless, auth par clé service account.
-  Méthodes : `initialize`, `notifications/initialized`, `ping`,
-  `tools/list`, `tools/call`. Notifications → 202 sans corps ; requêtes →
-  `application/json`. Batch supporté. `GET`/`DELETE /mcp` → 405 (pas de flux
-  SSE serveur / pas de session à terminer).
-- `McpService` : dispatch + définitions d'outils, délègue aux services
-  existants (`FeedService`, `ExploreService`) et lit le contenu article en
-  direct. Outils exposés (lecture seule, contexte propriétaire de la clé) :
+- `POST /mcp` (et `/mcp/`) — FastMCP Streamable HTTP stateless, réponses
+  `application/json`, auth par clé service account. Le SDK gère le protocole
+  MCP (`initialize`, `tools/list`, `tools/call`, `ping`, notifications).
+- Outils FastMCP dans `mcp_app.py`, déléguant à `McpService` (lui-même
+  s'appuyant sur `FeedService` / `ExploreService` et lisant le contenu article
+  en direct). Outils exposés (lecture seule, contexte propriétaire de la clé) :
   - `list_feed` `{limit?}` — le fil scoré et rangé de l'utilisateur
   - `search_articles` `{query, limit?}` — recherche texte sur ses articles
   - `get_article` `{article_id}` — détail + contenu plein texte
-- Toute erreur outil (article introuvable, mauvais argument) est renvoyée
-  comme résultat `tools/call` avec `isError: true` (pas une erreur JSON-RPC),
-  conformément au spec.
+- Toute erreur outil (article introuvable, mauvais argument) lève une
+  `McpToolError` que FastMCP renvoie en résultat `tools/call` avec
+  `isError: true` (pas une erreur de protocole), conformément au spec.
 
 #### [x] E22-S4 — UI Admin (générer / lister / révoquer)
 

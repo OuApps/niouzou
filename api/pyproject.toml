@@ -25,6 +25,8 @@ dependencies = [
     "lxml>=6.1",
     # SQLAlchemy/asyncpg adapter for the Postgres `vector` type (E16-S1).
     "pgvector>=0.3",
+    # Official MCP SDK — powers the FastMCP server exposed at /mcp (E22).
+    "mcp>=1.12",
 ]
 
 [project.optional-dependencies]
