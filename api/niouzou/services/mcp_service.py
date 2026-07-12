@@ -1,9 +1,12 @@
 """MCP tool logic (E22-S3).
 
-The JSON-RPC transport lives in ``routers/mcp.py``; this service owns the tool
-catalogue and their implementations. Every tool runs read-only in the context
-of the user who owns the service account key, delegating to the same services
-that back the REST API so scoring / ownership rules can't drift.
+The FastMCP server (``niouzou/mcp_app.py``) owns the protocol/transport and the
+tool registrations; this service owns the tool *implementations*. Every tool
+runs read-only in the context of the user who owns the service account key,
+delegating to the same services that back the REST API so scoring / ownership
+rules can't drift. Methods return plain JSON-serialisable dicts and raise
+``McpToolError`` on bad input / missing rows — FastMCP turns that into an
+``isError`` tool result.
 """
 
 import uuid
@@ -26,96 +29,22 @@ MAX_LIMIT = 50
 class McpToolError(Exception):
     """A tool-level failure (bad argument, missing article).
 
-    Surfaced to the client as a ``tools/call`` result with ``isError: true``
-    rather than a JSON-RPC protocol error, per the MCP spec.
+    FastMCP surfaces it to the client as a ``tools/call`` result with
+    ``isError: true`` rather than a JSON-RPC protocol error.
     """
 
 
-# Tool catalogue advertised by ``tools/list``. JSON Schema per the MCP spec.
-TOOLS: list[dict] = [
-    {
-        "name": "list_feed",
-        "description": (
-            "Return the current personalised Niouzou feed: the top-ranked "
-            "articles the user hasn't seen yet, most relevant first."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": f"How many articles (1-{MAX_LIMIT}).",
-                    "minimum": 1,
-                    "maximum": MAX_LIMIT,
-                }
-            },
-        },
-    },
-    {
-        "name": "search_articles",
-        "description": (
-            "Full-text search over the user's enriched articles (title and "
-            "summary), newest first."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Text to search for.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": f"How many results (1-{MAX_LIMIT}).",
-                    "minimum": 1,
-                    "maximum": MAX_LIMIT,
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "get_article",
-        "description": (
-            "Fetch one article by id, including its full crawled text content."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "article_id": {
-                    "type": "string",
-                    "description": "The article UUID.",
-                }
-            },
-            "required": ["article_id"],
-        },
-    },
-]
+def _clamp_limit(limit: int | None) -> int:
+    try:
+        value = int(limit) if limit is not None else DEFAULT_LIMIT
+    except (TypeError, ValueError):
+        raise McpToolError("`limit` must be an integer") from None
+    return max(1, min(MAX_LIMIT, value))
 
 
 class McpService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
-
-    async def dispatch(
-        self, user_id: uuid.UUID, name: str, arguments: dict
-    ) -> dict:
-        """Run a tool by name; returns a JSON-serialisable result payload."""
-        if name == "list_feed":
-            return await self._list_feed(user_id, arguments)
-        if name == "search_articles":
-            return await self._search_articles(user_id, arguments)
-        if name == "get_article":
-            return await self._get_article(user_id, arguments)
-        raise McpToolError(f"Unknown tool: {name}")
-
-    def _clamp_limit(self, arguments: dict) -> int:
-        raw = arguments.get("limit", DEFAULT_LIMIT)
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            raise McpToolError("`limit` must be an integer") from None
-        return max(1, min(MAX_LIMIT, value))
 
     @staticmethod
     def _article_summary(a: FeedArticle) -> dict:
@@ -131,35 +60,32 @@ class McpService:
             "published_at": a.published_at.isoformat() if a.published_at else None,
         }
 
-    async def _list_feed(self, user_id: uuid.UUID, arguments: dict) -> dict:
-        limit = self._clamp_limit(arguments)
+    async def list_feed(self, user_id: uuid.UUID, limit: int | None) -> dict:
         page = await FeedService(self.session).get_feed(
-            user_id, cursor=None, limit=limit
+            user_id, cursor=None, limit=_clamp_limit(limit)
         )
         return {
             "articles": [self._article_summary(a) for a in page.articles],
             "count": len(page.articles),
         }
 
-    async def _search_articles(
-        self, user_id: uuid.UUID, arguments: dict
+    async def search_articles(
+        self, user_id: uuid.UUID, query: str, limit: int | None
     ) -> dict:
-        query = str(arguments.get("query", "")).strip()
-        if not query:
+        term = (query or "").strip()
+        if not term:
             raise McpToolError("`query` is required")
-        limit = self._clamp_limit(arguments)
         page = await ExploreService(self.session).search(
-            user_id, query, cursor=None, limit=limit
+            user_id, term, cursor=None, limit=_clamp_limit(limit)
         )
         return {
             "articles": [self._article_summary(a) for a in page.articles],
             "count": len(page.articles),
         }
 
-    async def _get_article(self, user_id: uuid.UUID, arguments: dict) -> dict:
-        raw_id = str(arguments.get("article_id", "")).strip()
+    async def get_article(self, user_id: uuid.UUID, article_id: str) -> dict:
         try:
-            article_id = uuid.UUID(raw_id)
+            aid = uuid.UUID(str(article_id).strip())
         except ValueError:
             raise McpToolError("`article_id` must be a valid UUID") from None
 
@@ -178,7 +104,7 @@ class McpService:
                 .join(Source, Source.id == Article.source_id)
                 .where(
                     and_(
-                        Article.id == article_id,
+                        Article.id == aid,
                         Source.user_id == user_id,
                         Source.deleted_at.is_(None),
                         Article.status == STATUS_ENRICHED,
@@ -192,7 +118,7 @@ class McpService:
         keywords = (
             await self.session.scalars(
                 select(ArticleKeyword.term)
-                .where(ArticleKeyword.article_id == article_id)
+                .where(ArticleKeyword.article_id == aid)
                 .order_by(
                     ArticleKeyword.salience.desc(), ArticleKeyword.term.asc()
                 )

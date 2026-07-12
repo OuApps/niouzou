@@ -16,6 +16,7 @@ from niouzou.errors import (
     http_exception_handler,
     validation_exception_handler,
 )
+from niouzou.mcp_app import mcp_asgi_app, mcp_lifespan
 from niouzou.routers import (
     admin,
     articles,
@@ -24,14 +25,15 @@ from niouzou.routers import (
     feed,
     feedback,
     keywords,
-    mcp,
     me,
     saved,
     sources,
     stats,
 )
 
-app = FastAPI(title="Niouzou API", version="0.1.0")
+# ``mcp_lifespan`` runs the FastMCP Streamable HTTP session manager for the
+# app's lifetime (E22).
+app = FastAPI(title="Niouzou API", version="0.1.0", lifespan=mcp_lifespan)
 
 # Allow the PWA (any origin in dev, tighten in prod via CORS_ORIGINS env var)
 app.add_middleware(
@@ -62,12 +64,17 @@ for module in (
 ):
     app.include_router(module.router, prefix=API_PREFIX)
 
-# E22 — the MCP server speaks a different protocol (JSON-RPC) and auth scheme
-# (service account key), so it's mounted at the root ``/mcp`` rather than under
-# the versioned REST prefix. MCP clients are configured with this URL directly.
-app.include_router(mcp.router)
-
 
 @app.get("/health", tags=["health"])
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# E22 — the FastMCP server speaks a different protocol (MCP / JSON-RPC) and
+# auth scheme (service account key), so it lives at the root ``/mcp`` rather
+# than under the versioned REST prefix. Mounted LAST as a root-level catch-all
+# (empty prefix) so it can't shadow the REST routes or ``/health``: ``POST
+# /mcp`` hits the handler directly with no trailing-slash redirect, while the
+# middleware restricts itself to ``/mcp`` and ``/mcp/`` and 404s everything
+# else, leaving the REST 404s untouched.
+app.mount("", mcp_asgi_app)

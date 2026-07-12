@@ -74,12 +74,14 @@ External:
 - Handles authentication, feed delivery, feedback reception
 - On each like/dislike/save API call: upserts `article_feedbacks` (idempotent — repeated likes = 1 like) then synchronously recomputes `keyword_weights` for affected keywords (row-level lock)
 - Also the base image for all cron jobs
-- Hosts the **MCP server** (E22) at the root `/mcp` — a hand-rolled,
-  stateless JSON-RPC 2.0 Streamable HTTP endpoint (no external MCP SDK) that
-  exposes read-only `list_feed` / `search_articles` / `get_article` tools.
-  Authenticated by **service account keys** (`Authorization: Bearer nzk_…`,
-  SHA-256 fingerprinted in `service_account_keys`), each acting in the context
-  of the admin who created it. Admins generate / revoke keys via
+- Hosts the **MCP server** (E22) at the root `/mcp` — built on **FastMCP**
+  (official `mcp` SDK), stateless Streamable HTTP with JSON responses, exposing
+  read-only `list_feed` / `search_articles` / `get_article` tools
+  (`niouzou/mcp_app.py` → `services/mcp_service.py`). Authenticated by
+  **service account keys** (`Authorization: Bearer nzk_…`, SHA-256
+  fingerprinted in `service_account_keys`) via a thin ASGI middleware that puts
+  the key owner in a context var for the tools; each key acts in the context of
+  the admin who created it. Admins generate / revoke keys via
   `/admin/mcp-keys`.
 
 ### React PWA (front)
