@@ -106,8 +106,12 @@ async def test_revoke_unknown_raises_404(db_session):
 async def test_list_all_newest_first(db_session):
     user = await make_user(db_session)
     svc = ServiceAccountService(db_session)
-    k1, _ = await svc.create(user.id, "first")
-    k2, _ = await svc.create(user.id, "second")
+    # Commit between creates so the two rows get distinct ``now()`` timestamps
+    # (now() is transaction-start time — same for rows made in one txn). This
+    # mirrors real usage: each key is minted in its own request/transaction.
+    await svc.create(user.id, "first")
+    await db_session.commit()
+    await svc.create(user.id, "second")
     await db_session.commit()
 
     keys = await svc.list_all()
@@ -175,11 +179,10 @@ async def test_admin_endpoints_forbid_non_admin(db_session):
 
 # ── FastMCP server (E22-S3) ─────────────────────────────────────────────────
 #
-# Tool logic is covered directly via McpService above / by the service tests;
-# these drive the real FastMCP HTTP transport end to end. The Streamable HTTP
-# session manager needs the app lifespan running, which httpx's ASGITransport
-# doesn't trigger — so each test enters ``app.router.lifespan_context`` itself
-# (no extra dependency needed).
+# A FastMCP session manager can only be run() once, so each test builds a fresh
+# server via ``build_mcp_server`` and enters its own lifespan (keeping the
+# per-test event-loop model the rest of the suite relies on). The tool logic is
+# also covered directly through McpService / the service tests above.
 
 _MCP_HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -191,11 +194,25 @@ def _auth(token: str) -> dict:
     return {**_MCP_HEADERS, "Authorization": f"Bearer {token}"}
 
 
-def _mcp_client():
-    from niouzou.main import app
+class _mcp_server:
+    """Async context manager yielding an httpx client bound to a fresh MCP
+    server whose Streamable HTTP session manager is running."""
 
-    transport = httpx.ASGITransport(app=app)
-    return httpx.AsyncClient(transport=transport, base_url="http://mcp.test")
+    async def __aenter__(self):
+        from niouzou.mcp_app import build_mcp_server
+
+        _, asgi_app, lifespan = build_mcp_server()
+        self._lifespan = lifespan(None)
+        await self._lifespan.__aenter__()
+        transport = httpx.ASGITransport(app=asgi_app)
+        self._client = httpx.AsyncClient(
+            transport=transport, base_url="http://mcp.test"
+        )
+        return self._client
+
+    async def __aexit__(self, *exc):
+        await self._client.aclose()
+        await self._lifespan.__aexit__(*exc)
 
 
 async def _make_key(db_session, *, email="mcp@test.dev"):
@@ -215,7 +232,7 @@ def _call_body(resp) -> dict:
 
 
 async def test_mcp_registers_three_tools():
-    """No DB / no HTTP — the server advertises exactly our three tools."""
+    """No DB / no HTTP — the shared server advertises exactly our three tools."""
     from niouzou.mcp_app import mcp
 
     tools = await mcp.list_tools()
@@ -227,61 +244,53 @@ async def test_mcp_registers_three_tools():
 
 
 async def test_mcp_requires_valid_key(db_session):
-    from niouzou.main import app
-
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            # No auth header at all.
-            resp = await client.post(
-                "/mcp",
-                headers=_MCP_HEADERS,
-                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            )
-            assert resp.status_code == 401
-            # A bogus key.
-            resp = await client.post(
-                "/mcp",
-                headers=_auth("nzk_bogus"),
-                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            )
-            assert resp.status_code == 401
+    async with _mcp_server() as client:
+        # No auth header at all.
+        resp = await client.post(
+            "/mcp",
+            headers=_MCP_HEADERS,
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        )
+        assert resp.status_code == 401
+        # A bogus key.
+        resp = await client.post(
+            "/mcp",
+            headers=_auth("nzk_bogus"),
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        )
+        assert resp.status_code == 401
 
 
 async def test_mcp_initialize_and_tools_list(db_session):
-    from niouzou.main import app
-
     _, token = await _make_key(db_session)
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "clientInfo": {"name": "pytest", "version": "1"},
-                    },
+    async with _mcp_server() as client:
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1"},
                 },
-            )
-            assert resp.status_code == 200
-            assert resp.json()["result"]["serverInfo"]["name"] == "niouzou"
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["result"]["serverInfo"]["name"] == "niouzou"
 
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-            )
-            names = {t["name"] for t in resp.json()["result"]["tools"]}
-            assert names == {"list_feed", "search_articles", "get_article"}
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+        names = {t["name"] for t in resp.json()["result"]["tools"]}
+        assert names == {"list_feed", "search_articles", "get_article"}
 
 
 async def test_mcp_revoked_key_is_rejected(db_session):
-    from niouzou.main import app
-
     user = await make_user(db_session, email="rev@test.dev")
     svc = ServiceAccountService(db_session)
     key, token = await svc.create(user.id, "MCP")
@@ -289,48 +298,42 @@ async def test_mcp_revoked_key_is_rejected(db_session):
     await svc.revoke(key.id)
     await db_session.commit()
 
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            )
-            assert resp.status_code == 401
+    async with _mcp_server() as client:
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        )
+        assert resp.status_code == 401
 
 
 async def test_mcp_list_feed_returns_scored_articles(db_session):
-    from niouzou.main import app
-
     user, token = await _make_key(db_session)
     source = await make_source(db_session, user)
     article = await make_article(db_session, source, title="Rust wins")
     await set_relevance(db_session, article, user, 0.9)
     await db_session.commit()
 
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 5,
-                    "method": "tools/call",
-                    "params": {"name": "list_feed", "arguments": {"limit": 10}},
-                },
-            )
-            assert resp.status_code == 200
-            body = _call_body(resp)
-            assert body["isError"] is False
-            assert body["payload"]["count"] == 1
-            assert body["payload"]["articles"][0]["title"] == "Rust wins"
-            assert body["payload"]["articles"][0]["score"] == 0.9
+    async with _mcp_server() as client:
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "list_feed", "arguments": {"limit": 10}},
+            },
+        )
+        assert resp.status_code == 200
+        body = _call_body(resp)
+        assert body["isError"] is False
+        assert body["payload"]["count"] == 1
+        assert body["payload"]["articles"][0]["title"] == "Rust wins"
+        assert body["payload"]["articles"][0]["score"] == 0.9
 
 
 async def test_mcp_get_article_returns_content(db_session):
-    from niouzou.main import app
-
     user, token = await _make_key(db_session)
     source = await make_source(db_session, user)
     article = await make_article(db_session, source, title="Deep dive")
@@ -338,57 +341,51 @@ async def test_mcp_get_article_returns_content(db_session):
     await set_relevance(db_session, article, user, 0.5)
     await db_session.commit()
 
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 6,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "get_article",
-                        "arguments": {"article_id": str(article.id)},
-                    },
+    async with _mcp_server() as client:
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_article",
+                    "arguments": {"article_id": str(article.id)},
                 },
-            )
-            body = _call_body(resp)
-            assert body["payload"]["title"] == "Deep dive"
-            assert body["payload"]["content"] == "Full article body here."
+            },
+        )
+        body = _call_body(resp)
+        assert body["payload"]["title"] == "Deep dive"
+        assert body["payload"]["content"] == "Full article body here."
 
 
 async def test_mcp_get_article_unknown_is_error_result(db_session):
     import uuid
 
-    from niouzou.main import app
-
     _, token = await _make_key(db_session)
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 7,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "get_article",
-                        "arguments": {"article_id": str(uuid.uuid4())},
-                    },
+    async with _mcp_server() as client:
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_article",
+                    "arguments": {"article_id": str(uuid.uuid4())},
                 },
-            )
-            # A tool-level failure comes back as isError, not a protocol error.
-            assert resp.status_code == 200
-            body = _call_body(resp)
-            assert body["isError"] is True
+            },
+        )
+        # A tool-level failure comes back as isError, not a protocol error.
+        assert resp.status_code == 200
+        body = _call_body(resp)
+        assert body["isError"] is True
 
 
 async def test_mcp_key_scopes_to_owner(db_session):
     """A key only sees its owner's articles, never another user's."""
-    from niouzou.main import app
-
     owner, token = await _make_key(db_session, email="owner@test.dev")
     other = await make_user(db_session, email="other@test.dev")
     other_source = await make_source(db_session, other, feed_id=99)
@@ -396,33 +393,32 @@ async def test_mcp_key_scopes_to_owner(db_session):
     await set_relevance(db_session, other_article, other, 0.9)
     await db_session.commit()
 
-    async with app.router.lifespan_context(app):
-        async with _mcp_client() as client:
-            # Empty feed for the owner (they have no articles of their own).
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "list_feed", "arguments": {}},
-                },
-            )
-            assert _call_body(resp)["payload"]["count"] == 0
+    async with _mcp_server() as client:
+        # Empty feed for the owner (they have no articles of their own).
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "list_feed", "arguments": {}},
+            },
+        )
+        assert _call_body(resp)["payload"]["count"] == 0
 
-            # The other user's article is not found for this key.
-            resp = await client.post(
-                "/mcp",
-                headers=_auth(token),
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "get_article",
-                        "arguments": {"article_id": str(other_article.id)},
-                    },
+        # The other user's article is not found for this key.
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_article",
+                    "arguments": {"article_id": str(other_article.id)},
                 },
-            )
-            assert _call_body(resp)["isError"] is True
+            },
+        )
+        assert _call_body(resp)["isError"] is True
