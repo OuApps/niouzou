@@ -74,6 +74,9 @@ async def test_authenticate_resolves_owner_and_stamps_last_used(db_session):
     resolved = await svc.authenticate(token)
     assert resolved is not None
     assert resolved.id == user.id
+    # authenticate stamps last_used_at on the session but leaves the commit to
+    # the request boundary — persist it, then reload to confirm it stuck.
+    await db_session.commit()
     await db_session.refresh(key)
     assert key.last_used_at is not None
 
@@ -223,11 +226,18 @@ async def _make_key(db_session, *, email="mcp@test.dev"):
 
 
 def _call_body(resp) -> dict:
-    """Extract and JSON-decode a tools/call text result."""
+    """Unpack a tools/call result.
+
+    A success carries a JSON payload in its text block; an ``isError`` result
+    carries the plain error message (not JSON), so only decode on success.
+    """
     result = resp.json()["result"]
+    is_error = result["isError"]
+    text = result["content"][0]["text"]
     return {
-        "isError": result["isError"],
-        "payload": json.loads(result["content"][0]["text"]),
+        "isError": is_error,
+        "text": text,
+        "payload": None if is_error else json.loads(text),
     }
 
 
@@ -382,6 +392,7 @@ async def test_mcp_get_article_unknown_is_error_result(db_session):
         assert resp.status_code == 200
         body = _call_body(resp)
         assert body["isError"] is True
+        assert "not found" in body["text"].lower()
 
 
 async def test_mcp_key_scopes_to_owner(db_session):
