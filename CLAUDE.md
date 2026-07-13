@@ -118,6 +118,29 @@ When the maintainer asks about the "state of niouzou" or what's currently happen
 
 This is the **live production database** — `SELECT` queries are fine for debugging, but never run `UPDATE`/`DELETE`/DDL against it without explicit confirmation from the maintainer.
 
+### Claude Code cloud sessions — bootstrap
+
+Claude Code on the web starts from a fresh, un-provisioned container. A
+SessionStart hook (`.claude/settings.json`, matcher `startup|resume`) runs
+`scripts/cloud_session_setup.sh` to make the session Railway-ready and buildable.
+The script is **cloud-only** (`CLAUDE_CODE_REMOTE=true`), **best-effort** (a flaky
+registry warns, never blocks — it always exits 0), and **idempotent** (fast on
+resume). It: installs the Railway CLI (`npm i -g @railway/cli`), installs deps
+(`api` → `uv sync --frozen`, `pwa` → `npm ci`), and scopes the CLI to
+`niouzou` / `production` / `api`. It never downloads an interpreter — the proxy
+blocks GitHub release downloads (403), so it uses the image's system Python 3.13
+(`UV_PYTHON_DOWNLOADS=never`) and Node 22.
+
+**Railway token strategy** (set once in the Claude Code UI environment):
+- **Account token** `RAILWAY_API_TOKEN` — a personal token that can reach every
+  project in the workspace. The CLI is authed but unscoped, so the script runs
+  `railway link --project … --environment production --service api`. This is the
+  shared-across-repos setup; only the three project/env/service values differ per
+  repo.
+- **Project token** `RAILWAY_TOKEN` — scoped to one project/environment. The CLI
+  auto-scopes, so the script **skips** `railway link` (calling it would return
+  Unauthorized).
+
 ## Licence
 
 GNU AGPL-3.0 — open source; a modified version run as a network service must publish its source (AGPL §13). Contributions under `CLA.md` (keeps a future commercial/dual licence possible).
