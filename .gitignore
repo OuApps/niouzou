@@ -37,7 +37,10 @@ env/
 # IDE
 .vscode/
 .idea/
-.claude/
+# Ignore local Claude Code state, but keep the shared SessionStart hook config
+# (registers scripts/cloud_session_setup.sh — the cloud bootstrap) tracked.
+.claude/*
+!.claude/settings.json
 *.swp
 *.swo
 *~
