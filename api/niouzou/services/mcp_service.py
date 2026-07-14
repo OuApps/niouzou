@@ -1,29 +1,32 @@
-"""MCP tool logic (E22-S3).
+"""MCP tool logic (E22-S3, re-scoped E23-S1).
 
 The FastMCP server (``niouzou/mcp_app.py``) owns the protocol/transport and the
-tool registrations; this service owns the tool *implementations*. Every tool
-runs read-only in the context of the user who owns the service account key,
-delegating to the same services that back the REST API so scoring / ownership
-rules can't drift. Methods return plain JSON-serialisable dicts and raise
-``McpToolError`` on bad input / missing rows — FastMCP turns that into an
-``isError`` tool result.
+tool registrations; this service owns the tool *implementations*.
+
+Since E23 the MCP is an **identity of its own**, decoupled from any user: the
+tools read the whole enriched-article corpus **read-only** and never expose
+scores, feedback or any per-user data. Every article projection carries a
+``niouzou_url`` deep link (``{PUBLIC_APP_URL}/article/{id}``) so a Niouzou user
+can open the article in the app. Methods return plain JSON-serialisable dicts
+and raise ``McpToolError`` on bad input / missing rows — FastMCP turns that
+into an ``isError`` tool result.
 """
 
 import uuid
 
-from sqlalchemy import and_, select
+from sqlalchemy import func, or_, select
 
+from niouzou.config import get_settings
 from niouzou.deps import SessionDep
 from niouzou.models import Article, ArticleKeyword, Source
 from niouzou.models.article import STATUS_ENRICHED
-from niouzou.schemas.feed import FeedArticle
-from niouzou.services.explore_service import ExploreService
-from niouzou.services.feed_service import FeedService
 
 # Default / max rows a listing tool returns. Kept modest so a single tool call
 # doesn't dump a huge payload into the model's context.
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
+# Shorter queries are too broad to be useful; short-circuit them.
+MIN_SEARCH_CHARS = 2
 
 
 class McpToolError(Exception):
@@ -42,48 +45,91 @@ def _clamp_limit(limit: int | None) -> int:
     return max(1, min(MAX_LIMIT, value))
 
 
+def niouzou_article_url(article_id: uuid.UUID | str) -> str:
+    """Shareable Niouzou deep link for an article (E23-S2).
+
+    ``{PUBLIC_APP_URL}/article/{id}`` when the public URL is configured,
+    otherwise the path-only ``/article/{id}`` so the payload still degrades
+    to something a same-origin client can resolve.
+    """
+    base = get_settings().public_app_url.rstrip("/")
+    return f"{base}/article/{article_id}"
+
+
 class McpService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
 
     @staticmethod
-    def _article_summary(a: FeedArticle) -> dict:
-        """Compact projection of a feed/search row for a listing tool."""
+    def _summary(row) -> dict:
+        """Compact, score-free projection of a listing/search row."""
         return {
-            "id": str(a.id),
-            "title": a.title,
-            "url": a.url,
-            "source": a.source.name,
-            "summary": a.summary_short,
-            "keywords": a.keywords,
-            "score": a.smart_score if a.active_method == "smart" else a.keyword_score,
-            "published_at": a.published_at.isoformat() if a.published_at else None,
+            "id": str(row.id),
+            "title": row.title,
+            "niouzou_url": niouzou_article_url(row.id),
+            "url": row.url,
+            "source": row.source_name,
+            "summary": row.summary_short,
+            "published_at": (
+                row.published_at.isoformat() if row.published_at else None
+            ),
         }
 
-    async def list_feed(self, user_id: uuid.UUID, limit: int | None) -> dict:
-        page = await FeedService(self.session).get_feed(
-            user_id, cursor=None, limit=_clamp_limit(limit)
+    def _listing_select(self):
+        """Base query for the score-free listing/search tools."""
+        return (
+            select(
+                Article.id,
+                Article.title,
+                Article.url,
+                Article.summary_short,
+                Article.published_at,
+                Source.name.label("source_name"),
+            )
+            .join(Source, Source.id == Article.source_id)
+            .where(
+                Article.status == STATUS_ENRICHED,
+                Source.deleted_at.is_(None),
+            )
+            .order_by(
+                func.coalesce(Article.published_at, Article.created_at).desc(),
+                Article.id.desc(),
+            )
         )
-        return {
-            "articles": [self._article_summary(a) for a in page.articles],
-            "count": len(page.articles),
-        }
 
-    async def search_articles(
-        self, user_id: uuid.UUID, query: str, limit: int | None
-    ) -> dict:
+    async def list_recent_articles(self, limit: int | None) -> dict:
+        """Newest enriched articles across the whole base — no personalisation."""
+        rows = (
+            await self.session.execute(
+                self._listing_select().limit(_clamp_limit(limit))
+            )
+        ).all()
+        return {"articles": [self._summary(r) for r in rows], "count": len(rows)}
+
+    async def search_articles(self, query: str, limit: int | None) -> dict:
         term = (query or "").strip()
-        if not term:
-            raise McpToolError("`query` is required")
-        page = await ExploreService(self.session).search(
-            user_id, term, cursor=None, limit=_clamp_limit(limit)
-        )
-        return {
-            "articles": [self._article_summary(a) for a in page.articles],
-            "count": len(page.articles),
-        }
+        if len(term) < MIN_SEARCH_CHARS:
+            raise McpToolError(
+                f"`query` must be at least {MIN_SEARCH_CHARS} characters"
+            )
+        # Escape LIKE wildcards so '%' / '_' in user input stay literal.
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        rows = (
+            await self.session.execute(
+                self._listing_select()
+                .where(
+                    or_(
+                        Article.title.ilike(pattern, escape="\\"),
+                        Article.summary_executive.ilike(pattern, escape="\\"),
+                    )
+                )
+                .limit(_clamp_limit(limit))
+            )
+        ).all()
+        return {"articles": [self._summary(r) for r in rows], "count": len(rows)}
 
-    async def get_article(self, user_id: uuid.UUID, article_id: str) -> dict:
+    async def get_article(self, article_id: str) -> dict:
         try:
             aid = uuid.UUID(str(article_id).strip())
         except ValueError:
@@ -103,12 +149,9 @@ class McpService:
                 )
                 .join(Source, Source.id == Article.source_id)
                 .where(
-                    and_(
-                        Article.id == aid,
-                        Source.user_id == user_id,
-                        Source.deleted_at.is_(None),
-                        Article.status == STATUS_ENRICHED,
-                    )
+                    Article.id == aid,
+                    Source.deleted_at.is_(None),
+                    Article.status == STATUS_ENRICHED,
                 )
             )
         ).first()
@@ -128,6 +171,7 @@ class McpService:
         return {
             "id": str(row.id),
             "title": row.title,
+            "niouzou_url": niouzou_article_url(row.id),
             "url": row.url,
             "source": row.source_name,
             "summary": row.summary_short,

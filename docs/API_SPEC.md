@@ -256,7 +256,15 @@ Destructive and irreversible; clients should gate it behind a confirmation.
 ## Articles
 
 ### GET /articles/{id}
-Returns full article details. Called when user taps to expand an article before visiting the original URL.
+Returns full article details. Called when user taps to expand an article before
+visiting the original URL, and by the standalone deep-link view `/article/:id`
+(E23-S4).
+
+**E23-S3** — no longer scoped to the caller's sources: **any** article is
+fetchable by id (so shared / MCP `niouzou_url` links open). `owned` says whether
+the article comes from one of the caller's own sources. When `owned` is `false`
+the score/feedback fields fall back to their defaults (`null` scores, `"none"`
+reaction) — the client displays it read-only, without scoring.
 
 **Response `200`**
 ```json
@@ -266,6 +274,7 @@ Returns full article details. Called when user taps to expand an article before 
   "url": "https://example.com/article",
   "summary_short": null,
   "summary_executive": "- Rust adoption up 40% in systems programming\n- ...",
+  "content": "Full crawled article body…",
   "og_image_url": "https://example.com/image.jpg",
   "source": {
     "id": "uuid",
@@ -283,10 +292,16 @@ Returns full article details. Called when user taps to expand an article before 
   "is_premium": false,
   "reaction": "like",
   "is_saved": false,
-  "read_full_article": false
+  "read_full_article": false,
+  "owned": true
 }
 ```
 
+> `content` (E23-S4) is the full crawled body, so the standalone reading view
+> can render the article inline; `null` when none was crawled.
+> `owned` (E23-S3) is `false` for a deep-linked article from a source the user
+> doesn't subscribe to — displayed, not scored. A genuinely missing id still
+> returns `404`.
 > `summary_executive` is null when AI enrichment is disabled. It is the
 > only AI-generated summary; `summary_short` is a legacy column that stays
 > on already-enriched rows but is `null` on anything enriched after
@@ -1265,8 +1280,10 @@ Reject a preview without applying it. Marks the run `status='rejected'`.
 ---
 
 ### POST /admin/mcp-keys
-**E22** — Mint a service account key for the MCP server, bound to the calling
-admin's context (its tools read that admin's feed/articles).
+**E22** — Mint a service account key for the MCP server. Since **E23-S1** the key
+is just the MCP's auth credential (the MCP has its own identity and reads the
+whole corpus, score-free); the recorded `user_id` is only an audit trail of the
+creating admin, not a scoping context.
 
 **Requires admin role**
 
@@ -1324,16 +1341,25 @@ Streamable HTTP transport, stateless, JSON responses. Served at the **root**
 
 **Auth**: `Authorization: Bearer nzk_…` (a service account key, not a JWT). A
 missing / invalid / revoked key returns `401` before the request reaches the
-MCP handler.
+MCP handler. Since **E23-S1** the key is only the auth boundary — the MCP has
+its **own identity**, not a user's context.
 
 **Protocol**: standard MCP — `initialize`, `tools/list`, `tools/call`, `ping`,
 and notifications, all handled by the SDK. The client must send
 `Accept: application/json, text/event-stream`.
 
-**Tools** (all read-only, in the key owner's context):
-- `list_feed` `{ "limit"?: int }` — the personalised, ranked feed.
-- `search_articles` `{ "query": str, "limit"?: int }` — text search.
+**Tools** (all read-only, over the **whole enriched corpus** — no per-user
+scoping, **no relevance scores**, no feedback; E23-S1):
+- `list_recent_articles` `{ "limit"?: int }` — newest enriched articles across
+  the base (replaces the old `list_feed`).
+- `search_articles` `{ "query": str, "limit"?: int }` — full-text search
+  (title + summary) over the whole base.
 - `get_article` `{ "article_id": str }` — one article incl. full content.
+
+Every article projection carries a **`niouzou_url`** — a shareable deep link
+`{PUBLIC_APP_URL}/article/{id}` (path-only `/article/{id}` when `PUBLIC_APP_URL`
+is unset) that a logged-in Niouzou user can open in the PWA. Payloads never
+include `score` or any user data.
 
 Each tool result is a `tools/call` result with a `text` content block whose
 text is the JSON payload. Tool-level failures (bad argument, missing article)

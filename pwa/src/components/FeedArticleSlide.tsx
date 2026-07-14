@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Lock,
   MessageCircle,
+  Share2,
   Sparkles,
 } from 'lucide-react'
 import { ArticleChatSheet } from './ArticleChatSheet'
@@ -34,6 +35,15 @@ interface Props {
   /** E17-S2 — signals the user is leaving to read the article on its site, so
    *  the feed can keep its position instead of refetching when they return. */
   onOpenExternal?: () => void
+  /** E23-S5 — share the Niouzou deep link. When set, a share button shows in
+   *  the header. */
+  onShare?: () => void
+  /** E23-S4 — rendered outside the feed deck (deep-link `/article/:id`), so the
+   *  "advance to next slide" affordances are dropped. */
+  standalone?: boolean
+  /** E23-S3 — the article isn't from one of the user's sources: no score, no
+   *  feedback actions, no chat — just the reading view. */
+  readOnly?: boolean
 }
 
 // Threshold below which we skip the "Lire plus" toggle entirely — short
@@ -60,6 +70,9 @@ export const FeedArticleSlide = ({
   onToggleSave,
   onMarkRead,
   onOpenExternal,
+  onShare,
+  standalone = false,
+  readOnly = false,
 }: Props) => {
   // Per-slide subscription: this slide only re-renders when its own overlay
   // changes — not when any other article's feedback flips.
@@ -270,15 +283,60 @@ export const FeedArticleSlide = ({
             )}
             {article.source.name}
           </span>
-          <ScoreBadge
-            keywordScore={article.keyword_score}
-            keywordColdStart={article.keyword_cold_start}
-            smartScore={article.smart_score}
-            smartColdStart={article.smart_cold_start}
-            activeMethod={article.active_method}
-            onClick={() => setDebugOpen(true)}
-          />
+          <div className="flex items-center gap-2">
+            {onShare && (
+              <button
+                type="button"
+                onClick={onShare}
+                aria-label="Share this article"
+                className="flex items-center justify-center"
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  background: 'rgba(12,16,24,0.40)',
+                  color: 'var(--text-primary)',
+                  backdropFilter: 'blur(10px)',
+                  WebkitBackdropFilter: 'blur(10px)',
+                  cursor: 'pointer',
+                }}
+              >
+                <Share2 size={16} />
+              </button>
+            )}
+            {!readOnly && (
+              <ScoreBadge
+                keywordScore={article.keyword_score}
+                keywordColdStart={article.keyword_cold_start}
+                smartScore={article.smart_score}
+                smartColdStart={article.smart_cold_start}
+                activeMethod={article.active_method}
+                onClick={() => setDebugOpen(true)}
+              />
+            )}
+          </div>
         </header>
+
+        {/* E23-S3 — deep-linked article from a source the user doesn't follow:
+            surfaced read-only, no scoring. */}
+        {readOnly && (
+          <div
+            style={{
+              margin: '4px 16px 0',
+              padding: '8px 12px',
+              borderRadius: 12,
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: 'var(--text-tertiary)',
+              fontSize: 11,
+              lineHeight: 1.4,
+            }}
+          >
+            Cet article ne vient pas de vos sources — lecture seule, sans
+            personnalisation.
+          </div>
+        )}
 
         {/* ── Hero image — kept inline below the header so the user always
             sees it even after scrolling a bit; the blurred background still
@@ -462,7 +520,7 @@ export const FeedArticleSlide = ({
               summary card above), so instances without an OpenRouter key
               never show a button that would 409. Orange→cyan tint per the
               E21 mockups: related to the accent, distinct from the CTA. */}
-          {article.summary_executive && (
+          {!readOnly && article.summary_executive && (
             <button
               type="button"
               onClick={() => setChatOpen(true)}
@@ -499,23 +557,27 @@ export const FeedArticleSlide = ({
             action bar's container is pointer-events: none (auto on the
             buttons themselves), so taps on the gradient gap fall through
             to this hint underneath. */}
-        <ScrollBoundaryHint
-          bouncing={!nextVisible}
-          onActivate={goToNext}
-          tailExtraPx={180}
-        />
+        {!standalone && (
+          <ScrollBoundaryHint
+            bouncing={!nextVisible}
+            onActivate={goToNext}
+            tailExtraPx={180}
+          />
+        )}
 
 
         {/* Invisible sentinel: the parent stitches the next slide's wrapper
             into this ref so the chevron stops bouncing on intersection. */}
-        <div
-          ref={(el) => {
-            nextEl.current = el
-            nextSentinelRef?.(el)
-          }}
-          aria-hidden
-          style={{ height: 1 }}
-        />
+        {!standalone && (
+          <div
+            ref={(el) => {
+              nextEl.current = el
+              nextSentinelRef?.(el)
+            }}
+            aria-hidden
+            style={{ height: 1 }}
+          />
+        )}
       </div>
 
       {/* ── Action bar (sticky) ─────────────────────────────────────────────
@@ -525,6 +587,7 @@ export const FeedArticleSlide = ({
           The previous 76px left a ~14px light strip where the blurred
           background image showed through between the gradient and the nav
           surface (E10 follow-up). */}
+      {!readOnly && (
       <div
         className="flex items-center justify-center"
         style={{
@@ -568,6 +631,7 @@ export const FeedArticleSlide = ({
           onClick={() => onReact(liked ? 'none' : 'like')}
         />
       </div>
+      )}
 
       {/* Score-debug bottom sheet — only mounted while open so the fetch
           fires lazily on the user's first tap (E10-S2). */}

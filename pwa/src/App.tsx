@@ -9,6 +9,7 @@ import { Admin } from './screens/Admin'
 import { Login } from './screens/Login'
 import { Register } from './screens/Register'
 import { Explore } from './screens/Explore'
+import { ArticleView } from './screens/ArticleView'
 import { useAuthStore } from './store/auth'
 
 /** Gate authenticated screens: bounce to /login when there is no token. */
@@ -30,10 +31,12 @@ export default function App() {
         <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
         <Route path="/sources" element={<RequireAuth><Sources /></RequireAuth>} />
         <Route path="/admin" element={<RequireAuth><Admin /></RequireAuth>} />
+        {/* E23-S4 — deep-link / shared article view. Any article opens here,
+            read-only when it isn't from the user's sources. */}
+        <Route path="/article/:id" element={<RequireAuth><ArticleView /></RequireAuth>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        {/* E9-S2 — the standalone article view is gone; any stale link falls
-            back to the feed (so we don't 404 a previously-shared URL). */}
+        {/* Legacy plural path — bounce stale links to the feed. */}
         <Route path="/articles/*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

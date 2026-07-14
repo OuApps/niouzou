@@ -19,8 +19,9 @@ from niouzou.security import (
     generate_api_key,
     hash_api_key,
 )
+from niouzou.services.mcp_service import niouzou_article_url
 from niouzou.services.service_account_service import ServiceAccountService
-from tests.factories import make_article, make_source, make_user, set_relevance
+from tests.factories import make_article, make_source, make_user
 
 # ── Pure key helpers (no DB) ────────────────────────────────────────────────
 
@@ -64,16 +65,18 @@ async def test_create_returns_token_and_stores_only_hash(db_session):
     assert token not in key.key_hash
 
 
-async def test_authenticate_resolves_owner_and_stamps_last_used(db_session):
+async def test_authenticate_resolves_key_and_stamps_last_used(db_session):
     user = await make_user(db_session)
     svc = ServiceAccountService(db_session)
     key, token = await svc.create(user.id, "CLI")
     await db_session.commit()
     assert key.last_used_at is None
 
+    # E23-S1 — authenticate returns the key itself (the MCP has no user context).
     resolved = await svc.authenticate(token)
     assert resolved is not None
-    assert resolved.id == user.id
+    assert resolved.id == key.id
+    assert resolved.user_id == user.id
     # authenticate stamps last_used_at on the session but leaves the commit to
     # the request boundary — persist it, then reload to confirm it stuck.
     await db_session.commit()
@@ -247,7 +250,7 @@ async def test_mcp_registers_three_tools():
 
     tools = await mcp.list_tools()
     assert {t.name for t in tools} == {
-        "list_feed",
+        "list_recent_articles",
         "search_articles",
         "get_article",
     }
@@ -297,7 +300,7 @@ async def test_mcp_initialize_and_tools_list(db_session):
             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
         )
         names = {t["name"] for t in resp.json()["result"]["tools"]}
-        assert names == {"list_feed", "search_articles", "get_article"}
+        assert names == {"list_recent_articles", "search_articles", "get_article"}
 
 
 async def test_mcp_revoked_key_is_rejected(db_session):
@@ -317,11 +320,12 @@ async def test_mcp_revoked_key_is_rejected(db_session):
         assert resp.status_code == 401
 
 
-async def test_mcp_list_feed_returns_scored_articles(db_session):
+async def test_mcp_list_recent_articles_has_no_score(db_session):
+    # The key's creator owns nothing; the tool still lists the whole base.
     user, token = await _make_key(db_session)
-    source = await make_source(db_session, user)
-    article = await make_article(db_session, source, title="Rust wins")
-    await set_relevance(db_session, article, user, 0.9)
+    owner = await make_user(db_session, email="writer@test.dev")
+    source = await make_source(db_session, owner)
+    await make_article(db_session, source, title="Rust wins")
     await db_session.commit()
 
     async with _mcp_server() as client:
@@ -332,23 +336,32 @@ async def test_mcp_list_feed_returns_scored_articles(db_session):
                 "jsonrpc": "2.0",
                 "id": 5,
                 "method": "tools/call",
-                "params": {"name": "list_feed", "arguments": {"limit": 10}},
+                "params": {
+                    "name": "list_recent_articles",
+                    "arguments": {"limit": 10},
+                },
             },
         )
         assert resp.status_code == 200
         body = _call_body(resp)
         assert body["isError"] is False
         assert body["payload"]["count"] == 1
-        assert body["payload"]["articles"][0]["title"] == "Rust wins"
-        assert body["payload"]["articles"][0]["score"] == 0.9
+        item = body["payload"]["articles"][0]
+        assert item["title"] == "Rust wins"
+        # E23-S1 — the MCP never exposes scores or per-user data.
+        assert "score" not in item
+        assert "user_id" not in item
+        # E23-S2 — every item carries a shareable Niouzou deep link.
+        assert item["niouzou_url"].endswith(f"/article/{item['id']}")
 
 
-async def test_mcp_get_article_returns_content(db_session):
-    user, token = await _make_key(db_session)
-    source = await make_source(db_session, user)
-    article = await make_article(db_session, source, title="Deep dive")
-    article.content = "Full article body here."
-    await set_relevance(db_session, article, user, 0.5)
+async def test_mcp_search_articles_spans_whole_base(db_session):
+    """Search hits any user's article and never leaks a score (E23-S1)."""
+    _, token = await _make_key(db_session)
+    owner = await make_user(db_session, email="writer2@test.dev")
+    source = await make_source(db_session, owner)
+    await make_article(db_session, source, title="Climate summit recap")
+    await make_article(db_session, source, title="Rust release notes")
     await db_session.commit()
 
     async with _mcp_server() as client:
@@ -360,6 +373,34 @@ async def test_mcp_get_article_returns_content(db_session):
                 "id": 6,
                 "method": "tools/call",
                 "params": {
+                    "name": "search_articles",
+                    "arguments": {"query": "climate"},
+                },
+            },
+        )
+        body = _call_body(resp)
+        assert body["payload"]["count"] == 1
+        assert body["payload"]["articles"][0]["title"] == "Climate summit recap"
+        assert "score" not in body["payload"]["articles"][0]
+
+
+async def test_mcp_get_article_returns_content(db_session):
+    _, token = await _make_key(db_session)
+    owner = await make_user(db_session, email="writer3@test.dev")
+    source = await make_source(db_session, owner)
+    article = await make_article(db_session, source, title="Deep dive")
+    article.content = "Full article body here."
+    await db_session.commit()
+
+    async with _mcp_server() as client:
+        resp = await client.post(
+            "/mcp",
+            headers=_auth(token),
+            json={
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
                     "name": "get_article",
                     "arguments": {"article_id": str(article.id)},
                 },
@@ -368,6 +409,8 @@ async def test_mcp_get_article_returns_content(db_session):
         body = _call_body(resp)
         assert body["payload"]["title"] == "Deep dive"
         assert body["payload"]["content"] == "Full article body here."
+        assert body["payload"]["niouzou_url"].endswith(f"/article/{article.id}")
+        assert "score" not in body["payload"]
 
 
 async def test_mcp_get_article_unknown_is_error_result(db_session):
@@ -395,17 +438,16 @@ async def test_mcp_get_article_unknown_is_error_result(db_session):
         assert "not found" in body["text"].lower()
 
 
-async def test_mcp_key_scopes_to_owner(db_session):
-    """A key only sees its owner's articles, never another user's."""
-    owner, token = await _make_key(db_session, email="owner@test.dev")
+async def test_mcp_sees_articles_from_any_source(db_session):
+    """The MCP has its own identity: it reaches any user's article (E23-S1)."""
+    _, token = await _make_key(db_session, email="agent@test.dev")
     other = await make_user(db_session, email="other@test.dev")
     other_source = await make_source(db_session, other, feed_id=99)
     other_article = await make_article(db_session, other_source, title="Secret")
-    await set_relevance(db_session, other_article, other, 0.9)
     await db_session.commit()
 
     async with _mcp_server() as client:
-        # Empty feed for the owner (they have no articles of their own).
+        # The article is visible even though the key's creator doesn't own it.
         resp = await client.post(
             "/mcp",
             headers=_auth(token),
@@ -413,12 +455,12 @@ async def test_mcp_key_scopes_to_owner(db_session):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "list_feed", "arguments": {}},
+                "params": {"name": "list_recent_articles", "arguments": {}},
             },
         )
-        assert _call_body(resp)["payload"]["count"] == 0
+        assert _call_body(resp)["payload"]["count"] == 1
 
-        # The other user's article is not found for this key.
+        # And it's fetchable by id regardless of ownership.
         resp = await client.post(
             "/mcp",
             headers=_auth(token),
@@ -432,4 +474,31 @@ async def test_mcp_key_scopes_to_owner(db_session):
                 },
             },
         )
-        assert _call_body(resp)["isError"] is True
+        body = _call_body(resp)
+        assert body["isError"] is False
+        assert body["payload"]["title"] == "Secret"
+
+
+# ── Article deep-link URL helper (E23-S2) ───────────────────────────────────
+
+
+def test_niouzou_article_url_uses_public_app_url(monkeypatch):
+    from types import SimpleNamespace
+
+    import niouzou.services.mcp_service as m
+
+    monkeypatch.setattr(
+        m, "get_settings", lambda: SimpleNamespace(public_app_url="https://pwa.test/")
+    )
+    assert niouzou_article_url("abc-123") == "https://pwa.test/article/abc-123"
+
+
+def test_niouzou_article_url_falls_back_to_path(monkeypatch):
+    from types import SimpleNamespace
+
+    import niouzou.services.mcp_service as m
+
+    monkeypatch.setattr(
+        m, "get_settings", lambda: SimpleNamespace(public_app_url="")
+    )
+    assert niouzou_article_url("abc-123") == "/article/abc-123"

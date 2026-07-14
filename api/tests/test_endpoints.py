@@ -34,6 +34,8 @@ async def test_article_detail_shape(db_session):
     assert detail.smart_score is None
     assert detail.active_method == "keyword"
     assert detail.source.name == "Feed"
+    # Article from the caller's own source (E23-S3).
+    assert detail.owned is True
     # No interaction yet — defaults apply.
     assert detail.reaction == "none"
     assert detail.is_saved is False
@@ -103,15 +105,35 @@ async def test_score_debug_forbids_cross_user(db_session):
     assert exc.value.status_code == 403
 
 
-async def test_article_of_another_user_is_not_found(db_session):
+async def test_article_of_another_user_is_readonly(db_session):
+    """E23-S3 — any article opens by id (deep/shared link), but a foreign one
+    comes back ``owned=False`` with no scores: displayed, not scored."""
     owner = await make_user(db_session, email="owner@test.dev")
     intruder = await make_user(db_session, email="intruder@test.dev")
     source = await make_source(db_session, owner)
-    article = await make_article(db_session, source)
+    article = await make_article(db_session, source, title="Not yours")
+    article.content = "Readable body."
+    await set_relevance(db_session, article, owner, 0.9)
     await db_session.commit()
 
+    detail = await ArticlesService(db_session).get(intruder.id, article.id)
+    assert detail.title == "Not yours"
+    assert detail.owned is False
+    # The score row belongs to the owner, not the intruder → nothing scored.
+    assert detail.keyword_score is None
+    assert detail.smart_score is None
+    assert detail.reaction == "none"
+    # Content still renders for reading.
+    assert detail.content == "Readable body."
+
+
+async def test_missing_article_still_404(db_session):
+    import uuid
+
+    user = await make_user(db_session)
+    await db_session.commit()
     with pytest.raises(APIError) as exc:
-        await ArticlesService(db_session).get(intruder.id, article.id)
+        await ArticlesService(db_session).get(user.id, uuid.uuid4())
     assert exc.value.status_code == 404
 
 

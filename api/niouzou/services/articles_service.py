@@ -60,6 +60,7 @@ class ArticlesService:
                     Source.id.label("source_id"),
                     Source.name.label("source_name"),
                     Source.url.label("source_url"),
+                    Source.user_id.label("source_user_id"),
                     ArticleRelevanceScore.keyword_score,
                     func.coalesce(
                         ArticleRelevanceScore.keyword_cold_start, False
@@ -90,7 +91,12 @@ class ArticlesService:
                         ArticleFeedback.user_id == user_id,
                     ),
                 )
-                .where(Article.id == article_id, Source.user_id == user_id)
+                # E23-S3 — no source-ownership filter: any article is fetchable
+                # by id so shared/MCP deep links open. The score/feedback
+                # outer-joins are keyed on ``user_id``, so an article from a
+                # source the caller doesn't subscribe to simply comes back with
+                # NULL scores / ``none`` reaction — displayed, not scored.
+                .where(Article.id == article_id)
             )
         ).first()
 
@@ -98,6 +104,7 @@ class ArticlesService:
             raise not_found("Article not found")
 
         article: Article = row.Article
+        owned = row.source_user_id == user_id
         premium_max_chars = get_settings().premium_content_max_chars
         scoring_mode = str(
             await SettingsService(self.session).get("scoring_mode")
@@ -108,6 +115,7 @@ class ArticlesService:
             url=article.url,
             summary_short=article.summary_short,
             summary_executive=article.summary_executive,
+            content=article.content,
             og_image_url=article.og_image_url,
             source=ArticleSourceRef(
                 id=row.source_id, name=row.source_name, url=row.source_url
@@ -127,6 +135,7 @@ class ArticlesService:
             reaction=row.reaction,
             is_saved=bool(row.is_saved),
             read_full_article=bool(row.read_full_article),
+            owned=owned,
         )
 
     async def score_debug(

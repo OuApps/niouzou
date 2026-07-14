@@ -21,6 +21,9 @@ class ArticleDetail(BaseModel):
     url: str
     summary_short: str | None
     summary_executive: str | None
+    # E23-S4 — full crawled body, so the standalone /article/:id reading view
+    # renders the article inline (the feed already ships it in FeedArticle).
+    content: str | None = None
     og_image_url: str | None
     source: ArticleSourceRef
     published_at: datetime | None
@@ -42,6 +45,11 @@ class ArticleDetail(BaseModel):
     reaction: Reaction = "none"
     is_saved: bool = False
     read_full_article: bool = False
+
+    # E23-S3 — does the article come from one of the caller's sources? False for
+    # a deep-linked article from a source the user doesn't subscribe to: the
+    # client then renders it read-only (no scoring, no feedback actions).
+    owned: bool = True
 
 
 # E10-S2 — Debug shape for ``GET /articles/{id}/score-debug``. Explains how

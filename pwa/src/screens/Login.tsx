@@ -1,12 +1,17 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useLocation, useNavigate, Link } from 'react-router-dom'
 import { BlobBackground } from '../components/BlobBackground'
 import { useAuthStore } from '../store/auth'
 import { login, ApiError } from '../api'
 
 export const Login = () => {
   const navigate = useNavigate()
+  const location = useLocation()
   const sync = useAuthStore((s) => s.sync)
+  // E23-S4 — RequireAuth stashes the page the user was headed to (e.g. a shared
+  // /article/:id link) so we can return them there after login.
+  const from =
+    (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState<{ email?: string; password?: string; form?: string }>({})
@@ -25,7 +30,7 @@ export const Login = () => {
     try {
       await login(email.trim(), password)
       sync()
-      navigate('/', { replace: true })
+      navigate(from, { replace: true })
     } catch (err) {
       const message =
         err instanceof ApiError && err.status === 401

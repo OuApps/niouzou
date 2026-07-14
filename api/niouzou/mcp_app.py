@@ -1,10 +1,13 @@
-"""FastMCP server exposed at ``/mcp`` (E22).
+"""FastMCP server exposed at ``/mcp`` (E22, re-scoped E23-S1).
 
 Built on the official MCP SDK's :class:`FastMCP` (stateless Streamable HTTP,
 JSON responses). It's wrapped in a tiny ASGI guard that authenticates the
-service account key (``Authorization: Bearer nzk_…``) and stashes the owning
-user id in a context var for the tools to read — so the whole thing drops into
-the existing FastAPI app without FastMCP's OAuth machinery.
+service account key (``Authorization: Bearer nzk_…``) — so the whole thing
+drops into the existing FastAPI app without FastMCP's OAuth machinery.
+
+Since E23 the MCP is an **identity of its own**: the guard only validates the
+key (it no longer resolves a user), and the tools read the whole enriched
+corpus read-only, without scores or per-user data.
 
 ``build_mcp_server`` is a factory: a FastMCP instance's session manager can
 only be ``run()`` once, so tests build a throwaway server per case rather than
@@ -13,9 +16,7 @@ re-entering the shared app's lifespan. ``main.py`` mounts the module-level
 runs for the app's lifetime.
 """
 
-import contextvars
 import json
-import uuid
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
@@ -27,18 +28,6 @@ from niouzou.db import session_scope
 from niouzou.services.mcp_service import DEFAULT_LIMIT, McpService
 from niouzou.services.service_account_service import ServiceAccountService
 
-# Set by the auth guard for the duration of each request; read by the tools.
-_current_user_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.ContextVar(
-    "mcp_user_id", default=None
-)
-
-
-def _user_id() -> uuid.UUID:
-    uid = _current_user_id.get()
-    if uid is None:  # pragma: no cover — the auth guard guarantees a user
-        raise RuntimeError("MCP tool invoked without an authenticated user")
-    return uid
-
 
 def _bearer_token(headers: Headers) -> str:
     scheme, _, token = headers.get("authorization", "").partition(" ")
@@ -46,13 +35,13 @@ def _bearer_token(headers: Headers) -> str:
 
 
 class ServiceAccountAuthMiddleware:
-    """ASGI guard resolving the service account key to its owning user.
+    """ASGI guard validating the service account key (E23-S1).
 
     Owns ``/mcp`` and ``/mcp/`` only (any other path 404s, so the catch-all
     mount doesn't shadow the REST 404s). Rejects a missing / invalid / revoked
-    key with 401 before the request reaches the MCP handler; on success it
-    publishes the user id in a context var (inherited by the stateless
-    request's task subtree) for the tools.
+    key with 401 before the request reaches the MCP handler. The key is just
+    the auth boundary now — the MCP has its own identity, so nothing about a
+    user is carried into the request.
     """
 
     def __init__(self, app, mcp_path: str) -> None:
@@ -71,11 +60,11 @@ class ServiceAccountAuthMiddleware:
             )
 
         token = _bearer_token(Headers(scope=scope))
-        user = None
+        key = None
         if token:
             async with session_scope() as session:
-                user = await ServiceAccountService(session).authenticate(token)
-        if user is None:
+                key = await ServiceAccountService(session).authenticate(token)
+        if key is None:
             return await self._respond(
                 scope,
                 receive,
@@ -90,11 +79,7 @@ class ServiceAccountAuthMiddleware:
         if path != self._path:
             scope = {**scope, "path": self._path, "raw_path": self._path.encode()}
 
-        reset = _current_user_id.set(user.id)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            _current_user_id.reset(reset)
+        await self.app(scope, receive, send)
 
     @staticmethod
     async def _respond(scope, receive, send, status, error, message) -> None:
@@ -126,34 +111,37 @@ def build_mcp_server():
 
     @mcp.tool(
         description=(
-            "Return the current personalised Niouzou feed: the top-ranked "
-            "articles the user hasn't seen yet, most relevant first."
+            "List the most recent Niouzou articles across the whole database, "
+            "newest first. Read-only, no personalisation or relevance scores. "
+            "Each item includes a `niouzou_url` a Niouzou user can open."
         )
     )
-    async def list_feed(limit: int = DEFAULT_LIMIT) -> str:
+    async def list_recent_articles(limit: int = DEFAULT_LIMIT) -> str:
         async with session_scope() as session:
-            result = await McpService(session).list_feed(_user_id(), limit)
+            result = await McpService(session).list_recent_articles(limit)
         return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool(
         description=(
-            "Full-text search over the user's enriched articles (title and "
-            "summary), newest first."
+            "Full-text search over all Niouzou articles (title and summary), "
+            "newest first. Searches the entire database — no user scoping, no "
+            "relevance scores. Each item includes a `niouzou_url`."
         )
     )
     async def search_articles(query: str, limit: int = DEFAULT_LIMIT) -> str:
         async with session_scope() as session:
-            result = await McpService(session).search_articles(
-                _user_id(), query, limit
-            )
+            result = await McpService(session).search_articles(query, limit)
         return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool(
-        description="Fetch one article by id, including its full crawled text content."
+        description=(
+            "Fetch one article by id, including its full crawled text content "
+            "and a `niouzou_url`. No relevance scores or user data."
+        )
     )
     async def get_article(article_id: str) -> str:
         async with session_scope() as session:
-            result = await McpService(session).get_article(_user_id(), article_id)
+            result = await McpService(session).get_article(article_id)
         return json.dumps(result, ensure_ascii=False)
 
     # The FastMCP handler lives at its default path ``/mcp``. We expose the whole

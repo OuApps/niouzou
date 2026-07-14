@@ -1,9 +1,11 @@
-"""Service account key lifecycle (E22-S2).
+"""Service account key lifecycle (E22-S2, re-scoped E23-S1).
 
 Generation / listing / revocation for the admin panel, plus ``authenticate``
 which the MCP endpoint uses to turn an ``Authorization: Bearer nzk_…`` header
-into the owning ``User``. The raw token exists only in memory at creation
-time — everything persisted is the SHA-256 fingerprint.
+into the matching key. Since E23 the key is just the MCP's auth boundary — it
+no longer borrows a user's context — so ``authenticate`` returns the
+``ServiceAccountKey`` itself rather than a ``User``. The raw token exists only
+in memory at creation time; everything persisted is the SHA-256 fingerprint.
 """
 
 import uuid
@@ -13,7 +15,7 @@ from sqlalchemy import select
 
 from niouzou.deps import SessionDep
 from niouzou.errors import not_found
-from niouzou.models import ServiceAccountKey, User
+from niouzou.models import ServiceAccountKey
 from niouzou.security import (
     api_key_prefix,
     generate_api_key,
@@ -66,12 +68,14 @@ class ServiceAccountService:
         if key.revoked_at is None:
             key.revoked_at = datetime.now(timezone.utc)
 
-    async def authenticate(self, raw_token: str) -> User | None:
-        """Resolve a raw token to its owner, or ``None`` if it's not valid.
+    async def authenticate(self, raw_token: str) -> ServiceAccountKey | None:
+        """Resolve a raw token to its key, or ``None`` if it's not valid.
 
         Matches on the hash, refuses revoked keys, and stamps ``last_used_at``
         so the admin can spot dormant keys. The write rides the request's
-        session commit like any other handler mutation.
+        session commit like any other handler mutation. Since E23 the MCP no
+        longer runs in a user's context, so we return the key (the auth
+        boundary) rather than resolving its creating user.
         """
         if not raw_token:
             return None
@@ -84,4 +88,4 @@ class ServiceAccountService:
         if key is None:
             return None
         key.last_used_at = datetime.now(timezone.utc)
-        return await self.session.get(User, key.user_id)
+        return key

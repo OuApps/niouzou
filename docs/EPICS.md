@@ -5014,3 +5014,113 @@ avec `<api>/mcp` + `Authorization: Bearer <clé>` ; `tools/list` renvoie les
 3 outils ; `list_feed` renvoie son fil ; révoquer la clé fait échouer les
 appels suivants en 401. Un non-admin reçoit 403 sur les endpoints de
 gestion. La clé brute n'apparaît jamais après la création.
+
+> ⚠️ **Pivoté par l'EPIC 23** : le contexte « propriétaire de la clé »
+> décrit ci-dessus a été retiré. Depuis E23-S1 le MCP a une **identité
+> propre** : il interroge toute la base en lecture seule, **sans scores ni
+> données utilisateur**, et l'outil `list_feed` a été remplacé. La clé reste
+> la barrière d'auth ; son `user_id` n'est plus qu'un champ d'audit
+> « créée par ».
+
+## EPIC 23 — MCP à identité propre + articles Niouzou partageables (juillet 2026)
+
+**But** : deux changements liés.
+
+1. **Le MCP devient une identité propre**, découplée de tout utilisateur. Un
+   chatbot branché sur le MCP doit pouvoir **chercher dans toute la base**
+   d'articles (titre / résumé / contenu) mais **ne jamais voir les scores ni
+   les données des utilisateurs**. Fini le « la clé emprunte le contexte de
+   son admin » de l'EPIC 22.
+2. **Les articles Niouzou deviennent partageables par lien.** Le MCP renvoie
+   pour chaque article une **URL Niouzou** (`{PUBLIC_APP_URL}/article/{id}`)
+   qu'un utilisateur connecté peut ouvrir dans la PWA. Ouvrir un article issu
+   d'une source **non rattachée** à l'utilisateur l'**affiche en lecture
+   seule, sans scoring**. Un bouton **Partager** est ajouté sur les articles.
+
+**Pourquoi** : le MCP de l'EPIC 22 exposait le fil *personnel* d'un
+utilisateur (scores compris). Ce n'est pas ce qu'on veut pour un assistant
+public : on veut un accès neutre au corpus, qui pointe vers Niouzou pour la
+lecture — sans fuiter la personnalisation de qui que ce soit.
+
+### Stories
+
+#### [x] E23-S1 — MCP : identité propre, base entière, sans scoring
+
+- `McpService` : les outils ne prennent plus de `user_id` et interrogent
+  **toute la base** des articles `enriched` :
+  - `search_articles` `{query, limit?}` — recherche `ILIKE` globale sur
+    titre + résumé exécutif, tous articles enrichis, plus récents d'abord.
+  - `get_article` `{article_id}` — n'importe quel article enrichi + contenu
+    plein texte.
+  - `list_recent_articles` `{limit?}` — **remplace `list_feed`** : les
+    articles enrichis les plus récents de la base, sans aucune
+    personnalisation.
+- Projection retournée : `id, title, niouzou_url, url (source d'origine),
+  source, summary, keywords, published_at`. **Plus de champ `score`, plus de
+  `user_id`, plus de feedback.**
+- `mcp_app.py` : le middleware `ServiceAccountAuthMiddleware` **valide** la
+  clé (401 sinon) mais ne résout plus d'utilisateur et ne publie plus de
+  `contextvar` `user_id` ; le `contextvar` est supprimé. Les descriptions
+  d'outils sont réécrites (plus de « the user's feed »).
+- `ServiceAccountService.authenticate(raw_token)` → renvoie la
+  **`ServiceAccountKey`** (clé valide non révoquée) au lieu du `User`, et
+  continue de tamponner `last_used_at`. La table et le CRUD admin sont
+  inchangés ; `user_id` devient un champ d'audit « créée par » (pas de
+  migration).
+
+#### [x] E23-S2 — Config `PUBLIC_APP_URL` + lien d'article
+
+- Nouveau réglage `public_app_url` (env `PUBLIC_APP_URL`, optionnel, défaut
+  `""`) — base publique de la PWA.
+- Helper `niouzou_article_url(article_id)` : renvoie
+  `{public_app_url}/article/{id}` si l'URL est configurée, sinon le chemin
+  relatif `/article/{id}` (dégradation propre). Utilisé par les projections
+  MCP (`niouzou_url`).
+
+#### [x] E23-S3 — `GET /articles/{id}` ouvert à tout article (problème de source)
+
+- `ArticlesService.get` : on **retire le filtre `Source.user_id ==
+  user_id`** du `WHERE` — n'importe quel article existant est récupérable par
+  id. Les jointures scores/feedback restent keyées sur `user_id`, donc pour
+  un article **non rattaché** elles ne matchent rien → scores `NULL`,
+  réaction `none` : « on l'affiche, pas de scoring ».
+- `ArticleDetail` gagne `owned: bool` (la source appartient à l'appelant).
+  Le front s'en sert pour n'afficher scoring/feedback que si `owned`.
+- `score_debug` et le chat article restent **gardés par la propriété**
+  (403 cross-user) — inchangés : pas de scoring/chat sur un article non
+  rattaché.
+
+#### [x] E23-S4 — PWA : vue article en lien profond `/article/:id`
+
+- Nouvel écran `ArticleView` + route `/article/:id` (sous `RequireAuth`).
+  Récupère l'article via un nouveau client `getArticleDetail(id)` (+ type
+  `ArticleDetail`). Mise en page lecture avec `BlobBackground`.
+- `owned === true` → `ScoreBadge` + actions feedback (like / dislike / save)
+  réutilisant le `feedbackStore`. `owned === false` → lecture seule + note
+  discrète « Cet article ne vient pas de vos sources ».
+- `Login` honore `location.state.from` pour qu'un lien partagé survive à
+  l'authentification (redirection vers l'article après login).
+
+#### [x] E23-S5 — Bouton Partager
+
+- Icône `Share2` (lucide) dans l'en-tête de `FeedArticleSlide` et dans
+  `ArticleView`. Au clic : `navigator.share({ title, url })` avec l'URL
+  `${window.location.origin}/article/${id}` ; fallback presse-papier
+  (`navigator.clipboard`) + petit toast « Lien copié ».
+
+#### [x] E23-S6 — Tests + docs
+
+- `test_mcp.py` : nouvelle surface (pas de scoping user, pas de scores,
+  `niouzou_url` présent, recherche globale, `list_recent_articles`).
+- Backend : test `GET /articles/{id}` sur un article **non rattaché**
+  (`owned=false`, scores `null`, contenu présent).
+- Docs synchronisées : `API_SPEC.md` (outils MCP + `/articles/{id}` `owned`),
+  `ARCHITECTURE.md` (`PUBLIC_APP_URL`), `DATA_MODEL.md` (note audit `user_id`),
+  `CLAUDE.md` (liste env).
+
+**Acceptance** : un chatbot branché sur le MCP cherche « climat » et reçoit
+des articles de sources qu'aucun compte n'a forcément, **sans aucun score** ;
+chaque résultat porte une `niouzou_url`. Un utilisateur connecté ouvre cette
+URL : si l'article vient de ses sources il a scoring + feedback, sinon il le
+lit en lecture seule. Le bouton Partager produit un lien `/article/{id}`
+ouvrable par n'importe quel compte.

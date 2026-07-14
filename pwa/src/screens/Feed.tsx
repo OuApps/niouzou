@@ -7,6 +7,7 @@ import { FeedArticleSlide } from '../components/FeedArticleSlide'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { diffForPost, useFeedbackStore } from '../store/feedback'
+import { useShareArticle } from '../hooks/useShareArticle'
 import { getFeed, getSources, getStats, postFeedback, postImpression, ApiError } from '../api'
 import type { FeedArticle, FeedbackState, Reaction } from '../types/api'
 
@@ -89,6 +90,7 @@ export const Feed = () => {
   const applyFeedback = useFeedbackStore((s) => s.apply)
   const removeFeedback = useFeedbackStore((s) => s.remove)
   const getOverlay = useFeedbackStore((s) => s.get)
+  const { share, toast } = useShareArticle()
 
   // ── Data loading ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -551,6 +553,7 @@ export const Feed = () => {
             onReact={(reaction) => onReact(article, reaction)}
             onToggleSave={() => onToggleSave(article)}
             onMarkRead={() => onMarkRead(article)}
+            onShare={() => share(article.id, article.title)}
             onOpenExternal={() => {
               openedExternalRef.current = true
             }}
@@ -566,6 +569,28 @@ export const Feed = () => {
           </div>
         )}
       </div>
+
+      {toast && (
+        <div
+          role="status"
+          className="fixed left-1/2 z-50"
+          style={{
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 90px)',
+            transform: 'translateX(-50%)',
+            padding: '8px 16px',
+            borderRadius: 20,
+            background: 'rgba(12,16,24,0.92)',
+            border: '1px solid rgba(255,255,255,0.14)',
+            color: 'var(--text-primary)',
+            fontSize: 13,
+            fontWeight: 600,
+            backdropFilter: 'blur(10px)',
+            WebkitBackdropFilter: 'blur(10px)',
+          }}
+        >
+          {toast}
+        </div>
+      )}
 
       <BottomNav />
     </div>
