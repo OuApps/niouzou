@@ -5108,6 +5108,16 @@ lecture — sans fuiter la personnalisation de qui que ce soit.
   `${window.location.origin}/article/${id}` ; fallback presse-papier
   (`navigator.clipboard`) + petit toast « Lien copié ».
 
+#### [x] E23-S7 — Purge des clés MCP héritées
+
+- Les clés E22 ont été émises pour le modèle « la clé agit dans le contexte de
+  son créateur ». E23-S1 change ce périmètre (base entière, sans score), donc
+  une clé existante donne un accès différent de celui pour lequel elle a été
+  émise. Migration Alembic `c1f7a3b9e2d5` : `DELETE FROM service_account_keys`
+  au déploiement → les admins régénèrent proprement sous le nouveau modèle.
+- Data-only et **irréversible** (seuls les hachages étaient stockés) : le
+  `downgrade` est un no-op.
+
 #### [x] E23-S6 — Tests + docs
 
 - `test_mcp.py` : nouvelle surface (pas de scoping user, pas de scores,
