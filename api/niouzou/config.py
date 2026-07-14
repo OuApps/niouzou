@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # assistant can search the internet (billed per search by OpenRouter;
     # works with any model). Admin-overridable via app_settings.
     chat_web_search: bool = False
+    # E23-S2 — public base URL of the PWA, used to build shareable article
+    # deep links (``{public_app_url}/article/{id}``) that the MCP hands back so
+    # a Niouzou user can open any article in the app. Empty → the MCP falls
+    # back to the path-only ``/article/{id}`` (degrades gracefully; a browser
+    # opening it from the app resolves it relative to its own origin).
+    public_app_url: str = ""
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5

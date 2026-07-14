@@ -74,15 +74,17 @@ External:
 - Handles authentication, feed delivery, feedback reception
 - On each like/dislike/save API call: upserts `article_feedbacks` (idempotent — repeated likes = 1 like) then synchronously recomputes `keyword_weights` for affected keywords (row-level lock)
 - Also the base image for all cron jobs
-- Hosts the **MCP server** (E22) at the root `/mcp` — built on **FastMCP**
-  (official `mcp` SDK), stateless Streamable HTTP with JSON responses, exposing
-  read-only `list_feed` / `search_articles` / `get_article` tools
-  (`niouzou/mcp_app.py` → `services/mcp_service.py`). Authenticated by
+- Hosts the **MCP server** (E22, re-scoped E23) at the root `/mcp` — built on
+  **FastMCP** (official `mcp` SDK), stateless Streamable HTTP with JSON
+  responses, exposing read-only `list_recent_articles` / `search_articles` /
+  `get_article` tools (`niouzou/mcp_app.py` → `services/mcp_service.py`).
+  Since E23-S1 the MCP has its **own identity**: the tools read the whole
+  enriched corpus **without scores or per-user data**, and each article
+  projection carries a shareable `niouzou_url` deep link. Authenticated by
   **service account keys** (`Authorization: Bearer nzk_…`, SHA-256
-  fingerprinted in `service_account_keys`) via a thin ASGI middleware that puts
-  the key owner in a context var for the tools; each key acts in the context of
-  the admin who created it. Admins generate / revoke keys via
-  `/admin/mcp-keys`.
+  fingerprinted in `service_account_keys`) via a thin ASGI middleware that just
+  validates the key — no user context is carried. Admins generate / revoke keys
+  via `/admin/mcp-keys`.
 
 ### React PWA (front)
 - Mobile-first swipe interface
@@ -426,6 +428,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `OPENROUTER_MODEL` | ❌ | Model to use (default: `google/gemma-4-26b-a4b-it:free`) |
 | `CHAT_MODEL` | ❌ | E21-S1 — OpenRouter model for the article chat (`POST /articles/{id}/chat`). Unset → falls back to the **effective** `OPENROUTER_MODEL` (DB override included). Overridable via `PATCH /admin/config`. Unlike enrichment (sync client on the worker), the chat streams from the `api` process via its own async httpx path (`services/chat_service.py`) — never imports torch |
 | `CHAT_WEB_SEARCH` | ❌ | E21-S7 — attach OpenRouter's web plugin to chat completions so the assistant can search the internet (works with any model; OpenRouter bills per search). Default `false`; overridable via `PATCH /admin/config` |
+| `PUBLIC_APP_URL` | ❌ | E23-S2 — public base URL of the PWA, used to build shareable article deep links (`{PUBLIC_APP_URL}/article/{id}`) that the MCP hands back in its `niouzou_url` field. Empty → the MCP falls back to the path-only `/article/{id}` |
 | `SCORE_THRESHOLD` | ❌ | Minimum *active* score to surface an article (0.0–1.0, default: `0.0`; cold/NULL rows bypass it) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
 | `RANDOM_SURFACE_RATE` | ❌ | Share (0.0–1.0) of sub-threshold articles randomly slipped into the feed to break the echo chamber (default: `0.05`) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request). Only bites when `SCORE_THRESHOLD > 0`, since with the default `0.0` every article already clears the threshold |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |

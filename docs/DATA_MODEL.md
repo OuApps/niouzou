@@ -368,7 +368,7 @@ CREATE INDEX ix_compaction_runs_created_at ON compaction_runs(created_at DESC);
 ```sql
 CREATE TABLE service_account_keys (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- audit: the admin who created the key (E23-S1)
   name          TEXT NOT NULL,                 -- admin-supplied label
   prefix        TEXT NOT NULL,                 -- 'nzk_' + first 8 body chars (display only)
   key_hash      TEXT NOT NULL UNIQUE,          -- SHA-256 hex of the raw token
@@ -380,9 +380,11 @@ CREATE TABLE service_account_keys (
 CREATE INDEX ix_service_account_keys_user_id ON service_account_keys(user_id);
 ```
 
-> API keys authenticating the MCP server (E22). A key borrows the context of
-> `user_id` (the admin who created it): the MCP tools read that user's feed /
-> articles, nothing more. The raw token is never stored — only its SHA-256
+> API keys authenticating the MCP server (E22). Since **E23-S1** the key is only
+> the MCP's auth boundary — the MCP has its own identity and reads the whole
+> corpus, score-free — so `user_id` is now just an **audit** record of the admin
+> who created the key, not a scoping context. The raw token is never stored —
+> only its SHA-256
 > (`key_hash`) and a short display `prefix`. Revocation is soft (`revoked_at`)
 > so a revoked key stays visible in the admin panel for audit; `authenticate`
 > refuses any key with `revoked_at` set. Created by the admin endpoints under

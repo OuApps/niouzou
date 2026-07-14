@@ -3,6 +3,7 @@
 
 import { ApiError, request, streamRequest, tokens } from './http'
 import type {
+  ArticleDetail,
   AuthTokens,
   FeedArticle,
   FeedbackState,
@@ -227,6 +228,13 @@ export interface ScoreDebug {
 
 export function getScoreDebug(articleId: string): Promise<ScoreDebug> {
   return request<ScoreDebug>(`/articles/${articleId}/score-debug`)
+}
+
+// E23-S4 — single article by id (deep-link / shared-link view). Returns any
+// article regardless of source ownership; `owned` says whether to show
+// scoring + feedback.
+export function getArticleDetail(articleId: string): Promise<ArticleDetail> {
+  return request<ArticleDetail>(`/articles/${articleId}`)
 }
 
 // ── Article chat (E21-S2/S4) ────────────────────────────────────────────────

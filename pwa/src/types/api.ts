@@ -67,6 +67,15 @@ export interface SavedArticle extends FeedArticle {
   saved_at: string
 }
 
+// E23-S3 — GET /articles/{id}. Structurally a FeedArticle (so it renders in
+// FeedArticleSlide) plus `owned`: false when the article comes from a source
+// the caller doesn't subscribe to (deep link / shared link) — the view then
+// drops scoring + feedback and reads it as-is.
+export interface ArticleDetail extends FeedArticle {
+  enriched_at: string | null
+  owned: boolean
+}
+
 export interface KeywordWeight {
   term: string
   weight: number

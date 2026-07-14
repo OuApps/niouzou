@@ -1094,14 +1094,15 @@ const McpKeysSection = () => {
   return (
     <div className="flex flex-col gap-3">
       <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
-        Generate a key to let an MCP client (Claude Desktop, an agent…) read
-        your feed. Point it at{' '}
+        Generate a key to let an MCP client (Claude Desktop, an agent…) search
+        Niouzou articles. Point it at{' '}
         <code style={{ color: 'var(--text-secondary)' }}>{endpoint}</code> with
         header{' '}
         <code style={{ color: 'var(--text-secondary)' }}>
           Authorization: Bearer &lt;key&gt;
         </code>
-        . A key acts in your account's context.
+        . The MCP reads the whole article base read-only — no scores, no user
+        data — and returns shareable article links.
       </p>
 
       {/* Create form */}
