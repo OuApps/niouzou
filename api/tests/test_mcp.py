@@ -353,6 +353,8 @@ async def test_mcp_list_recent_articles_has_no_score(db_session):
         assert "user_id" not in item
         # E23-S2 — every item carries a shareable Niouzou deep link.
         assert item["niouzou_url"].endswith(f"/article/{item['id']}")
+        # E23-S8 — the origin source URL is not exposed; only niouzou_url.
+        assert "url" not in item
 
 
 async def test_mcp_search_articles_spans_whole_base(db_session):
@@ -411,6 +413,8 @@ async def test_mcp_get_article_returns_content(db_session):
         assert body["payload"]["content"] == "Full article body here."
         assert body["payload"]["niouzou_url"].endswith(f"/article/{article.id}")
         assert "score" not in body["payload"]
+        # E23-S8 — the origin source URL is not exposed; only niouzou_url.
+        assert "url" not in body["payload"]
 
 
 async def test_mcp_get_article_unknown_is_error_result(db_session):

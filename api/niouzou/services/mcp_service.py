@@ -5,11 +5,12 @@ tool registrations; this service owns the tool *implementations*.
 
 Since E23 the MCP is an **identity of its own**, decoupled from any user: the
 tools read the whole enriched-article corpus **read-only** and never expose
-scores, feedback or any per-user data. Every article projection carries a
-``niouzou_url`` deep link (``{PUBLIC_APP_URL}/article/{id}``) so a Niouzou user
-can open the article in the app. Methods return plain JSON-serialisable dicts
-and raise ``McpToolError`` on bad input / missing rows — FastMCP turns that
-into an ``isError`` tool result.
+scores, feedback or any per-user data. The only link every article projection
+carries is a ``niouzou_url`` deep link (``{PUBLIC_APP_URL}/article/{id}``) so a
+Niouzou user opens the article in the app rather than on the origin source —
+the source URL is deliberately not exposed (E23-S8). Methods return plain
+JSON-serialisable dicts and raise ``McpToolError`` on bad input / missing rows
+— FastMCP turns that into an ``isError`` tool result.
 """
 
 import uuid
@@ -62,12 +63,16 @@ class McpService:
 
     @staticmethod
     def _summary(row) -> dict:
-        """Compact, score-free projection of a listing/search row."""
+        """Compact, score-free projection of a listing/search row.
+
+        The only link is the ``niouzou_url`` deep link — the origin source URL
+        is intentionally omitted so consumers point readers back to Niouzou
+        (E23-S8).
+        """
         return {
             "id": str(row.id),
             "title": row.title,
             "niouzou_url": niouzou_article_url(row.id),
-            "url": row.url,
             "source": row.source_name,
             "summary": row.summary_short,
             "published_at": (
@@ -81,7 +86,6 @@ class McpService:
             select(
                 Article.id,
                 Article.title,
-                Article.url,
                 Article.summary_short,
                 Article.published_at,
                 Source.name.label("source_name"),
@@ -140,7 +144,6 @@ class McpService:
                 select(
                     Article.id,
                     Article.title,
-                    Article.url,
                     Article.summary_short,
                     Article.summary_executive,
                     Article.content,
@@ -172,7 +175,6 @@ class McpService:
             "id": str(row.id),
             "title": row.title,
             "niouzou_url": niouzou_article_url(row.id),
-            "url": row.url,
             "source": row.source_name,
             "summary": row.summary_short,
             "summary_executive": row.summary_executive,

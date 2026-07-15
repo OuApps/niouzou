@@ -80,7 +80,8 @@ External:
   `get_article` tools (`niouzou/mcp_app.py` → `services/mcp_service.py`).
   Since E23-S1 the MCP has its **own identity**: the tools read the whole
   enriched corpus **without scores or per-user data**, and each article
-  projection carries a shareable `niouzou_url` deep link. Authenticated by
+  projection carries a shareable `niouzou_url` deep link as its **only** URL —
+  the origin source URL is not exposed (E23-S8). Authenticated by
   **service account keys** (`Authorization: Bearer nzk_…`, SHA-256
   fingerprinted in `service_account_keys`) via a thin ASGI middleware that just
   validates the key — no user context is carried. Admins generate / revoke keys

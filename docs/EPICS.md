@@ -5058,7 +5058,8 @@ lecture — sans fuiter la personnalisation de qui que ce soit.
     personnalisation.
 - Projection retournée : `id, title, niouzou_url, url (source d'origine),
   source, summary, keywords, published_at`. **Plus de champ `score`, plus de
-  `user_id`, plus de feedback.**
+  `user_id`, plus de feedback.** (Le champ `url` source a été **retiré** en
+  E23-S8 : seul `niouzou_url` reste.)
 - `mcp_app.py` : le middleware `ServiceAccountAuthMiddleware` **valide** la
   clé (401 sinon) mais ne résout plus d'utilisateur et ne publie plus de
   `contextvar` `user_id` ; le `contextvar` est supprimé. Les descriptions
@@ -5135,6 +5136,23 @@ chaque résultat porte une `niouzou_url`. Un utilisateur connecté ouvre cette
 URL : si l'article vient de ses sources il a scoring + feedback, sinon il le
 lit en lecture seule. Le bouton Partager produit un lien `/article/{id}`
 ouvrable par n'importe quel compte.
+
+#### [x] E23-S8 — MCP : ne plus exposer l'URL source, seulement `niouzou_url`
+
+- Les projections MCP (`list_recent_articles`, `search_articles`,
+  `get_article`) ne renvoient **plus le champ `url`** (l'URL de la source
+  d'origine). Seul `niouzou_url` (`{PUBLIC_APP_URL}/article/{id}`) subsiste,
+  pour qu'un assistant branché sur le MCP renvoie toujours le lecteur **vers
+  Niouzou** plutôt que vers le site source.
+- `McpService` : `_summary` et `get_article` perdent la clé `url` ; les
+  `select` correspondants ne chargent plus `Article.url`.
+- Descriptions d'outils (`mcp_app.py`) : précisent que `niouzou_url` est le
+  lien à partager/ouvrir et que l'URL source n'est pas exposée.
+- Tests : `test_mcp.py` vérifie l'absence de `url` dans les projections
+  listing et `get_article`.
+
+**Acceptance** : un assistant qui liste ou récupère un article via le MCP ne
+voit qu'un lien `niouzou_url` et ne peut donc citer que l'URL Niouzou.
 
 ---
 
