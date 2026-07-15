@@ -428,7 +428,8 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `OPENROUTER_MODEL` | ❌ | Model to use (default: `google/gemma-4-26b-a4b-it:free`) |
 | `CHAT_MODEL` | ❌ | E21-S1 — OpenRouter model for the article chat (`POST /articles/{id}/chat`). Unset → falls back to the **effective** `OPENROUTER_MODEL` (DB override included). Overridable via `PATCH /admin/config`. Unlike enrichment (sync client on the worker), the chat streams from the `api` process via its own async httpx path (`services/chat_service.py`) — never imports torch |
 | `CHAT_WEB_SEARCH` | ❌ | E21-S7 — attach OpenRouter's web plugin to chat completions so the assistant can search the internet (works with any model; OpenRouter bills per search). Default `false`; overridable via `PATCH /admin/config` |
-| `PUBLIC_APP_URL` | ❌ | E23-S2 — public base URL of the PWA, used to build shareable article deep links (`{PUBLIC_APP_URL}/article/{id}`) that the MCP hands back in its `niouzou_url` field. Empty → the MCP falls back to the path-only `/article/{id}` |
+| `PUBLIC_APP_URL` | ❌ | E23-S2 — public base URL of the PWA, used to build shareable article deep links (`{PUBLIC_APP_URL}/article/{id}`) that the MCP hands back in its `niouzou_url` field. Empty → the MCP falls back to the path-only `/article/{id}`. Production (Railway): `https://niouzou.galaxou.com` |
+| `CORS_ORIGINS` | ❌ | Comma-separated allow-list of browser origins permitted to call the API (default: `*` = any origin, fine for dev/self-host). In a hosted deployment set it to the PWA's public origin, e.g. `https://niouzou.galaxou.com`. Auth is Bearer-token (no cookies), so the wildcard default is safe |
 | `SCORE_THRESHOLD` | ❌ | Minimum *active* score to surface an article (0.0–1.0, default: `0.0`; cold/NULL rows bypass it) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
 | `RANDOM_SURFACE_RATE` | ❌ | Share (0.0–1.0) of sub-threshold articles randomly slipped into the feed to break the echo chamber (default: `0.05`) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request). Only bites when `SCORE_THRESHOLD > 0`, since with the default `0.0` every article already clears the threshold |
 | `FEED_GRAVITY` | ❌ | Controls how fast older articles drop in ranking (default: `1.5`) |
@@ -447,7 +448,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `ENRICHMENT_INPUT_MAX_CHARS` | ❌ | Char cap on the combined LLM enrichment input (header + vocab + title + article excerpt, 500–20000, default: `2500`) — overridable via `PATCH /admin/config`. Raise it to give the model more real text to ground its summary on (fewer hallucinations) at the cost of more tokens/article; takes effect on the next pipeline run |
 | `ENRICHMENT_BOILERPLATE_EXACT` | ❌ | E10-S6 — extra paywall/CGU **exact templates** (full normalized-text match), `\|\|\|`-separated, merged with the built-in list. Add a verbatim footer here when one slips through (default: empty) |
 | `ENRICHMENT_BOILERPLATE_MARKERS` | ❌ | E10-S6 — extra boilerplate **marker groups**: groups `\|\|\|`-separated, substrings within a group `&&`-separated; a group trips only when all its substrings co-occur. Use source-specific strings (emails, CMS phrasings), never generic RGPD/cookies vocabulary (default: empty) |
-| `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`) |
+| `VITE_API_URL` | ⚙️ pwa build | Baked into the bundle at build time; must be browser-reachable (default: `http://localhost:8000/api/v1`). Production (Railway): `https://api-niouzou.galaxou.com/api/v1` |
 
 ---
 

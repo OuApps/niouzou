@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from niouzou.config import get_settings
 from niouzou.errors import (
     APIError,
     api_error_handler,
@@ -35,10 +36,12 @@ from niouzou.routers import (
 # app's lifetime (E22).
 app = FastAPI(title="Niouzou API", version="0.1.0", lifespan=mcp_lifespan)
 
-# Allow the PWA (any origin in dev, tighten in prod via CORS_ORIGINS env var)
+# Allow the PWA to call the API cross-origin. Defaults to any origin (dev +
+# self-hosting); tighten in a hosted deployment via the CORS_ORIGINS env var,
+# e.g. CORS_ORIGINS=https://niouzou.galaxou.com (comma-separated for several).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_settings().cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
