@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # back to the path-only ``/article/{id}`` (degrades gracefully; a browser
     # opening it from the app resolves it relative to its own origin).
     public_app_url: str = ""
+    # Comma-separated list of allowed browser origins for CORS. Default ``*``
+    # (any origin) keeps local dev and self-hosting frictionless. In a hosted
+    # deployment set it to the PWA's public origin(s), e.g.
+    # ``https://niouzou.galaxou.com`` — several may be listed
+    # (``https://niouzou.galaxou.com,https://pwa-…up.railway.app``). A literal
+    # ``*`` disables the allow-list. Note: the browser rejects ``*`` together
+    # with credentialed requests, but Niouzou authenticates via a Bearer token
+    # (no cookies), so the wildcard default is safe.
+    cors_origins: str = "*"
     score_threshold: float = 0.0
     random_surface_rate: float = 0.05
     feed_gravity: float = 1.5
@@ -143,6 +152,19 @@ class Settings(BaseSettings):
         if url.startswith("postgres://"):
             return url.replace("postgres://", "postgresql+asyncpg://", 1)
         return url
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse ``cors_origins`` into the list Starlette's CORSMiddleware wants.
+
+        Empty or a literal ``*`` → ``["*"]`` (allow any origin). Otherwise a
+        comma-separated allow-list, trimmed of surrounding whitespace and blank
+        entries.
+        """
+        raw = self.cors_origins.strip()
+        if not raw or raw == "*":
+            return ["*"]
+        return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 @lru_cache
