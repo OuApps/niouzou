@@ -27,6 +27,7 @@
 | EPIC 16 | Smart Match — scoring sémantique par embeddings | EPIC 5, EPIC 9, EPIC 10 |
 | EPIC 21 | Chat IA sur un article (bottom sheet) | EPIC 5, EPIC 9 |
 | EPIC 22 | Serveur MCP + clés service account | EPIC 3, EPIC 8, EPIC 9 |
+| EPIC 24 | Tags de sources & mode Loupe | EPIC 9, EPIC 11 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -5134,3 +5135,240 @@ chaque résultat porte une `niouzou_url`. Un utilisateur connecté ouvre cette
 URL : si l'article vient de ses sources il a scoring + feedback, sinon il le
 lit en lecture seule. Le bouton Partager produit un lien `/article/{id}`
 ouvrable par n'importe quel compte.
+
+---
+
+## EPIC 24 — Tags de sources & mode Loupe (juillet 2026)
+
+**But** : permettre à un utilisateur de **séparer ses usages** de Niouzou
+(veille tech, rugby, actu générale…) sans dupliquer son moteur de
+personnalisation. On introduit des **tags par source** (créés à la volée) et
+un **mode Loupe** : un sélecteur, sur le Feed *et* sur la Recherche, qui
+active **aucun ou un seul** tag et restreint alors le flux aux sources
+portant ce tag. Chaque tag peut porter son **propre seuil de pertinence**,
+éditable depuis l'écran de config admin.
+
+**Pourquoi** : le besoin réel est à la *consultation*, pas à l'apprentissage.
+L'utilisateur *connaît* son intention du moment (« là je veux du rugby ») — il
+lui faut un interrupteur, pas un second cerveau. Le Smart Match étant déjà
+multi-modal par construction (k-NN sans centroïde, cf. EPIC 16), forker le
+modèle d'apprentissage (profils/personas séparés : `keyword_weights`,
+`article_relevance_scores`, `article_feedbacks` dupliqués par profil) coûterait
+cher pour un gain quasi nul côté smart. La Loupe est donc une **lentille de
+consultation** posée sur le flux unique : un ajout, pas une refonte, qui ne
+touche à aucun des trois concepts de scoring sacrés (`salience` /
+`keyword_weight` / `*_score`). Le seuil par tag apporte la vraie valeur qu'un
+flux unique ne peut pas offrir : la veille tech veut de la précision (seuil
+haut), l'actu veut de la découverte (seuil bas).
+
+**Décisions structurantes**
+
+- **Le tag est une ressource par utilisateur** (comme les sources), créée à la
+  volée. Un tag ⇄ plusieurs sources ; une source ⇄ plusieurs tags
+  (`source_tags`, N–N).
+- **Le seuil vit sur la ligne `tags`** (`tags.threshold`, nullable → hérite du
+  `SCORE_THRESHOLD` global), **pas** dans `app_settings`. Motif :
+  `app_settings` est instance-plat et admin-only, alors que les tags sont
+  par-user. L'écran config admin *rend* l'éditeur de seuils (comme demandé)
+  mais tape sur l'API `/tags`, pas sur `/admin/config` — ça garde
+  `app_settings` propre et le réglage fonctionne pour un futur user non-admin.
+  → **à confirmer** (voir fin d'epic).
+- **La Loupe est un état d'UI éphémère** passé en query param (`?tag=`), pas un
+  réglage serveur. Sélection unique (0 ou 1 tag). Le client remet à zéro la
+  pagination quand la Loupe change (comme les filtres Explore, E11).
+- La Loupe ne change **que** deux choses dans la requête : (1) le sous-ensemble
+  de sources, (2) le seuil effectif. Le ranking (`feed_rank`, gravité,
+  `active_method`, chips de score) est **inchangé**.
+
+### Stories
+
+#### [ ] E24-S1 — Modèle de données : `tags` + `source_tags`
+
+- Nouvelle table `tags` :
+  ```sql
+  CREATE TABLE tags (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID NOT NULL REFERENCES users(id),
+    name       TEXT NOT NULL,
+    threshold  FLOAT CHECK (threshold IS NULL OR (threshold >= 0.0 AND threshold <= 1.0)),
+               -- seuil de pertinence propre au tag ; NULL = hérite du SCORE_THRESHOLD global
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE UNIQUE INDEX uq_tags_user_lower_name ON tags (user_id, lower(name));
+  CREATE INDEX idx_tags_user_id ON tags (user_id);
+  ```
+- Table de liaison N–N :
+  ```sql
+  CREATE TABLE source_tags (
+    source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    tag_id    UUID NOT NULL REFERENCES tags(id)    ON DELETE CASCADE,
+    PRIMARY KEY (source_id, tag_id)
+  );
+  CREATE INDEX idx_source_tags_tag_id ON source_tags (tag_id);
+  ```
+- Unicité du nom **insensible à la casse** par user (`lower(name)`), pour que
+  « Rugby » et « rugby » ne coexistent pas.
+- Sources en soft-delete (`deleted_at`) : le `ON DELETE CASCADE` ne se
+  déclenche pas sur une source désactivée (elle n'est pas supprimée en base) —
+  le lien reste, sans effet puisque la source ne produit plus d'articles. Le
+  cascade sert surtout au `DELETE tags/{id}` (nettoie les liens) et à une
+  éventuelle purge dure de source.
+- Migration Alembic (`upgrade` crée les 2 tables + index ; `downgrade` les
+  drop). Modèles ORM `Tag` + association `source_tags` ; relation
+  `Source.tags` / `Tag.sources`.
+
+#### [ ] E24-S2 — API : CRUD `/tags` (+ seuil, création à la volée)
+
+- `TagsService` (business logic) + `routers/tags.py` (thin). Tout scopé
+  `user_id`.
+- `GET /tags` → `{ "tags": [{ id, name, threshold, source_count }] }`,
+  triés par `name`. `source_count` = nombre de sources actives portant le tag.
+- `POST /tags` `{ name, threshold? }` → `201` `{ id, name, threshold,
+  source_count: 0 }`. `name` *trim*, 1–40 chars. `409` si le nom existe déjà
+  (insensible casse) pour ce user. `threshold` optionnel dans `[0.0, 1.0]` ou
+  `null`.
+- `PATCH /tags/{id}` `{ name?, threshold? }` → `200`. `threshold: null`
+  explicite = revenir à l'héritage du seuil global. Renommer vers un nom
+  existant → `409`. `404` si le tag n'est pas au user.
+- `DELETE /tags/{id}` → `204`. Supprime le tag et ses liens (`source_tags`
+  cascade) ; **aucun article n'est touché**. Si le tag supprimé était la Loupe
+  active côté client, le front retombe sur « aucun tag » (`404` sur `?tag=`
+  géré proprement — voir S4).
+- **Création à la volée** = flux client (S6) : la combobox de tags, sur un nom
+  inconnu, appelle `POST /tags` puis réassigne (S3). Pas de sur-mécanique
+  serveur.
+
+#### [ ] E24-S3 — API : assignation tags ⇄ sources
+
+- `GET /sources` enrichi : chaque source gagne `tags: [{ id, name }]` (triés
+  par `name`). Une seule requête, jointure `source_tags` → pas de N+1.
+- `PUT /sources/{id}/tags` `{ tag_ids: [uuid, …] }` → **remplace** l'ensemble
+  des tags de la source (set-semantics : la liste envoyée devient l'état
+  complet ; liste vide = plus aucun tag). `200` renvoie la source à jour
+  (même forme que `GET /sources`, entrée unique). `422` si un `tag_id` n'est
+  pas au user ; `404` si la source n'est pas au user. Max 20 tags/source.
+- Choix id-based (et non name-based) pour rester RESTful et découpler la
+  gestion des tags (renommage/seuil via `/tags`) de leur simple rattachement.
+  La sensation « à la volée » est portée par le client (S6).
+
+#### [ ] E24-S4 — Feed : filtre Loupe (`?tag=`) + seuil par tag
+
+- `GET /feed` gagne un query param optionnel `tag` (UUID). Absent = comportement
+  actuel (flux complet). Présent :
+  - **filtre sources** : ne garde que les articles dont la source porte ce tag
+    (jointure `source_tags`) ;
+  - **seuil effectif** : `COALESCE(min_score explicite, tag.threshold,
+    SCORE_THRESHOLD global)`. Précédence : un `min_score` de requête l'emporte
+    toujours ; sinon le seuil du tag ; sinon le global.
+  - `422` si `tag` n'appartient pas au user (cohérent avec `source_ids` sur
+    Explore, E11). Un tag inexistant/supprimé → `422` : le client retombe sur
+    « aucune Loupe ».
+- **Inchangé** : formule `feed_rank`, gravité, `active_method`, les deux chips
+  de score, le bypass cold-start (`cold_start` root si < `COLD_START_THRESHOLD`
+  feedbacks → seuil ignoré, Loupe comprise) et le bypass cold/NULL du score
+  actif. Le seuil du tag ne mord donc que pour un user « chaud » sur des
+  articles scorés — même sémantique que `SCORE_THRESHOLD` aujourd'hui.
+- `RANDOM_SURFACE_RATE` : les articles sous le seuil *effectif du tag*
+  continuent d'être tirés aléatoirement, mais **au sein du sous-ensemble
+  taggé** uniquement.
+- Le curseur encode déjà `feed_rank`+`id` ; le client doit **droper le curseur**
+  quand la Loupe change (doc : même règle que les filtres Explore).
+
+#### [ ] E24-S5 — Recherche & Explore : filtre Loupe
+
+- `GET /explore/search` gagne le même param `tag` (UUID, optionnel) : restreint
+  la recherche `ILIKE` aux articles des sources portant le tag. `422` tag
+  étranger. La recherche n'applique pas de seuil de pertinence (inchangé) — le
+  tag n'y fait donc que **filtrer les sources**, pas de seuil appliqué.
+- Par cohérence, `GET /explore/new` et `GET /explore/history` acceptent aussi
+  `tag` (combinable en `AND` avec leurs `source_ids` / `min_score` existants).
+  Sur `/explore/new`, comme le feed n'y applique pas `SCORE_THRESHOLD`, le tag
+  n'y fait que filtrer les sources ; le seuil du tag ne s'applique **que** sur
+  `GET /feed` (le seul endroit qui gate sur le seuil).
+- Note doc explicite : le **seuil** par tag ne vit que sur le Feed ; ailleurs le
+  tag est un pur filtre de sources.
+
+#### [ ] E24-S6 — PWA : tags sur l'écran Sources (création à la volée)
+
+- Chaque carte source affiche ses tags en **chips** (couleurs du
+  `DESIGN_SYSTEM.md`, pas d'improvisation). Un éditeur inline (combobox type
+  « token input ») permet d'ajouter/retirer des tags :
+  - saisie d'un nom existant → suggestion → rattache (`PUT
+    /sources/{id}/tags`) ;
+  - saisie d'un nom inconnu + validation → `POST /tags` (création à la volée)
+    puis rattache ;
+  - retrait d'un chip → `PUT /sources/{id}/tags` sans ce tag.
+- Client API typé : `listTags`, `createTag`, `setSourceTags` ; types miroir
+  (`Tag`, `Source.tags`). `BlobBackground` déjà présent sur l'écran — aucun
+  nouvel écran plein.
+
+#### [ ] E24-S7 — PWA : contrôle Loupe sur Feed + Recherche
+
+- Un contrôle **Loupe** (icône loupe lucide `Search`/`Filter` — à cadrer avec
+  le design system) en tête du Feed et de l'écran Recherche : une rangée de
+  chips (ou un dropdown) listant les tags du user, **sélection unique**, plus
+  un état « aucun » (défaut). Sélectionner un tag ⇒ requête avec `?tag=` ;
+  désélectionner ⇒ flux complet.
+- Changement de Loupe ⇒ reset pagination (drop du curseur) + refetch, comme les
+  filtres Explore (E11).
+- La sélection est mémorisée en `localStorage` **par écran** (Feed vs
+  Recherche indépendants) pour survivre à un reload, sans persistance serveur.
+  Un tag disparu (supprimé) → nettoyage silencieux (le `422` du back retombe
+  sur « aucune Loupe »).
+- Le chip actif affiche le nom du tag ; le seuil appliqué reste transparent
+  (pas d'affichage dédié en V1).
+
+#### [ ] E24-S8 — PWA : « Seuils par tag » dans la config admin
+
+- Nouvelle section **« Seuils par tag »** dans l'écran de configuration admin,
+  à côté de `score_threshold` / `random_surface_rate`. Liste les tags du user
+  avec, par ligne : le nom + un input de seuil en **pourcentage** (0–100 %,
+  parité avec le badge de score et `score_threshold`) + un bouton « hériter »
+  (met `threshold = null`). Renommer / supprimer un tag est aussi accessible
+  ici (réutilise `PATCH` / `DELETE /tags/{id}`).
+- **Important** : cette section tape l'API `/tags` (par-user), **pas**
+  `/admin/config`. `GET/PATCH /admin/config` et `app_settings` ne portent
+  aucun seuil de tag — voir la décision structurante en tête d'epic. La section
+  est rendue dans l'écran admin par commodité (l'admin est le user principal du
+  self-host), mais l'API sous-jacente reste par-user.
+
+#### [ ] E24-S9 — Tests + docs
+
+- Backend : CRUD `/tags` (unicité casse-insensible, `409`, `threshold` null vs
+  borné) ; `PUT /sources/{id}/tags` (set-semantics, `422` tag étranger, cap 20)
+  ; `GET /feed?tag=` (filtre sources + seuil effectif + précédence `min_score`
+  > tag > global ; `422` tag étranger ; bypass cold-start conservé) ;
+  `GET /explore/search?tag=` (filtre pur). Un test pinne que le seuil de tag ne
+  s'applique **que** sur `/feed`.
+- Front : store/état de la Loupe (sélection unique, reset curseur, persistance
+  localStorage), rendu des chips de tags, section « Seuils par tag ».
+- Docs synchronisées :
+  - `DATA_MODEL.md` — tables `tags` + `source_tags`, note soft-delete/cascade.
+  - `API_SPEC.md` — endpoints `/tags`, `PUT /sources/{id}/tags`, param `tag`
+    sur `/feed` + Explore, `tags[]` sur `GET /sources`.
+  - `ARCHITECTURE.md` — la Loupe comme lentille de consultation (un seul modèle
+    d'apprentissage, seuil par tag sur le Feed).
+  - `CONVENTIONS.md` si un pattern de nommage tag/loupe est introduit.
+  - `DESIGN_SYSTEM.md` — chips de tags + contrôle Loupe.
+
+**Acceptance** : l'utilisateur ajoute le tag « Rugby » à la volée sur trois de
+ses sources, lui met un seuil de 40 % dans la config admin, puis sur le Feed
+active la Loupe « Rugby » : le flux ne montre plus que des articles de ces
+trois sources, filtrés au seuil 40 % (au lieu du seuil global), rangés par la
+même formule de gravité. Il désactive la Loupe → flux complet au seuil global.
+Sur l'écran Recherche, activer « Rugby » restreint la recherche aux mêmes
+sources. Aucun `keyword_weight` ni score n'est dupliqué ; basculer de Loupe est
+instantané.
+
+**Décisions à confirmer**
+
+1. **Emplacement du seuil** : sur la ligne `tags` (retenu ici, par-user) vs
+   dans `app_settings` keyé par tag (instance-plat, admin-only). Le premier est
+   plus propre et multi-user-safe ; le second colle littéralement à « dans la
+   config admin » mais casse dès qu'un second user crée un tag.
+2. **Portée de la Loupe** : Feed + Recherche seulement (demande explicite) vs
+   étendue à tout Explore (New/History) — proposé en S5 par cohérence, à
+   trancher.
+3. **Multi-tag plus tard ?** V1 = sélection unique (0 ou 1). Si un besoin
+   « Rugby OU Tech » émerge, la liaison N–N le permet déjà côté données ; seul
+   le param (`tag` → `tags[]`) et l'UI évolueraient.
