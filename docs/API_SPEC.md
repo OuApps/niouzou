@@ -1358,7 +1358,9 @@ scoping, **no relevance scores**, no feedback; E23-S1):
 
 Every article projection carries a **`niouzou_url`** — a shareable deep link
 `{PUBLIC_APP_URL}/article/{id}` (path-only `/article/{id}` when `PUBLIC_APP_URL`
-is unset) that a logged-in Niouzou user can open in the PWA. Payloads never
+is unset) that a logged-in Niouzou user can open in the PWA. This is the **only
+link** exposed: since **E23-S8** the origin source URL (`url`) is deliberately
+omitted, so a consumer always points readers back into Niouzou. Payloads never
 include `score` or any user data.
 
 Each tool result is a `tools/call` result with a `text` content block whose

@@ -113,7 +113,9 @@ def build_mcp_server():
         description=(
             "List the most recent Niouzou articles across the whole database, "
             "newest first. Read-only, no personalisation or relevance scores. "
-            "Each item includes a `niouzou_url` a Niouzou user can open."
+            "Each item includes a `niouzou_url` — the link to share or open, "
+            "which points back into Niouzou (the origin source URL is not "
+            "exposed)."
         )
     )
     async def list_recent_articles(limit: int = DEFAULT_LIMIT) -> str:
@@ -125,7 +127,9 @@ def build_mcp_server():
         description=(
             "Full-text search over all Niouzou articles (title and summary), "
             "newest first. Searches the entire database — no user scoping, no "
-            "relevance scores. Each item includes a `niouzou_url`."
+            "relevance scores. Each item includes a `niouzou_url` — the link "
+            "to share or open, pointing back into Niouzou (the origin source "
+            "URL is not exposed)."
         )
     )
     async def search_articles(query: str, limit: int = DEFAULT_LIMIT) -> str:
@@ -136,7 +140,9 @@ def build_mcp_server():
     @mcp.tool(
         description=(
             "Fetch one article by id, including its full crawled text content "
-            "and a `niouzou_url`. No relevance scores or user data."
+            "and a `niouzou_url` — the link to share or open, pointing back "
+            "into Niouzou (the origin source URL is not exposed). No relevance "
+            "scores or user data."
         )
     )
     async def get_article(article_id: str) -> str:
