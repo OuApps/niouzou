@@ -5146,7 +5146,8 @@ personnalisation. On introduit des **tags par source** (créés à la volée) et
 un **mode Loupe** : un sélecteur, sur le Feed *et* sur la Recherche, qui
 active **aucun ou un seul** tag et restreint alors le flux aux sources
 portant ce tag. Chaque tag peut porter son **propre seuil de pertinence**,
-éditable depuis l'écran de config admin.
+éditable par l'utilisateur dans son écran Réglages (par-user, pas dans la
+config admin).
 
 **Pourquoi** : le besoin réel est à la *consultation*, pas à l'apprentissage.
 L'utilisateur *connaît* son intention du moment (« là je veux du rugby ») — il
@@ -5168,11 +5169,10 @@ haut), l'actu veut de la découverte (seuil bas).
   (`source_tags`, N–N).
 - **Le seuil vit sur la ligne `tags`** (`tags.threshold`, nullable → hérite du
   `SCORE_THRESHOLD` global), **pas** dans `app_settings`. Motif :
-  `app_settings` est instance-plat et admin-only, alors que les tags sont
-  par-user. L'écran config admin *rend* l'éditeur de seuils (comme demandé)
-  mais tape sur l'API `/tags`, pas sur `/admin/config` — ça garde
-  `app_settings` propre et le réglage fonctionne pour un futur user non-admin.
-  → **à confirmer** (voir fin d'epic).
+  `app_settings` est instance-plat et admin-only, alors que les tags (et donc
+  leur seuil) sont **par-user**. L'édition du seuil se fait dans un écran
+  **Réglages accessible à tout utilisateur** (pas dans la config admin) et tape
+  l'API `/tags`. Un réglage per-user n'a rien à faire dans un écran admin-only.
 - **La Loupe est un état d'UI éphémère** passé en query param (`?tag=`), pas un
   réglage serveur. Sélection unique (0 ou 1 tag). Le client remet à zéro la
   pagination quand la Loupe change (comme les filtres Explore, E11).
@@ -5318,19 +5318,22 @@ haut), l'actu veut de la découverte (seuil bas).
 - Le chip actif affiche le nom du tag ; le seuil appliqué reste transparent
   (pas d'affichage dédié en V1).
 
-#### [ ] E24-S8 — PWA : « Seuils par tag » dans la config admin
+#### [ ] E24-S8 — PWA : gestion des tags dans l'écran Réglages (par-user)
 
-- Nouvelle section **« Seuils par tag »** dans l'écran de configuration admin,
-  à côté de `score_threshold` / `random_surface_rate`. Liste les tags du user
-  avec, par ligne : le nom + un input de seuil en **pourcentage** (0–100 %,
-  parité avec le badge de score et `score_threshold`) + un bouton « hériter »
-  (met `threshold = null`). Renommer / supprimer un tag est aussi accessible
-  ici (réutilise `PATCH` / `DELETE /tags/{id}`).
-- **Important** : cette section tape l'API `/tags` (par-user), **pas**
-  `/admin/config`. `GET/PATCH /admin/config` et `app_settings` ne portent
-  aucun seuil de tag — voir la décision structurante en tête d'epic. La section
-  est rendue dans l'écran admin par commodité (l'admin est le user principal du
-  self-host), mais l'API sous-jacente reste par-user.
+- Nouvelle section **« Tags »** dans l'écran **Réglages** de l'utilisateur
+  (celui qui expose déjà le profil `GET /me`, `POST /feedback/reset`, etc.) —
+  **accessible à tout utilisateur, pas dans la config admin**. Elle liste les
+  tags du user avec, par ligne : le nom (renommable), un input de seuil en
+  **pourcentage** (0–100 %, parité avec le badge de score et `score_threshold`)
+  avec un bouton « hériter » (met `threshold = null`), et une action supprimer.
+  Réutilise `GET` / `PATCH` / `DELETE /tags/{id}`.
+- **Aucun** seuil de tag ne transite par `/admin/config` ni `app_settings` : le
+  seuil est un réglage per-user porté par la ligne `tags` (voir décision
+  structurante en tête d'epic). L'écran admin reste réservé aux réglages
+  instance-wide.
+- Rappel : le **rattachement** tag ⇄ source se fait sur l'écran Sources (S6) ;
+  cet écran Réglages ne gère que le **cycle de vie** des tags (nom, seuil,
+  suppression). Les deux écrans partagent les mêmes clients API `/tags`.
 
 #### [ ] E24-S9 — Tests + docs
 
@@ -5352,7 +5355,7 @@ haut), l'actu veut de la découverte (seuil bas).
   - `DESIGN_SYSTEM.md` — chips de tags + contrôle Loupe.
 
 **Acceptance** : l'utilisateur ajoute le tag « Rugby » à la volée sur trois de
-ses sources, lui met un seuil de 40 % dans la config admin, puis sur le Feed
+ses sources, lui met un seuil de 40 % dans l'écran Réglages, puis sur le Feed
 active la Loupe « Rugby » : le flux ne montre plus que des articles de ces
 trois sources, filtrés au seuil 40 % (au lieu du seuil global), rangés par la
 même formule de gravité. Il désactive la Loupe → flux complet au seuil global.
@@ -5362,10 +5365,9 @@ instantané.
 
 **Décisions à confirmer**
 
-1. **Emplacement du seuil** : sur la ligne `tags` (retenu ici, par-user) vs
-   dans `app_settings` keyé par tag (instance-plat, admin-only). Le premier est
-   plus propre et multi-user-safe ; le second colle littéralement à « dans la
-   config admin » mais casse dès qu'un second user crée un tag.
+1. ~~**Emplacement du seuil**~~ — **tranché** : le seuil (comme le tag) est
+   **par-user**, porté par la ligne `tags`, édité dans l'écran Réglages
+   utilisateur. Rien dans `app_settings` ni dans la config admin.
 2. **Portée de la Loupe** : Feed + Recherche seulement (demande explicite) vs
    étendue à tout Explore (New/History) — proposé en S5 par cohérence, à
    trancher.
