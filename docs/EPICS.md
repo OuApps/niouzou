@@ -5368,9 +5368,10 @@ instantané.
 1. ~~**Emplacement du seuil**~~ — **tranché** : le seuil (comme le tag) est
    **par-user**, porté par la ligne `tags`, édité dans l'écran Réglages
    utilisateur. Rien dans `app_settings` ni dans la config admin.
-2. **Portée de la Loupe** : Feed + Recherche seulement (demande explicite) vs
-   étendue à tout Explore (New/History) — proposé en S5 par cohérence, à
-   trancher.
+2. ~~**Portée de la Loupe**~~ — **tranché** : la Loupe s'applique au Feed, à la
+   Recherche **et** à tout Explore (New/History), comme spécifié en S5. Rappel :
+   le *seuil* par tag ne mord que sur le Feed ; ailleurs le tag est un pur
+   filtre de sources.
 3. **Multi-tag plus tard ?** V1 = sélection unique (0 ou 1). Si un besoin
    « Rugby OU Tech » émerge, la liaison N–N le permet déjà côté données ; seul
    le param (`tag` → `tags[]`) et l'UI évolueraient.
