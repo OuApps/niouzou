@@ -39,12 +39,20 @@ class Settings(BaseSettings):
     # assistant can search the internet (billed per search by OpenRouter;
     # works with any model). Admin-overridable via app_settings.
     chat_web_search: bool = False
-    # E23-S2 — public base URL of the PWA, used to build shareable article
-    # deep links (``{public_app_url}/article/{id}``) that the MCP hands back so
-    # a Niouzou user can open any article in the app. Empty → the MCP falls
-    # back to the path-only ``/article/{id}`` (degrades gracefully; a browser
-    # opening it from the app resolves it relative to its own origin).
-    public_app_url: str = ""
+    # Public base URL of the front-end PWA — the base of every link handed to a
+    # user (share links, and future e-mails). Use this explicitly, never
+    # ``request.url``, so links stay on the custom domain
+    # (``https://niouzou.galaxou.com``) regardless of the internal host the app
+    # is reached on. Today its only consumer is the MCP shareable article deep
+    # link (``{frontend_url}/article/{id}``, E23-S2); empty → the MCP falls back
+    # to the path-only ``/article/{id}`` (degrades gracefully; a browser opening
+    # it from the app resolves it relative to its own origin). The legacy env
+    # var ``PUBLIC_APP_URL`` is still honoured as a fallback so a deployment can
+    # migrate to ``FRONTEND_URL`` at its own pace.
+    frontend_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("frontend_url", "public_app_url"),
+    )
     # Comma-separated list of allowed browser origins for CORS. Default ``*``
     # (any origin) keeps local dev and self-hosting frictionless. In a hosted
     # deployment set it to the PWA's public origin(s), e.g.
