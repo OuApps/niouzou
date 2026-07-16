@@ -486,13 +486,13 @@ async def test_mcp_sees_articles_from_any_source(db_session):
 # ── Article deep-link URL helper (E23-S2) ───────────────────────────────────
 
 
-def test_niouzou_article_url_uses_public_app_url(monkeypatch):
+def test_niouzou_article_url_uses_frontend_url(monkeypatch):
     from types import SimpleNamespace
 
     import niouzou.services.mcp_service as m
 
     monkeypatch.setattr(
-        m, "get_settings", lambda: SimpleNamespace(public_app_url="https://pwa.test/")
+        m, "get_settings", lambda: SimpleNamespace(frontend_url="https://pwa.test/")
     )
     assert niouzou_article_url("abc-123") == "https://pwa.test/article/abc-123"
 
@@ -503,6 +503,32 @@ def test_niouzou_article_url_falls_back_to_path(monkeypatch):
     import niouzou.services.mcp_service as m
 
     monkeypatch.setattr(
-        m, "get_settings", lambda: SimpleNamespace(public_app_url="")
+        m, "get_settings", lambda: SimpleNamespace(frontend_url="")
     )
     assert niouzou_article_url("abc-123") == "/article/abc-123"
+
+
+def test_frontend_url_reads_legacy_public_app_url_env(monkeypatch):
+    """The legacy ``PUBLIC_APP_URL`` env var still feeds ``frontend_url``."""
+    from niouzou.config import get_settings
+
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://legacy.test")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().frontend_url == "https://legacy.test"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_frontend_url_env_takes_precedence_over_legacy(monkeypatch):
+    """``FRONTEND_URL`` wins when both it and ``PUBLIC_APP_URL`` are set."""
+    from niouzou.config import get_settings
+
+    monkeypatch.setenv("FRONTEND_URL", "https://canonical.test")
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://legacy.test")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().frontend_url == "https://canonical.test"
+    finally:
+        get_settings.cache_clear()

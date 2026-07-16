@@ -374,6 +374,22 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
   `api_keys` table on first call (see `services/miniflux_bootstrap.py`).
   The token is generated and INSERTed idempotently; no env var, no UI step.
 - Services communicate via Railway's internal network (`*.railway.internal`).
+- **Public domains behind a reverse proxy (2026-07-16)**:
+  - The API and PWA are served on **custom Cloudflare domains**
+    (`api-niouzou.galaxou.com` / `niouzou.galaxou.com`), not the
+    `*.up.railway.app` hostnames. No `*.up.railway.app` URL is ever hard-coded
+    in the code or in a user-facing link; the front points at the API via
+    `VITE_API_URL` and user links are built from `FRONTEND_URL`.
+  - The API runs uvicorn with **`--proxy-headers --forwarded-allow-ips="*"`**
+    (see `api/railway.toml` `startCommand`, mirrored in the Dockerfile `CMD`).
+    This makes uvicorn trust the `X-Forwarded-Proto`/`-Host` set by the
+    Cloudflare→Railway edge, so `request.url` and the OpenAPI server URL are
+    reconstructed with the public `https` scheme and custom host instead of the
+    internal `http://…:8000` — without it, any absolute URL the app emits is
+    broken. `"*"` trusts every hop because the upstream proxy IP is dynamic.
+  - The app generates **no URLs to itself** today, so `API_BASE_URL` has no
+    consumer and is left unset; if a self-referencing URL is ever needed, read
+    it from a setting explicitly rather than from `request.url`.
 - **Cron consolidation (E8-S6, 2026-05-30)**:
   - Old separate Railway cron services (`cron-fetch`, `cron-enrich`, `cron-refresh-weights`) have been **removed**.
   - Cron jobs now consolidated into the `refresh-worker` service using APScheduler (Python).
@@ -429,7 +445,7 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
 | `OPENROUTER_MODEL` | ❌ | Model to use (default: `google/gemma-4-26b-a4b-it:free`) |
 | `CHAT_MODEL` | ❌ | E21-S1 — OpenRouter model for the article chat (`POST /articles/{id}/chat`). Unset → falls back to the **effective** `OPENROUTER_MODEL` (DB override included). Overridable via `PATCH /admin/config`. Unlike enrichment (sync client on the worker), the chat streams from the `api` process via its own async httpx path (`services/chat_service.py`) — never imports torch |
 | `CHAT_WEB_SEARCH` | ❌ | E21-S7 — attach OpenRouter's web plugin to chat completions so the assistant can search the internet (works with any model; OpenRouter bills per search). Default `false`; overridable via `PATCH /admin/config` |
-| `PUBLIC_APP_URL` | ❌ | E23-S2 — public base URL of the PWA, used to build shareable article deep links (`{PUBLIC_APP_URL}/article/{id}`) that the MCP hands back in its `niouzou_url` field. Empty → the MCP falls back to the path-only `/article/{id}`. Production (Railway): `https://niouzou.galaxou.com` |
+| `FRONTEND_URL` | ❌ | Public base URL of the front-end PWA — the base of every link handed to a user (share links, future e-mails); use it explicitly, never `request.url`. Its only consumer today is the MCP shareable article deep link (`{FRONTEND_URL}/article/{id}`, E23-S2) returned in `niouzou_url`; empty → the MCP falls back to the path-only `/article/{id}`. Production (Railway): `https://niouzou.galaxou.com`. The legacy name `PUBLIC_APP_URL` is still honoured as a fallback |
 | `CORS_ORIGINS` | ❌ | Comma-separated allow-list of browser origins permitted to call the API (default: `*` = any origin, fine for dev/self-host). In a hosted deployment set it to the PWA's public origin, e.g. `https://niouzou.galaxou.com`. Auth is Bearer-token (no cookies), so the wildcard default is safe |
 | `SCORE_THRESHOLD` | ❌ | Minimum *active* score to surface an article (0.0–1.0, default: `0.0`; cold/NULL rows bypass it) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request) |
 | `RANDOM_SURFACE_RATE` | ❌ | Share (0.0–1.0) of sub-threshold articles randomly slipped into the feed to break the echo chamber (default: `0.05`) — overridable via `PATCH /admin/config` (takes effect on the next `GET /feed` request). Only bites when `SCORE_THRESHOLD > 0`, since with the default `0.0` every article already clears the threshold |

@@ -68,4 +68,10 @@ USER appuser
 EXPOSE 8000
 
 # Default role: serve the API. Overridden by the migrate and cron services.
-CMD ["uvicorn", "niouzou.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers + --forwarded-allow-ips=* let uvicorn trust the reverse
+# proxy's X-Forwarded-Proto / -Host so absolute URLs are rebuilt with the
+# public https scheme and host instead of the internal http://…:8000. Exec form
+# (no shell) means "*" is a literal arg, not a glob. Railway overrides this via
+# railway.toml's startCommand, but self-hosters running the image directly (or
+# behind their own proxy) get the correct behaviour out of the box.
+CMD ["uvicorn", "niouzou.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

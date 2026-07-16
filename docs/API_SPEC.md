@@ -1357,8 +1357,9 @@ scoping, **no relevance scores**, no feedback; E23-S1):
 - `get_article` `{ "article_id": str }` — one article incl. full content.
 
 Every article projection carries a **`niouzou_url`** — a shareable deep link
-`{PUBLIC_APP_URL}/article/{id}` (path-only `/article/{id}` when `PUBLIC_APP_URL`
-is unset) that a logged-in Niouzou user can open in the PWA. This is the **only
+`{FRONTEND_URL}/article/{id}` (path-only `/article/{id}` when `FRONTEND_URL`
+is unset; legacy env `PUBLIC_APP_URL` still honoured) that a logged-in Niouzou
+user can open in the PWA. This is the **only
 link** exposed: since **E23-S8** the origin source URL (`url`) is deliberately
 omitted, so a consumer always points readers back into Niouzou. Payloads never
 include `score` or any user data.

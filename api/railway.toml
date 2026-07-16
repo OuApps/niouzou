@@ -4,7 +4,13 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 preDeployCommand = "sh -c 'python -m niouzou.scripts.ensure_miniflux_db && alembic upgrade head'"
-startCommand = "uvicorn niouzou.main:app --host 0.0.0.0 --port 8000"
+# --proxy-headers + --forwarded-allow-ips="*" make uvicorn honour the
+# X-Forwarded-Proto / -Host set by Railway's edge (and the Cloudflare custom
+# domain in front of it). Without them the app sees plain http://…internal and
+# reconstructs absolute URLs (OpenAPI server, any request.url use) with the
+# wrong scheme/host — broken links. "*" trusts every upstream hop because
+# Railway's proxy IP is dynamic; quoted so the shell doesn't glob-expand it.
+startCommand = 'uvicorn niouzou.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"'
 healthcheckPath = "/health"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

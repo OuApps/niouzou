@@ -6,7 +6,7 @@ tool registrations; this service owns the tool *implementations*.
 Since E23 the MCP is an **identity of its own**, decoupled from any user: the
 tools read the whole enriched-article corpus **read-only** and never expose
 scores, feedback or any per-user data. The only link every article projection
-carries is a ``niouzou_url`` deep link (``{PUBLIC_APP_URL}/article/{id}``) so a
+carries is a ``niouzou_url`` deep link (``{FRONTEND_URL}/article/{id}``) so a
 Niouzou user opens the article in the app rather than on the origin source —
 the source URL is deliberately not exposed (E23-S8). Methods return plain
 JSON-serialisable dicts and raise ``McpToolError`` on bad input / missing rows
@@ -49,11 +49,11 @@ def _clamp_limit(limit: int | None) -> int:
 def niouzou_article_url(article_id: uuid.UUID | str) -> str:
     """Shareable Niouzou deep link for an article (E23-S2).
 
-    ``{PUBLIC_APP_URL}/article/{id}`` when the public URL is configured,
+    ``{FRONTEND_URL}/article/{id}`` when the front-end base URL is configured,
     otherwise the path-only ``/article/{id}`` so the payload still degrades
     to something a same-origin client can resolve.
     """
-    base = get_settings().public_app_url.rstrip("/")
+    base = get_settings().frontend_url.rstrip("/")
     return f"{base}/article/{article_id}"
 
 
