@@ -397,9 +397,14 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
     URL resolve to `api-niouzou.galaxou.com`. No-op when the header is absent
     (local dev, self-hosting), so nothing else has to change.
   - **Front redirect** — the PWA bounces any hit on the raw Railway origin
-    (`*.up.railway.app`) to its canonical `VITE_CANONICAL_URL` before the app
-    mounts (`pwa/src/main.tsx`), preserving path/query/hash. No-op when
-    `VITE_CANONICAL_URL` is unset.
+    (`*.up.railway.app`) to `https://niouzou.galaxou.com` before the app mounts
+    (top of `pwa/src/main.tsx`), preserving path/query/hash. Hardcoded and
+    unconditional: the host is a runtime value so Vite can't fold the branch
+    away (an env-gated version tree-shakes to nothing when the var is unset at
+    build), and it only ever fires on Railway's niouzou-specific origin — inert
+    for local dev and self-hosting. Verify after any change with `npm run build`
+    then `grep -r up.railway.app pwa/dist/` (must match) — the bundle hash must
+    move too.
   - The app generates **no URLs to itself** today, so `API_BASE_URL` has no
     consumer and is left unset; if a self-referencing URL is ever needed, read
     it from a setting explicitly rather than from `request.url`.
