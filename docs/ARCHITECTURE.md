@@ -380,13 +380,26 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
     `*.up.railway.app` hostnames. No `*.up.railway.app` URL is ever hard-coded
     in the code or in a user-facing link; the front points at the API via
     `VITE_API_URL` and user links are built from `FRONTEND_URL`.
-  - The API runs uvicorn with **`--proxy-headers --forwarded-allow-ips="*"`**
-    (see `api/railway.toml` `startCommand`, mirrored in the Dockerfile `CMD`).
-    This makes uvicorn trust the `X-Forwarded-Proto`/`-Host` set by the
-    Cloudflare→Railway edge, so `request.url` and the OpenAPI server URL are
-    reconstructed with the public `https` scheme and custom host instead of the
-    internal `http://…:8000` — without it, any absolute URL the app emits is
-    broken. `"*"` trusts every hop because the upstream proxy IP is dynamic.
+  - **Scheme** — the API runs uvicorn with
+    **`--proxy-headers --forwarded-allow-ips="*"`** (see `api/railway.toml`
+    `startCommand`, mirrored in the Dockerfile `CMD`). This trusts the
+    `X-Forwarded-Proto` (→ `https`) and `X-Forwarded-For` (→ real client IP)
+    set by the edge, so `request.url` is rebuilt with the public scheme instead
+    of the internal `http://…:8000`. `"*"` trusts every hop because the
+    upstream proxy IP is dynamic.
+  - **Host** — uvicorn's proxy handling does **not** cover the host, and it
+    can't be recovered from `Host` / `X-Forwarded-Host`: Railway's own edge
+    rewrites both to the internal `*.up.railway.app` origin before the request
+    reaches the app. The Cloudflare proxy therefore forwards the real public
+    host in a dedicated, un-rewritten **`X-Edge-Host`** header, and
+    `ForwardedHostMiddleware` (`api/niouzou/middleware.py`, added in `main.py`)
+    promotes it back onto the ASGI `Host`. So `request.url` / the OpenAPI server
+    URL resolve to `api-niouzou.galaxou.com`. No-op when the header is absent
+    (local dev, self-hosting), so nothing else has to change.
+  - **Front redirect** — the PWA bounces any hit on the raw Railway origin
+    (`*.up.railway.app`) to its canonical `VITE_CANONICAL_URL` before the app
+    mounts (`pwa/src/main.tsx`), preserving path/query/hash. No-op when
+    `VITE_CANONICAL_URL` is unset.
   - The app generates **no URLs to itself** today, so `API_BASE_URL` has no
     consumer and is left unset; if a self-referencing URL is ever needed, read
     it from a setting explicitly rather than from `request.url`.
