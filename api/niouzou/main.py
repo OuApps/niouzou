@@ -18,6 +18,7 @@ from niouzou.errors import (
     validation_exception_handler,
 )
 from niouzou.mcp_app import mcp_asgi_app, mcp_lifespan
+from niouzou.middleware import ForwardedHostMiddleware
 from niouzou.routers import (
     admin,
     articles,
@@ -46,6 +47,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Behind the Cloudflare → Railway edge, promote the trusted X-Edge-Host header
+# to the request Host so absolute URLs (request.url, OpenAPI server) resolve to
+# the public custom domain rather than the internal *.up.railway.app host that
+# Railway rewrites into Host / X-Forwarded-Host. No-op without the edge header,
+# so local dev and self-hosting are unaffected. Added after CORS so it sits
+# outermost and fixes the host before anything downstream reads it. Pairs with
+# uvicorn's --proxy-headers, which covers the scheme via X-Forwarded-Proto.
+app.add_middleware(ForwardedHostMiddleware)
 
 app.add_exception_handler(APIError, api_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
