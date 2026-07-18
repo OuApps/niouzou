@@ -5553,8 +5553,14 @@ ne démarre sans ça (règle héritée d'EPIC 20).
 > follow-up 2, à re-mesurer ≥24 h après déploiement. **Décision S1 : oui, S2+
 > se justifie** — pas pour le plancher actuel (~80-100 Mo récupérables côté
 > Niouzou) mais pour **plafonner la croissance** (~140 Mo/mois) ; et le poste
-> jumeau « rétention Miniflux » (209 Mo, croissant) se traite par config, à
-> valider avec le mainteneur.
+> jumeau « rétention Miniflux » (209 Mo, croissant) se traite par config.
+>
+> **Appliqué le 2026-07-19 (voir ARCHITECTURE.md « Décisions appliquées »)** :
+> cap RAM Railway **512 Mo** sur Postgres (minimum de l'UI ; le noyau évince le
+> cache au-delà → facture ≈ cap) + `CLEANUP_ARCHIVE_READ_DAYS=30` sur miniflux
+> (profondeur de backfill E19-S5 réduite à ~30 j, assumé). Conséquence : S2
+> (allègement) devient un chantier de fond — tenir sous le cap malgré la
+> croissance — plus une urgence facture.
 
 - **Taille base** : `pg_total_relation_size('articles')`, décomposée
   heap / TOAST / index ; poids de la colonne `embedding` (`count(*) * 4 Ko`) et
