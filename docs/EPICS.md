@@ -5472,6 +5472,30 @@ pas en chantier prioritaire.
   la ligne casse les liens partageables et retire l'article de l'historique →
   réservé à un horizon très supérieur à la fenêtre, derrière un flag, décidé en
   S3.
+- **L'archivage ne touche jamais un article avec lequel l'utilisateur a
+  interagi.** Un article *liké, disliké, ouvert (lu en entier), sauvegardé ou
+  chatté* reste **chaud à vie** (ni allégé S2, ni purgé S3) : il garde `content`
+  ET `embedding`. Motifs : les **Saved** doivent rester lisibles (le contenu est
+  affiché), un article ouvert/chatté peut être rouvert/rechatté, et ces lignes
+  sont un signal de valeur explicite. **Une simple impression (« vu ») n'est PAS
+  une interaction** — sinon presque tout serait protégé et l'archivage ne
+  servirait à rien ; un article seulement affiché puis skippé reste archivable.
+  Prédicat d'exclusion (à graver comme invariant, testé en S2) :
+  ```sql
+  -- « a interagi » = il existe une ligne article_feedbacks (user, article) avec
+  EXISTS (SELECT 1 FROM article_feedbacks f
+          WHERE f.article_id = a.id
+            AND (f.reaction IN ('like','dislike')   -- liké / disliké
+                 OR f.is_saved = true               -- sauvegardé
+                 OR f.read_full_article = true))     -- ouvert / lu en entier
+  ```
+  **Trou connu — le chat (E21).** « Chatté » n'a **aucun marqueur durable** par
+  (user, article) aujourd'hui : `llm_usage_log` est global, non relié à
+  l'article. Le protéger exige donc soit un **nouveau marqueur** (p. ex. un flag
+  `article_feedbacks.chatted` ou une table `article_chats`), soit d'**accepter
+  qu'un article seulement chatté ne soit pas protégé** en V1 — à trancher (voir
+  Décisions à confirmer). Le prédicat ci-dessus couvre les 4 autres cas dès
+  maintenant.
 - **Comprimer le vecteur est un levier DB à meilleur ROI que changer de
   fournisseur** : `halfvec` (demi-précision pgvector 0.7+, 4 Ko → 2 Ko) et/ou
   **réduction de dimension** (Qwen3-Embedding supporte le Matryoshka/MRL :
@@ -5519,6 +5543,12 @@ directement le working set chaud du Postgres.
   `published_at`, scores et FK conservés). Un `embedding = NULL` est **déjà** géré
   par le feed comme « cold » (0.5 baseline, bypass du seuil) — aucun cas neuf à
   gérer côté scoring.
+- **Exclusion des articles avec interaction** (décision structurante ci-dessus) :
+  le balayage d'allègement **saute** tout article couvert par le prédicat
+  `EXISTS article_feedbacks (…)` (liké / disliké / sauvegardé / lu en entier). Un
+  Saved allégé serait illisible ; un liké/ouvert peut être rouvert → ces lignes
+  restent chaudes. À implémenter comme un `NOT EXISTS (…)` dans la requête de
+  sélection des candidats, **et** à couvrir par un test d'invariant dédié.
 - **Seuil d'allègement** : nouvelle variable `ARTICLE_SLIM_AFTER_DAYS`
   (défaut à trancher, **strictement > `SMART_RESCORE_WINDOW_DAYS`** pour ne jamais
   amputer un article encore rescoré — invariant à tester). Idéalement décorrélé
@@ -5539,10 +5569,12 @@ directement le working set chaud du Postgres.
   le chat) ; à spécifier ici.
 
 **Acceptance** : au-delà de `ARTICLE_SLIM_AFTER_DAYS`, les articles hors fenêtre
-ont `embedding`/`content` à NULL, gardent métadonnées + scores figés + liens
-partageables ; aucun article **dans** la fenêtre n'est allégé (test d'invariant) ;
-le feed et le rescore nightly sont inchangés ; télémétrie de l'allègement visible ;
-le chat gère l'article allégé sans planter.
+**et sans interaction** ont `embedding`/`content` à NULL, gardent métadonnées +
+scores figés + liens partageables ; **aucun article liké / disliké / sauvegardé /
+ouvert n'est jamais allégé** (test d'invariant) ; aucun article **dans** la
+fenêtre n'est allégé (test d'invariant) ; le feed et le rescore nightly sont
+inchangés ; télémétrie de l'allègement visible ; le chat gère l'article allégé
+sans planter.
 
 #### [ ] E25-S3 — Purge dure optionnelle (TTL long, derrière un flag)
 
@@ -5553,8 +5585,13 @@ est **destructrice**.
 - **Garde-fous** : TTL `ARTICLE_PURGE_AFTER_DAYS` **≫** la fenêtre et ≫
   `ARTICLE_SLIM_AFTER_DAYS`, **désactivé par défaut** (`NULL`/`0` = jamais).
   Supprimer casse les **liens partageables `/article/{id}`** (E23) → ils
-  renverront `404` : à assumer explicitement, ou à exclure de la purge les
-  articles ayant du feedback/des impressions.
+  renverront `404` : à assumer explicitement.
+- **Même exclusion qu'en S2, a fortiori** : la purge **n'efface jamais** un
+  article avec interaction (liké / disliké / sauvegardé / ouvert — même prédicat
+  `NOT EXISTS article_feedbacks (…)`). Un Saved ne doit jamais disparaître. Une
+  interaction protège donc l'article **définitivement**, aussi vieux soit-il.
+  (Rappel : une simple **impression** n'est pas une interaction — elle
+  n'empêche pas la purge.)
 - **FK** : décider du sort de `article_feedbacks` (a **déjà** produit son effet
   d'apprentissage sur les `keyword_weights` — supprimable sans reperdre
   l'apprentissage, mais on perd la traçabilité) et `article_impressions`
@@ -5565,8 +5602,10 @@ est **destructrice**.
   par défaut, batch borné, télémétrie.
 
 **Acceptance** : purge désactivée par défaut ; activée, elle supprime uniquement
-au-delà du TTL long, avec une politique FK explicite et documentée ; décision
-tranchée sur le sort des liens partageables des articles purgés.
+au-delà du TTL long **et seulement des articles sans interaction** (aucun liké /
+disliké / sauvegardé / ouvert n'est jamais purgé — test d'invariant), avec une
+politique FK explicite et documentée ; décision tranchée sur le sort des liens
+partageables des articles purgés.
 
 #### [ ] E25-S4 — Compression du vecteur : `halfvec` et/ou réduction de dimension
 
@@ -5675,3 +5714,11 @@ avant/après (S1 vs S5) consignée.
    baseline S1 + une mesure de qualité du ranking smart.
 4. **Embedding externe (S6)** — recommandation par défaut : rester local ;
    décision finale au mainteneur.
+5. **Protéger les articles chattés ?** Les 4 interactions liké/disliké/
+   sauvegardé/ouvert sont couvertes dès aujourd'hui par `article_feedbacks`.
+   « Chatté » n'a **aucun marqueur durable** (`llm_usage_log` global). Deux
+   options : (a) ajouter un marqueur (`article_feedbacks.chatted` ou table
+   `article_chats`) pour l'inclure dans le prédicat d'exclusion ; (b) accepter en
+   V1 qu'un article *seulement* chatté reste archivable. À trancher — sachant
+   qu'ouvrir le chat implique souvent d'avoir déjà ouvert l'article
+   (`read_full_article`), donc le trou réel est étroit.
