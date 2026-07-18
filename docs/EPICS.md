@@ -4697,7 +4697,34 @@ facture le page cache, il faut l'évincer explicitement.
 pas** l'être (planning APScheduler interne → endormi, rien ne le réveille). Le vrai scale-to-zero du
 worker serait un **Railway Cron Job** lançant `run_once` (conteneur éteint entre runs, 0 € idle) —
 mais impose le modèle embarqué dans l'image (S4, +1,2 Go) sinon re-DL à chaque run, et la perte des
-endpoints `/run` + `/compact`. Écarté au profit du correctif page-cache (2026-06-29).
+endpoints `/run` + `/compact`. Écarté au profit du correctif page-cache (2026-06-29). Piste
+définitivement écartée (re-confirmé 2026-07-18) : la fréquence de refresh doit rester réglable
+depuis l'app (`cron_fetch_interval`, planning interne).
+
+#### Follow-up 2 (livré 2026-07-18) — l'éviction était incomplète : la traîne d'imports
+
+Malgré le follow-up 1, la métrique Memory montrait un idle médian ~447 Mo (plancher ~150 Mo touché
+~1×/48 h). **Diagnostic, mesuré en runtime dans le cgroup prod** (expérience contrôlée via
+`railway ssh` : chargement du modèle dans un enfant qui meurt, relevés `memory.stat` à chaque
+étape) : après la mort d'un enfant ayant chargé le modèle, `file` = 1745 Mo ; l'éviction HF+torch
+seule le ramène à **244 Mo** — la traîne d'imports jamais évincée (transformers 105 Mo, scipy
+108 Mo, sympy 74 Mo, sklearn 48 Mo, numpy+libs 69 Mo, tokenizers…). Éviction élargie à **tout
+site-packages** : `file` retombe à ~20 Mo, pour ~0,5 s de sweep (40k fichiers — le coût CPU du
+rglob est négligeable, fadvise sur un fichier non caché est quasi gratuit).
+
+**Subtilité d'accounting qui explique la dynamique** : la facturation du page cache est
+*first-toucher*. Juste après un déploiement, les pages de l'image sont encore dans le cache hôte
+(facturées à l'extraction de l'image) → le worker les lit gratuitement et semble au plancher ;
+quand l'hôte les évince, chaque run suivant les re-faulte depuis le disque → facturées au cgroup
+du worker, pour toujours si le sweep ne les couvre pas. D'où le motif « plancher touché juste
+après un deploy, puis dérive ». Corollaire : ne jamais valider un fix mémoire sur les heures qui
+suivent un déploiement — attendre ≥24 h.
+
+**Correctif** : `_page_cache_dirs()` = cache HF + `sysconfig.get_path("purelib")` entier ; la
+télémétrie logge les octets `file` du cgroup avant/après le sweep (pages réellement rendues) au
+lieu du compte de fichiers « conseillés » ; le sweep tourne aussi après l'enfant nightly (sa
+traîne sqlalchemy/numpy). Constat annexe : le modèle n'est **pas** sur le disque après un deploy
+(re-téléchargement 1,2 Go au premier run réel — S4 toujours pertinente en durcissement).
 
 ---
 
@@ -5434,10 +5461,13 @@ porte deux charges lourdes, de natures différentes :
   quelques dizaines de Ko. Volumineux, mais **TOASTé** (compressé, stocké
   hors-ligne du heap principal) → pèse surtout sur le **disque** et n'est chargé
   que si on lit vraiment la colonne. Impact RAM modéré.
-- **`embedding` VECTOR(1024)** — **4 Ko fixes, inline dans le heap principal**,
-  et **balayés par le k-NN Smart Match** (pas d'index ANN aujourd'hui → scan
-  exact sur les embeddings candidats). C'est **le premier moteur de RAM** : la
-  colonne est dans les pages chaudes, relue à chaque scoring.
+- **`embedding` VECTOR(1024)** — 4 Ko fixes, **balayés par le k-NN Smart Match**
+  (pas d'index ANN aujourd'hui → scan exact sur les embeddings candidats).
+  **Correction post-baseline (S1, 2026-07-18)** : contrairement à l'hypothèse
+  initiale, le vecteur n'est **pas** inline dans le heap — à 4 Ko il dépasse le
+  seuil TOAST et vit hors-ligne comme `content` (heap `articles` mesuré : 21 Mo
+  seulement sur 141 Mo). Il reste le poids dominant de la base Niouzou et du
+  page cache, mais via le TOAST, pas les pages du heap.
 
 Point-clé qui relie archivage et coût : le rescore nightly ne recalcule les
 scores que sur la **fenêtre `SMART_RESCORE_WINDOW_DAYS`** (14 j par défaut, E16-S9).
@@ -5508,10 +5538,23 @@ pas en chantier prioritaire.
 
 ### Stories
 
-#### [ ] E25-S1 — Baseline : mesurer la RAM et la taille avant tout
+#### [x] E25-S1 — Baseline : mesurer la RAM et la taille avant tout
 
 **But** : établir les chiffres qui pilotent les stories suivantes. Rien de lourd
 ne démarre sans ça (règle héritée d'EPIC 20).
+
+> **Livrée 2026-07-18** — note chiffrée dans `ARCHITECTURE.md` (« Railway RAM
+> baseline »). Chiffres clés : facture 97,7 % Memory ; Postgres 48 % / worker
+> 36 % des Go·h. Postgres ~630 Mo = 128 Mo `shared_buffers` (défaut) + ~478 Mo
+> de page cache ≈ tout le PGDATA (466 Mo = **168 Mo Niouzou + 209 Mo Miniflux**
+> + WAL). `articles` : 16 793 lignes (26 % dans la fenêtre, 298 avec
+> interaction), 141 Mo dont 21 Mo de heap (embedding/content TOASTés). Le poste
+> worker (36 %) était le résidu de page cache — corrigé par l'EPIC 20
+> follow-up 2, à re-mesurer ≥24 h après déploiement. **Décision S1 : oui, S2+
+> se justifie** — pas pour le plancher actuel (~80-100 Mo récupérables côté
+> Niouzou) mais pour **plafonner la croissance** (~140 Mo/mois) ; et le poste
+> jumeau « rétention Miniflux » (209 Mo, croissant) se traite par config, à
+> valider avec le mainteneur.
 
 - **Taille base** : `pg_total_relation_size('articles')`, décomposée
   heap / TOAST / index ; poids de la colonne `embedding` (`count(*) * 4 Ko`) et

@@ -114,17 +114,24 @@ External:
   after each run, the OS reclaims 100 % of that *anonymous* RAM. (This replaced
   E17-S4's in-process `unload_embedding_model()`, which freed Python references
   but did not return torch's pages to the OS, so a 24/7 process kept paying for
-  them.) **Page-cache caveat:** the files the child mmaps stay in the cgroup
-  **page cache** after it dies — the model (~1.2 GB safetensors) *and* torch's
-  shared libs (`libtorch_cpu.so` ~440 MB) — and Railway counts page cache in
-  its Memory metric, so idle memory didn't drop to the floor. The parent calls
-  `posix_fadvise(DONTNEED)` on the HF cache + the `torch` package dir after each
-  run (`_drop_run_page_cache`) to evict those clean, now-unmapped pages and
-  return idle RSS toward ~150-200 MB (measured anon is only ~74 MB; the rest is
-  reclaimable cache). torch's dir is located via `sysconfig` so the parent never
-  imports torch; fadvise leaves the parent's own still-mapped libs untouched.
-  The next run re-reads them from local disk (small cold-start).
-  `CRON_FETCH_INTERVAL` defaults to 30 min in prod.
+  them.) **Page-cache caveat:** the files the child reads stay in the cgroup
+  **page cache** after it dies — and Railway counts page cache in its Memory
+  metric, so idle memory didn't drop to the floor. Charging is *first-toucher*:
+  image pages still host-cached after a deploy are free, but every page the
+  child re-faults from disk is charged to the worker's cgroup until explicitly
+  evicted. The parent therefore calls `posix_fadvise(DONTNEED)` after each run
+  (`_drop_run_page_cache`) on the HF cache **and the entire `site-packages`**
+  (located via `sysconfig`, nothing imported). Evicting only HF + `torch` (the
+  first version, 2026-06-29) left the rest of the import trail — transformers,
+  scipy, sympy, sklearn, numpy… — charged forever: measured live (2026-07-18)
+  at **244 MB** of idle residue, matching the ~450 MB median the Memory graph
+  showed against a ~150 MB floor. The full sweep costs ~0.5 s for ~40k files
+  and returns cgroup `file` to ~20 MB; the sweep logs `file` bytes
+  before/after (pages actually returned), not a file count. fadvise cannot
+  evict the parent's own still-mapped libs, so the broad sweep is safe. The
+  next run re-reads model + libs from local disk (small cold-start).
+  `CRON_FETCH_INTERVAL` is 60 min in prod (raised from 30, 2026-07-18 — halves
+  the number of model reload cycles; the floor itself is the fadvise fix).
 - **Subprocess supervision** (`workers/refresh_worker.py`): the scheduler tick
   and `POST /run` both call `_spawn_run_once()`, which runs the child with
   `asyncio.create_subprocess_exec` and holds the in-process `_lock` for the
@@ -420,6 +427,9 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
   - The pipeline (and nightly refresh) moved out of the always-on worker process into a short-lived child (`python -m niouzou.crons.run_once[ --nightly]`). The worker parent stays light and **never imports torch** — there is a test (`test_worker_module_does_not_import_torch`) pinning that invariant. Motivation: torch's resident ~1.2 GB never returns to the OS via an in-process unload, so a 24/7 process paid for a sleeping model. Killing the child reclaims it.
   - The `asyncio.Lock` is held for the child's entire lifetime (`await proc.wait()` under the lock), so scheduled + manual + nightly + compaction-apply remain mutually exclusive with a single in-process lock (one replica). A child past its timeout (20 min pipeline / 60 min nightly) is killed.
   - `run_once` writes `pipeline_runs` itself and owns the `'enriching'` transitions; `/stats` is unchanged. The child inherits stdio (Railway logs) and env. It closes the Postgres pool (`engine.dispose`) before exiting.
+- **Page-cache eviction v2 (E20 follow-up 2, 2026-07-18)**:
+  - The post-run `posix_fadvise(DONTNEED)` sweep now covers the HF cache + the **whole `site-packages`**, not just `torch`. Measured live in the worker cgroup: a model-loading child leaves `file` at 1745 MB; the old HF+torch sweep left a **244 MB** permanent residue (transformers, scipy, sympy, sklearn, numpy…), which is why the Memory graph sat at ~450 MB median instead of the ~150 MB floor. The full sweep returns `file` to ~20 MB in ~0.5 s (~40k files) and now also runs after the nightly child. The log reports cgroup `file` MB before/after (pages actually returned) instead of a count of files merely advised.
+  - Kernel accounting note (the "why" behind the creep): page-cache charging is **first-toucher**. Right after a deploy the image's pages are still in the host cache (charged to the image extraction), so the worker reads them for free and idles at its floor; as the host evicts them, each child run re-faults them from disk and the worker's cgroup gets charged — permanently, for every file the sweep didn't cover. A fresh deploy therefore always *looks* fixed for a while; only the ≥24 h idle floor tells the truth.
 - **Pipeline observability (E10-S1, 2026-06-01)**:
   - Every fetch+enrich cycle is recorded in `pipeline_runs`: when it ran, how long it took, how many articles it processed, whether it failed. `GET /stats` exposes the most recent row in its global `pipeline` block.
   - `run_once` drives the per-article enrich loop directly (rather than calling `cron_enrich.run()`) so it can update the run row after each article and flip `articles.status` to a transient `'enriching'` for live progress visibility in `/stats`.
@@ -431,6 +441,33 @@ Dependabot alert as "not affected" — re-evaluate when a patched release ships)
   - The $ cost isn't on the chat-completion response in the installed OpenRouter SDK, so `OpenRouterClient` does a best-effort follow-up call to OpenRouter's `/generation` endpoint right after each completion; a lookup failure is logged at debug and never affects enrichment.
   - `GET /stats` sums `llm_usage_log.cost_usd` over 1h/6h/24h in its global `llm_cost` block — shown in the System panel as "Coût OpenRouter". Admin keyword-compaction LLM calls are out of scope (not routed through `enrichment_resources`).
 - **Service count**: Reduced from 6 to 4 services (`api`, `pwa`, `refresh-worker`, PostgreSQL).
+
+### Railway RAM baseline (E25-S1, mesurée 2026-07-18)
+
+Facture ~$22/mois dont **97,7 % = Memory** (CPU/egress/volume négligeables — le
+volume coûte $0.13/mois : l'archivage ne se justifie **pas** par le disque).
+RAM par service sur 7 j : **Postgres 48 %**, **refresh-worker 36 %**, api 10 %,
+miniflux 3 %, pwa 3 %.
+
+- **refresh-worker** — plancher réel ~150 Mo (anon ~80 Mo + cache), mais
+  moyenne 464 Mo : c'était le résidu de page cache non évincé (voir « Page-cache
+  eviction v2 » ci-dessus, corrigé). Objectif post-fix : idle ≾ 170 Mo hors runs.
+- **Postgres** — plancher plat ~630 Mo, intégralement expliqué (cgroup mesuré) :
+  `anon` 9 Mo + `shared_buffers` 128 Mo (défaut, dans `shmem` 152 Mo) + **~478 Mo
+  de page cache ≈ tout le PGDATA (466 Mo)**. Le PGDATA se décompose en :
+  base `railway` (Niouzou) **168 Mo** + base `miniflux` **209 Mo** (19,7k entrées
+  lues conservées, rétention Miniflux 60 j pas encore atteinte) + WAL 65 Mo.
+  Côté Niouzou : `articles` = 141 Mo pour 16 793 lignes (4 447 dans la fenêtre
+  de rescore, 298 avec interaction), dont heap **21 Mo** seulement — `content`
+  **et** `embedding` (4 Ko/vecteur) sont **TOASTés**, pas inline dans le heap
+  (contrairement à la première hypothèse de l'EPIC 25).
+- **Verdict archivage (décision S1)** : le right-sizing n'est pas le levier
+  (`shared_buffers` déjà minimal) ; le page cache suit la **taille des données**.
+  L'allègement E25-S2 (embedding+content à NULL hors fenêtre, interactions
+  épargnées) peut rendre ~80-100 Mo sur la base Niouzou et surtout **plafonner
+  la croissance** (~140 Mo/mois au rythme actuel). Le poste symétrique — la
+  rétention **Miniflux** (209 Mo et croissant) — est du même ordre et se règle
+  par config (`CLEANUP_ARCHIVE_*`), à trancher avec le mainteneur.
 
 ### Docker Compose (self-hosted)
 - `docker-compose.yml` at repo root — one-command stack
