@@ -28,6 +28,7 @@
 | EPIC 21 | Chat IA sur un article (bottom sheet) | EPIC 5, EPIC 9 |
 | EPIC 22 | Serveur MCP + clés service account | EPIC 3, EPIC 8, EPIC 9 |
 | EPIC 24 | Tags de sources & mode Loupe | EPIC 9, EPIC 11 |
+| EPIC 25 | Archivage & optimisation des coûts Railway | EPIC 16, EPIC 20 |
 
 > EPIC 1 and EPIC 2 can be developed in parallel.
 > EPIC 1 uses mocked data until EPIC 4 connects it to the real API.
@@ -5393,3 +5394,284 @@ instantané.
 3. **Multi-tag plus tard ?** V1 = sélection unique (0 ou 1). Si un besoin
    « Rugby OU Tech » émerge, la liaison N–N le permet déjà côté données ; seul
    le param (`tag` → `tags[]`) et l'UI évolueraient.
+
+---
+
+## EPIC 25 — Archivage & optimisation des coûts Railway (juillet 2026)
+
+**But** : baisser durablement la facture Railway en s'attaquant aux **deux
+postes de RAM restants** — la RAM du **Postgres** (qui grossit avec un corpus
+d'articles jamais purgé) et la RAM du **modèle d'embedding** (déjà largement
+domptée en EPIC 20, mais toujours locale). L'angle central est l'**archivage** :
+un article n'a de valeur « chaude » que quelques jours ; passé la fenêtre de
+rescore il ne fait plus qu'alourdir la base. On introduit un **cycle de vie de
+l'article** (chaud → allégé → purge optionnelle) et on rouvre la question du
+lieu d'exécution des embeddings.
+
+> **Cette epic est un dossier de décision, pas encore du code.** Elle cadre le
+> diagnostic, les options et les arbitrages. Règle héritée d'EPIC 20 : **mesurer
+> avant d'agir** — aucune story « lourde » (S2+) ne démarre sans la baseline S1.
+
+**Contexte / déclencheur.** EPIC 20 a réglé le poste dominant de l'époque (le
+`refresh-worker` payait un modèle d'embedding ~1,2 Go en RAM 24/7 ; ramené à un
+idle ~93 Mo via *parent léger + subprocess one-shot* + éviction du page cache).
+Restent deux coûts que la maintenance quotidienne fait remonter :
+
+1. **La RAM du Postgres**, qui suit le *working set* de la base — et la table
+   `articles` grossit **sans limite** : aucune rétention, aucun archivage
+   n'existe aujourd'hui.
+2. **Le modèle d'embedding**, toujours exécuté **localement** (pics brefs par run
+   + relecture disque à froid après chaque déploiement + image alourdie de
+   ~1,2 Go). D'où la question posée : **le déléguer à un service externe** ?
+
+**Diagnostic — ce qui coûte cher dans Postgres (le vrai « pourquoi »).** Railway
+facture l'**usage réel** de mémoire (Go·h). La RAM d'un Postgres, c'est
+`shared_buffers` + le page cache OS des pages réellement touchées : **plus le
+working set chaud est gros, plus la facture monte.** Or chaque ligne `articles`
+porte deux charges lourdes, de natures différentes :
+
+- **`content` (TEXT, contenu intégral extrait)** — souvent plusieurs Ko à
+  quelques dizaines de Ko. Volumineux, mais **TOASTé** (compressé, stocké
+  hors-ligne du heap principal) → pèse surtout sur le **disque** et n'est chargé
+  que si on lit vraiment la colonne. Impact RAM modéré.
+- **`embedding` VECTOR(1024)** — **4 Ko fixes, inline dans le heap principal**,
+  et **balayés par le k-NN Smart Match** (pas d'index ANN aujourd'hui → scan
+  exact sur les embeddings candidats). C'est **le premier moteur de RAM** : la
+  colonne est dans les pages chaudes, relue à chaque scoring.
+
+Point-clé qui relie archivage et coût : le rescore nightly ne recalcule les
+scores que sur la **fenêtre `SMART_RESCORE_WINDOW_DAYS`** (14 j par défaut, E16-S9).
+**Au-delà de la fenêtre, l'embedding d'un article n'est plus jamais utilisé pour
+scorer** (la gravité l'a déjà enterré) — il ne fait que gonfler le working set.
+C'est du **poids mort chaud**. L'archivage consiste précisément à retirer ce
+poids mort.
+
+**Diagnostic — le modèle d'embedding.** Après EPIC 20, le local ne coûte plus en
+idle. Le déléguer à OpenRouter supprimerait torch de l'image et le cold-start,
+mais **OpenRouter est un routeur de LLM de complétion — il n'expose pas
+d'endpoint d'embeddings**. Déléguer voudrait dire un **vrai fournisseur
+d'embeddings** (OpenAI `text-embedding-3`, Voyage, Cohere, Jina, Mistral…), ce
+qui entraîne : (a) une **dimension/un modèle différents** → **ré-embedding de
+tout le corpus** (les vecteurs Qwen3 1024-dim existants deviennent invalides),
+(b) un **coût API par article** + latence réseau à l'enrichissement, (c) la
+**perte de l'invariant** « le pathway smart marche sans IA » (embeddings locaux
+aujourd'hui, cf. CLAUDE.md). Le gain RAM marginal (idle déjà à ~93 Mo) ne
+justifie **pas** ce coût/risque à ce stade → traité en **spike/décision** (S6),
+pas en chantier prioritaire.
+
+**Décisions structurantes**
+
+- **Archiver = alléger, pas supprimer.** Le levier prioritaire est de **vider les
+  colonnes lourdes** (`embedding`, puis `content`) des articles **hors fenêtre**,
+  en **gardant la ligne et ses métadonnées légères** (`title`, `url`,
+  `summary_executive`, `published_at`, scores figés). Motifs : (1) préserver les
+  **liens partageables `/article/{id}`** (E23-S2) et les FK (`article_feedbacks`,
+  `article_impressions`) ; (2) l'embedding hors fenêtre étant inutile au scoring,
+  le retirer est **gratuit fonctionnellement** et frappe **le** moteur de RAM.
+- **La purge dure est une seconde phase, optionnelle et à TTL long.** Supprimer
+  la ligne casse les liens partageables et retire l'article de l'historique →
+  réservé à un horizon très supérieur à la fenêtre, derrière un flag, décidé en
+  S3.
+- **Comprimer le vecteur est un levier DB à meilleur ROI que changer de
+  fournisseur** : `halfvec` (demi-précision pgvector 0.7+, 4 Ko → 2 Ko) et/ou
+  **réduction de dimension** (Qwen3-Embedding supporte le Matryoshka/MRL :
+  tronquer 1024 → 512/256 avec faible perte) réduisent le poids **dans le heap
+  chaud** — sans dépendance externe. Évalué en S4.
+- **Mesurer d'abord (S1).** On ne touche ni au corpus ni au schéma avant d'avoir
+  la baseline : taille de `articles`, part `embedding` vs `content` vs reste, et
+  conso Go·h par service. EPIC 20 a montré que l'intuition (« l'unload rend la
+  RAM ») peut être fausse — ici aussi, on chiffre avant.
+
+### Stories
+
+#### [ ] E25-S1 — Baseline : mesurer la RAM et la taille avant tout
+
+**But** : établir les chiffres qui pilotent les stories suivantes. Rien de lourd
+ne démarre sans ça (règle héritée d'EPIC 20).
+
+- **Taille base** : `pg_total_relation_size('articles')`, décomposée
+  heap / TOAST / index ; poids de la colonne `embedding` (`count(*) * 4 Ko`) et
+  du `content` (via `pg_column_size`/moyenne). Nombre d'articles total vs
+  **dans** la fenêtre `SMART_RESCORE_WINDOW_DAYS` (= la part réellement utile au
+  scoring) vs **hors** fenêtre (= le poids mort candidat à l'allègement).
+- **Conso Railway** : relever, par service (`api`, `pwa`, `miniflux`,
+  `refresh-worker`, `Postgres`), la RAM idle et les Go·h sur ~7 j (graphe Railway
+  + `railway logs`), pour savoir **quel service** domine désormais la facture
+  post-EPIC 20 et **combien** l'archivage peut espérer récupérer.
+- **Livrable** : une note chiffrée (dans `ARCHITECTURE.md` ou une annexe) —
+  « X % des lignes sont hors fenêtre, elles pèsent Y Mo d'embeddings + Z Mo de
+  contenu ; le Postgres consomme W Go·h/j ». C'est le **avant** contre lequel on
+  mesurera le **après**.
+
+**Acceptance** : note baseline livrée avec les 3 chiffres clés (taille articles &
+part embedding/content ; ratio dans/hors fenêtre ; Go·h par service). Décision
+explicite : « le gain attendu justifie-t-il S2+ ? ».
+
+#### [ ] E25-S2 — Archivage : cycle de vie de l'article (allègement des colonnes lourdes)
+
+**But** : au-delà d'un âge configurable, **vider `embedding` puis `content`** des
+articles hors fenêtre, en gardant la ligne et ses métadonnées. Frappe
+directement le working set chaud du Postgres.
+
+- **Sémantique** : un article passe de *chaud* (payload complet) à *allégé*
+  (`embedding = NULL`, `content = NULL` ; `smart_score`/`keyword_score` **figés**
+  tels quels ; `title`, `url`, `summary_executive`, `og_image_url`,
+  `published_at`, scores et FK conservés). Un `embedding = NULL` est **déjà** géré
+  par le feed comme « cold » (0.5 baseline, bypass du seuil) — aucun cas neuf à
+  gérer côté scoring.
+- **Seuil d'allègement** : nouvelle variable `ARTICLE_SLIM_AFTER_DAYS`
+  (défaut à trancher, **strictement > `SMART_RESCORE_WINDOW_DAYS`** pour ne jamais
+  amputer un article encore rescoré — invariant à tester). Idéalement décorrélé
+  du contenu vs de l'embedding si on veut garder `content` un peu plus longtemps
+  pour le chat E21 / une ré-enrichissement (à trancher : un seul seuil vs deux).
+- **Où** : un **pas d'allègement** greffé sur `cron_nightly_refresh` (il balaie
+  déjà la fenêtre chaque nuit — c'est l'endroit naturel), ou une story de cron
+  dédié `cron_archive`. Batch borné (`LIMIT`) pour ne pas générer un `UPDATE`
+  massif d'un coup ; télémétrie dans `pipeline_runs` (nombre d'articles allégés,
+  Mo théoriquement rendus).
+- **Attention bloat** : un `UPDATE … SET embedding=NULL, content=NULL` crée des
+  tuples morts ; l'espace n'est rendu à l'OS/au working set qu'après VACUUM (le
+  reclaim dur est en S5). Le gain RAM vient surtout de **ne plus charger** ces
+  pages au scoring.
+- **Points à garder à l'œil (décision d'implémentation)** : le **chat E21** et une
+  éventuelle **ré-enrichissement** lisent `content` → sur un article allégé, le
+  chat doit dégrader proprement (utiliser `summary_executive`, ou ne pas proposer
+  le chat) ; à spécifier ici.
+
+**Acceptance** : au-delà de `ARTICLE_SLIM_AFTER_DAYS`, les articles hors fenêtre
+ont `embedding`/`content` à NULL, gardent métadonnées + scores figés + liens
+partageables ; aucun article **dans** la fenêtre n'est allégé (test d'invariant) ;
+le feed et le rescore nightly sont inchangés ; télémétrie de l'allègement visible ;
+le chat gère l'article allégé sans planter.
+
+#### [ ] E25-S3 — Purge dure optionnelle (TTL long, derrière un flag)
+
+**But** : pour qui veut aussi récupérer le **disque** (et pas seulement la RAM),
+supprimer les lignes très anciennes — décision distincte de l'allègement car elle
+est **destructrice**.
+
+- **Garde-fous** : TTL `ARTICLE_PURGE_AFTER_DAYS` **≫** la fenêtre et ≫
+  `ARTICLE_SLIM_AFTER_DAYS`, **désactivé par défaut** (`NULL`/`0` = jamais).
+  Supprimer casse les **liens partageables `/article/{id}`** (E23) → ils
+  renverront `404` : à assumer explicitement, ou à exclure de la purge les
+  articles ayant du feedback/des impressions.
+- **FK** : décider du sort de `article_feedbacks` (a **déjà** produit son effet
+  d'apprentissage sur les `keyword_weights` — supprimable sans reperdre
+  l'apprentissage, mais on perd la traçabilité) et `article_impressions`
+  (marqueurs « vu » — supprimables). `ON DELETE CASCADE` ou nettoyage explicite,
+  à trancher.
+- **Réversibilité nulle** : contrairement à S2 (un article allégé peut être
+  re-fetché/re-enrichi si jamais), la purge est définitive → prudence, flag off
+  par défaut, batch borné, télémétrie.
+
+**Acceptance** : purge désactivée par défaut ; activée, elle supprime uniquement
+au-delà du TTL long, avec une politique FK explicite et documentée ; décision
+tranchée sur le sort des liens partageables des articles purgés.
+
+#### [ ] E25-S4 — Compression du vecteur : `halfvec` et/ou réduction de dimension
+
+**But** : réduire le poids de la colonne `embedding` **dans le heap chaud** —
+levier DB à fort ROI, **sans** dépendance externe. Complémentaire de l'archivage
+(agit sur les articles **dans** la fenêtre, que S2 ne touche pas).
+
+- **Piste A — `halfvec`** : type demi-précision de pgvector (≥ 0.7), `VECTOR(1024)`
+  4 Ko → `halfvec(1024)` 2 Ko. Perte de précision négligeable pour un cosinus
+  normalisé. Coût : migration de type + ré-écriture de la colonne (et adaptation
+  de `smart_match.py` sur l'opérateur/cast). Vérifier la version pgvector de
+  l'image `pgvector/pgvector:pg17`.
+- **Piste B — réduction de dimension (Matryoshka/MRL)** : Qwen3-Embedding est
+  entraîné MRL → on peut **tronquer + renormaliser** 1024 → 512 (ou 256) avec
+  faible perte de qualité de ranking. Divise encore le poids (et le coût du scan).
+  Coût : **ré-embedding/re-troncature de tout le corpus** (`EMBEDDING_DIM`
+  devient configurable ; migration de la colonne ; outil de backfill —
+  cf. `tools/backfill_embeddings`). À valider **par une mesure de qualité**
+  (le ranking smart ne doit pas se dégrader sensiblement).
+- **Combinable** : `halfvec(512)` = 1 Ko/vecteur (÷4 vs aujourd'hui).
+- **Note index ANN** : il n'y a **aucun index vectoriel** aujourd'hui (scan
+  exact). Un index HNSW *accélèrerait* mais *consommerait* de la RAM → **à ne pas
+  ajouter** dans une epic qui cherche à *réduire* la RAM, tant que le corpus chaud
+  reste petit (l'archivage S2 le maintient borné). Mentionné pour être écarté
+  sciemment.
+
+**Acceptance** : décision A/B/combiné prise sur baseline S1 + mesure qualité ;
+si retenue, embeddings migrés vers le format réduit, `smart_match` adapté, et un
+gain de taille mesuré vs S1 ; pas de régression sensible du ranking smart.
+
+#### [ ] E25-S5 — Postgres : reclaim du bloat + right-sizing
+
+**But** : transformer les gains « logiques » de S2/S4 en gains **réels** de RAM/
+disque, et ajuster le dimensionnement.
+
+- **Reclaim** : après un allègement/une migration de colonne, l'espace des tuples
+  morts n'est rendu qu'après `VACUUM` (working set) / `VACUUM FULL` ou `pg_repack`
+  (disque, `VACUUM FULL` prend un lock exclusif → fenêtre de maintenance).
+  Vérifier/ajuster l'**autovacuum** sur `articles` (le churn insert + allègement
+  crée du bloat). Leçon EPIC 20 réutilisable : *un espace « libéré » logiquement
+  n'est pas rendu tant qu'on ne l'évince pas explicitement* (là c'était le page
+  cache ; ici c'est le bloat Postgres).
+- **Right-sizing** : une fois le working set réduit, revoir le plan/instance
+  Postgres Railway et la cohérence `shared_buffers` ↔ RAM allouée. Mesurer la
+  conso **après** contre la baseline S1.
+- **Quick-wins éventuels** : App Sleeping déjà actif sur `api`/`pwa` (E20-S5) —
+  vérifier qu'il tient ; le `Postgres` ne peut pas dormir (connexions
+  persistantes).
+
+**Acceptance** : bloat reclaim exécuté après S2/S4 ; conso Go·h Postgres
+**après** livrée et comparée à S1 ; décision de right-sizing tranchée et
+documentée.
+
+#### [ ] E25-S6 — Spike : déléguer l'embedding à un fournisseur externe (décision)
+
+**But** : répondre proprement à la question « déléguer l'embedding à OpenRouter ? »
+et trancher — **spike de décision, probablement différé**, pas un chantier.
+
+- **Constat de faisabilité** : **OpenRouter ne fournit pas d'endpoint
+  d'embeddings** (routeur de LLM de complétion). Déléguer = intégrer un **vrai
+  fournisseur d'embeddings** (OpenAI `text-embedding-3-{small,large}`, Voyage,
+  Cohere, Jina, Mistral embed…).
+- **Coûts/risques à chiffrer** : (a) **ré-embedding de tout le corpus** au
+  changement de modèle/dimension (invalide les vecteurs Qwen3 existants) ;
+  (b) **coût API par article** + latence réseau à l'enrichissement (vs local
+  gratuit) ; (c) **perte de l'invariant « smart sans IA »** — le pathway
+  deviendrait dépendant d'une clé/d'un réseau ; (d) l'idle RAM étant **déjà** à
+  ~93 Mo (EPIC 20), le **gain marginal est faible**.
+- **Bénéfices** : plus de torch dans l'image (~-1,2 Go), plus de cold-start
+  disque, parent worker encore plus mince.
+- **Recommandation par défaut** : **rester local** ; documenter la porte de
+  sortie (variable `EMBEDDING_PROVIDER` hypothétique) au cas où le calcul
+  bascule. Réévaluer si S4 (réduction de dimension) rapproche d'un modèle externe
+  compatible.
+
+**Acceptance** : note de décision livrée (faisabilité OpenRouter tranchée par la
+négative ; comparatif coût/risque local vs fournisseur externe ; recommandation
+argumentée). Aucune implémentation attendue sauf décision explicite du mainteneur.
+
+#### [ ] E25-S7 — Observabilité & docs de l'archivage
+
+**But** : rendre le cycle de vie visible et garder les docs en phase.
+
+- **Admin/stats** : exposer dans `/stats` (ou l'admin) le compte d'articles
+  *chauds* vs *allégés* vs *purgés* et les Mo rendus, pour suivre l'effet dans le
+  temps.
+- **Docs** : `DATA_MODEL.md` (colonnes `embedding`/`content` nullables par
+  archivage + états du cycle de vie), `ARCHITECTURE.md` (pas d'allègement dans le
+  nightly / cron d'archivage + nouvelles variables + note conso avant/après),
+  `API_SPEC.md` (comportement de `/article/{id}` sur un article allégé/purgé,
+  dégradation du chat E21), `CONVENTIONS.md` si un pattern de batch/cron est
+  introduit. Mettre à jour la ligne Overview et cocher les stories livrées.
+
+**Acceptance** : compteurs du cycle de vie visibles ; docs à jour ; note conso
+avant/après (S1 vs S5) consignée.
+
+**Décisions à confirmer**
+
+1. **Un seuil d'allègement ou deux ?** `content` (disque, utile au chat/ré-enrich)
+   et `embedding` (RAM, inutile hors fenêtre) pourraient avoir des TTL distincts.
+   V1 pragmatique : un seul `ARTICLE_SLIM_AFTER_DAYS` ; à raffiner si le chat sur
+   articles anciens compte.
+2. **Purge dure : on l'active ?** Par défaut non (S3). À trancher selon que le
+   disque devienne (ou non) un poste de coût réel après S2/S4.
+3. **halfvec vs réduction de dimension vs les deux (S4)** — à trancher sur la
+   baseline S1 + une mesure de qualité du ranking smart.
+4. **Embedding externe (S6)** — recommandation par défaut : rester local ;
+   décision finale au mainteneur.
