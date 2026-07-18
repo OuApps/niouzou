@@ -277,13 +277,34 @@ async def _nightly_refresh_job() -> None:
         await asyncio.to_thread(_drop_run_page_cache)
 
 
+def _fetch_trigger(interval_minutes: int) -> CronTrigger:
+    """Build a wall-clock-aligned trigger firing every ``interval_minutes``.
+
+    APScheduler's ``minute`` field only accepts a step up to 59, so a naive
+    ``CronTrigger(minute="*/{interval}")`` raises ``ValueError`` the moment the
+    interval reaches 60 (a perfectly reasonable "hourly" setting) — which
+    crashes the worker on startup. Express any interval of a whole hour or more
+    on the ``hour`` field instead; sub-hour intervals keep the minute step.
+    Non-whole-hour intervals ≥ 60 min round to the nearest hour so the trigger
+    stays valid and clock-aligned (an unusual config; the common values are
+    15 / 30 / 60).
+    """
+    interval = max(1, interval_minutes)
+    if interval < 60:
+        return CronTrigger(minute=f"*/{interval}")
+    hours = max(1, round(interval / 60))
+    return CronTrigger(hour=f"*/{hours}", minute=0)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Wire APScheduler with the current cron settings.
 
     Triggers are CronTrigger (wall-clock aligned) rather than IntervalTrigger
     so the next fire time is predictable — the PWA renders "Next run" against
-    the live ``cron_fetch_interval_minutes`` from /stats.
+    the live ``cron_fetch_interval_minutes`` from /stats. The fetch trigger is
+    built by ``_fetch_trigger`` so an hourly (≥ 60 min) interval maps onto the
+    hour field instead of an invalid ``*/60`` minute step.
 
     The reaper runs once here, before the scheduler starts, so any article left
     in ``'enriching'`` by a previous crash is rolled back to pending before the
@@ -306,7 +327,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _scheduler = AsyncIOScheduler(timezone="UTC")
     _scheduler.add_job(
         _guarded_run,
-        CronTrigger(minute=f"*/{interval}"),
+        _fetch_trigger(interval),
         id="fetch_enrich",
         # A worker restart close to the next slot must not skip it.
         misfire_grace_time=300,

@@ -219,3 +219,41 @@ def test_worker_module_does_not_import_torch():
     import niouzou.workers.refresh_worker  # noqa: F401
 
     assert "torch" not in sys.modules
+
+
+# ── Fetch trigger builder (hourly-interval regression) ──────────────────────
+
+
+def test_fetch_trigger_sub_hour_keeps_minute_step():
+    """The common case (15/30/45 min) stays a wall-clock-aligned minute step."""
+    from niouzou.workers.refresh_worker import _fetch_trigger
+
+    assert "minute='*/30'" in str(_fetch_trigger(30))
+    assert "minute='*/15'" in str(_fetch_trigger(15))
+
+
+def test_fetch_trigger_hourly_does_not_crash():
+    """Regression: an interval of 60 used to build ``CronTrigger(minute='*/60')``,
+    which APScheduler rejects (minute step must be ≤ 59) — the worker crashed on
+    startup. It must now map onto the hour field instead."""
+    from niouzou.workers.refresh_worker import _fetch_trigger
+
+    trigger = _fetch_trigger(60)  # must not raise
+    rendered = str(trigger)
+    assert "hour='*/1'" in rendered
+    assert "minute='0'" in rendered
+
+
+def test_fetch_trigger_multi_hour_and_rounding():
+    """Whole-hour intervals map cleanly; odd ≥60 values round to the nearest hour."""
+    from niouzou.workers.refresh_worker import _fetch_trigger
+
+    assert "hour='*/2'" in str(_fetch_trigger(120))
+    assert "hour='*/2'" in str(_fetch_trigger(90))  # round(1.5) → 2
+
+
+def test_fetch_trigger_clamps_non_positive():
+    """A zero/negative interval falls back to every-minute, never an empty step."""
+    from niouzou.workers.refresh_worker import _fetch_trigger
+
+    assert "minute='*/1'" in str(_fetch_trigger(0))
