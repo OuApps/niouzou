@@ -146,8 +146,13 @@ async def test_spawn_kills_child_on_timeout(monkeypatch):
     assert killed.is_set()
 
 
-def test_drop_run_page_cache_fadvises_model_and_torch(monkeypatch, tmp_path):
-    """E20 follow-up — both the HF model cache AND torch's libs are evicted.
+def test_drop_run_page_cache_fadvises_model_and_site_packages(monkeypatch, tmp_path):
+    """E20 follow-up — the HF model cache AND all of site-packages are evicted.
+
+    Evicting torch alone left the child's remaining import trail
+    (transformers, scipy, sklearn…) charged to the cgroup forever — measured
+    at 244 MB idle on the live worker. The sweep must therefore cover every
+    package, not a hand-picked list.
 
     Cross-platform: posix_fadvise is monkeypatched (it doesn't exist on macOS),
     so this exercises the cache-walk + per-file fadvise logic everywhere.
@@ -167,11 +172,16 @@ def test_drop_run_page_cache_fadvises_model_and_torch(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
 
-    # Fake site-packages with a torch/lib/*.so.
+    # Fake site-packages: torch's big .so plus the "tail" packages that the
+    # first version of the sweep missed.
     purelib = tmp_path / "site-packages"
     torch_lib = purelib / "torch" / "lib"
     torch_lib.mkdir(parents=True)
     (torch_lib / "libtorch_cpu.so").write_bytes(b"y" * 4096)
+    for pkg in ("transformers", "scipy", "sklearn"):
+        pkg_dir = purelib / pkg
+        pkg_dir.mkdir()
+        (pkg_dir / "big.so").write_bytes(b"z" * 4096)
     monkeypatch.setattr(sysconfig, "get_path", lambda name: str(purelib))
 
     advices: list[int] = []
@@ -182,8 +192,8 @@ def test_drop_run_page_cache_fadvises_model_and_torch(monkeypatch, tmp_path):
 
     rw._drop_run_page_cache()
 
-    # 2 HF files + 1 torch .so = 3 evictions.
-    assert len(advices) == 3
+    # 2 HF files + 1 torch .so + 3 tail .so = 6 evictions.
+    assert len(advices) == 6
     assert all(a == os.POSIX_FADV_DONTNEED for a in advices)
 
 

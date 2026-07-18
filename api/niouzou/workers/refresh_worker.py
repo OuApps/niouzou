@@ -88,21 +88,31 @@ _PIPELINE_TIMEOUT_S = 20 * 60
 _NIGHTLY_TIMEOUT_S = 60 * 60
 
 
-# ── page-cache hygiene (E20 follow-up) ──────────────────────────────────────
+# ── page-cache hygiene (E20 follow-up, extended 2026-07-18) ─────────────────
 #
 # Killing the run_once child frees its *anonymous* RSS, but every file the
-# child mmap'd stays in the container's cgroup **page cache** after it exits —
+# child reads stays in the container's cgroup **page cache** after it exits —
 # and Railway counts page cache in its Memory metric, so idle memory never
-# returned to the parent's floor. Two big offenders, measured on the live
-# worker: the embedding model (~1.2 GB safetensors) and torch's shared libs
-# (libtorch_cpu.so alone is ~440 MB). After each run the parent advises the
-# kernel to drop those clean, now-unmapped pages. Verified on Linux: reading a
-# file populates page cache, posix_fadvise(DONTNEED) from a fresh fd evicts it
-# exactly. The next run re-reads them from local disk (small cold-start,
-# already accepted by E20). The parent stays torch-free — it locates torch's
-# directory via sysconfig, never importing it. fadvise leaves the parent's own
-# still-mapped libs (uvicorn, sqlalchemy…) untouched; only the dead child's
-# unmapped pages are reclaimed.
+# returned to the parent's floor. Charging is *first-toucher*: right after a
+# deploy the image's pages are still host-cached (charged to whoever extracted
+# the image), so the child reads them for free — but each fadvise'd or
+# host-evicted page the child re-faults from disk is charged to THIS cgroup
+# and stays charged until explicitly evicted.
+#
+# Evicting only the HF model cache + torch (the first version of this fix)
+# left the rest of the child's import trail charged forever: transformers,
+# scipy, sympy, sklearn, numpy, tokenizers… Measured in the live cgroup
+# (2026-07-18): after a model-loading child died, `file` sat at 1745 MB;
+# evicting HF+torch only brought it to 244 MB — that residue is exactly the
+# ~300 MB idle creep the Memory graph showed between deploys. Sweeping the
+# whole site-packages instead returns `file` to the ~20 MB floor, and costs
+# ~0.5 s for ~40 000 files (fadvise on an uncached file is near-free).
+#
+# The next run re-reads model + libs from local disk (small cold-start,
+# already accepted by E20). The parent stays torch-free — it only open()s and
+# fadvises files, never importing them. fadvise cannot evict the parent's own
+# still-mapped pages (uvicorn, sqlalchemy…), so sweeping site-packages broadly
+# is safe for the running process.
 
 
 def _hf_cache_dir() -> Path | None:
@@ -132,26 +142,44 @@ def _hf_cache_dir() -> Path | None:
 
 
 def _page_cache_dirs() -> list[Path]:
-    """Directories whose files the child mmaps and leaves in page cache.
+    """Directories whose files the child reads and leaves in page cache.
 
-    The HF model cache plus the installed ``torch`` package (its ``lib/*.so``
-    are the bulk). torch's path is resolved via sysconfig so the parent never
-    imports torch.
+    The HF model cache plus the **whole site-packages** — not just torch. The
+    child's import trail (transformers, scipy, sympy, sklearn, numpy,
+    tokenizers…) was measured at 244 MB of never-evicted page cache when only
+    torch was swept; site-packages' path is resolved via sysconfig so the
+    parent never imports any of it.
     """
     dirs: list[Path] = []
     hf = _hf_cache_dir()
     if hf is not None:
         dirs.append(hf)
     purelib = sysconfig.get_path("purelib")
-    if purelib:
-        torch_dir = Path(purelib) / "torch"
-        if torch_dir.exists():
-            dirs.append(torch_dir)
+    if purelib and Path(purelib).exists():
+        dirs.append(Path(purelib))
     return dirs
 
 
+def _cgroup_file_bytes() -> int | None:
+    """The cgroup's file-backed page cache charge, or None outside cgroup v2.
+
+    This is the number that Railway's Memory metric sees (together with
+    ``anon``) — logging it before/after the sweep reports pages actually
+    *returned*, where a file count would only report pages *advised*.
+    """
+    try:
+        with open("/sys/fs/cgroup/memory.stat") as fh:
+            for line in fh:
+                key, _, value = line.partition(" ")
+                if key == "file":
+                    return int(value)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _drop_run_page_cache() -> None:
-    """Evict the model + torch files from the OS page cache (Linux only).
+    """Evict the model + site-packages files from the OS page cache (Linux only).
 
     No-op where ``posix_fadvise`` is absent (macOS/local dev). Best-effort per
     file — a failure on one file must not abort the sweep.
@@ -159,7 +187,8 @@ def _drop_run_page_cache() -> None:
     fadvise = getattr(os, "posix_fadvise", None)
     if fadvise is None:
         return
-    dropped = 0
+    before = _cgroup_file_bytes()
+    advised = 0
     for cache in _page_cache_dirs():
         for path in cache.rglob("*"):
             try:
@@ -167,12 +196,20 @@ def _drop_run_page_cache() -> None:
                     continue
                 with open(path, "rb") as fh:
                     fadvise(fh.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-                dropped += 1
+                advised += 1
             except OSError:
                 continue
-    if dropped:
+    after = _cgroup_file_bytes()
+    if before is not None and after is not None:
         logger.info(
-            "refresh_worker: evicted %d file(s) from page cache", dropped
+            "refresh_worker: page cache %.0f → %.0f MB (advised %d files)",
+            before / 1e6,
+            after / 1e6,
+            advised,
+        )
+    elif advised:
+        logger.info(
+            "refresh_worker: advised %d file(s) out of page cache", advised
         )
 
 
@@ -235,6 +272,9 @@ async def _nightly_refresh_job() -> None:
         rc = await _spawn_run_once("--nightly", timeout_s=_NIGHTLY_TIMEOUT_S)
         if rc != 0:
             logger.warning("refresh_worker: nightly child exited with code %d", rc)
+        # The nightly child never loads the model, but its import trail
+        # (sqlalchemy, numpy…) still lands in the charged page cache.
+        await asyncio.to_thread(_drop_run_page_cache)
 
 
 def _fetch_trigger(interval_minutes: int) -> CronTrigger:
