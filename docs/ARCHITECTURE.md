@@ -467,7 +467,24 @@ miniflux 3 %, pwa 3 %.
   épargnées) peut rendre ~80-100 Mo sur la base Niouzou et surtout **plafonner
   la croissance** (~140 Mo/mois au rythme actuel). Le poste symétrique — la
   rétention **Miniflux** (209 Mo et croissant) — est du même ordre et se règle
-  par config (`CLEANUP_ARCHIVE_*`), à trancher avec le mainteneur.
+  par config (`CLEANUP_ARCHIVE_*`).
+- **Décisions appliquées (2026-07-19)** :
+  - **Cap RAM Railway sur le service Postgres : 512 Mo** (le minimum offert par
+    l'UI). Le page cache étant réclamable, le noyau évince au-delà du cap au
+    lieu de laisser la métrique monter — la facture du service ≈ le cap. Le
+    besoin incompressible mesuré est ~170 Mo (`anon` 9 + `shared_buffers` 128 +
+    slab/kernel 33) → ~340 Mo de cache restent disponibles, zéro risque d'OOM
+    au niveau actuel de données. Surveiller `memory.events:oom_kill` (doit
+    rester 0) après les pics (nightly, VACUUM).
+  - **`CLEANUP_ARCHIVE_READ_DAYS=30` sur le service miniflux** (défaut 60).
+    Les entrées *lues* passent à `removed` après 30 j, puis Miniflux les purge
+    au refresh quand elles ont quitté le flux. Conséquence assumée : la
+    profondeur de backfill E19-S5 d'un feed déjà consommé devient ~30 j
+    (`list_feed_entries` lit les entrées peu importe leur statut) ; le
+    récupérateur de contenu E10-S6 tolère déjà les entrées purgées (404 → skip).
+  - L'archivage E25-S2 est **rétrogradé en chantier de fond** : le cap fixe la
+    facture ; l'allègement sert désormais à garder le working set chaud sous le
+    cap quand le corpus grossit, et à borner le disque.
 
 ### Docker Compose (self-hosted)
 - `docker-compose.yml` at repo root — one-command stack
