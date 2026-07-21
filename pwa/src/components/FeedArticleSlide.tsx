@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Lock,
   MessageCircle,
+  Newspaper,
   Share2,
   Sparkles,
 } from 'lucide-react'
@@ -340,14 +341,20 @@ export const FeedArticleSlide = ({
 
         {/* ── Hero image — kept inline below the header so the user always
             sees it even after scrolling a bit; the blurred background still
-            colours the rest of the slide. */}
-        {article.og_image_url && (
-          <div
-            style={{
-              padding: '0 16px',
-              marginTop: 4,
-            }}
-          >
+            colours the rest of the slide.
+
+            When an article has no og:image we render a placeholder of the same
+            footprint instead of collapsing the block: it keeps every slide
+            visually uniform AND, on the Feed, guarantees the title clears the
+            Loupe tag-filter chip row (an absolute overlay ~58px from the top),
+            which would otherwise land on top of the title. */}
+        <div
+          style={{
+            padding: '0 16px',
+            marginTop: 4,
+          }}
+        >
+          {article.og_image_url ? (
             <img
               src={article.og_image_url}
               alt=""
@@ -361,8 +368,25 @@ export const FeedArticleSlide = ({
                 boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
               }}
             />
-          </div>
-        )}
+          ) : (
+            <div
+              aria-hidden
+              className="flex items-center justify-center"
+              style={{
+                width: '100%',
+                height: 160,
+                borderRadius: 18,
+                background:
+                  'linear-gradient(135deg, rgba(244,162,97,0.16), rgba(72,202,228,0.12))',
+                border: '1px solid rgba(255,255,255,0.06)',
+                boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
+                color: 'rgba(255,255,255,0.32)',
+              }}
+            >
+              <Newspaper size={40} strokeWidth={1.5} />
+            </div>
+          )}
+        </div>
 
         {/* ── Title + meta ──────────────────────────────────────────────── */}
         <div style={{ padding: '20px 20px 0' }}>
