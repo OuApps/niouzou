@@ -8,7 +8,6 @@ import {
   ExternalLink,
   Lock,
   MessageCircle,
-  Newspaper,
   Share2,
   Sparkles,
 } from 'lucide-react'
@@ -380,10 +379,18 @@ export const FeedArticleSlide = ({
                   'linear-gradient(135deg, rgba(244,162,97,0.16), rgba(72,202,228,0.12))',
                 border: '1px solid rgba(255,255,255,0.06)',
                 boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
-                color: 'rgba(255,255,255,0.32)',
               }}
             >
-              <Newspaper size={40} strokeWidth={1.5} />
+              <img
+                src="/icons/icon-192.png"
+                alt=""
+                style={{
+                  width: 96,
+                  height: 96,
+                  borderRadius: 20,
+                  opacity: 0.92,
+                }}
+              />
             </div>
           )}
         </div>

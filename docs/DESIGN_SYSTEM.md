@@ -268,7 +268,8 @@ its slot: when the article has an `og_image_url` it shows the image
 (`maxHeight: 240`, `borderRadius: 18`), otherwise a same-footprint
 **placeholder** (`height: 160`, same radius) — a soft orange→cyan blob
 gradient (`linear-gradient(135deg, rgba(244,162,97,0.16),
-rgba(72,202,228,0.12))`) with a centred muted `Newspaper` glyph. Never
+rgba(72,202,228,0.12))`) with the app logo badge centred on it
+(`/icons/icon-192.png`, 96px, `borderRadius: 20`). Never
 collapse the block for image-less articles: keeping it present makes every
 slide uniform and, on the Feed, guarantees the title clears the Loupe
 tag-filter chip row (an absolute overlay ~58px from the top, E24-S7) instead
