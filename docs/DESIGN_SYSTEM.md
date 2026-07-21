@@ -269,9 +269,9 @@ its slot: when the article has an `og_image_url` it shows the image
 **placeholder** (`height: 160`, same radius) — a **dark** base (`#141a26`)
 with a faint orange→cyan blob tint on top
 (`linear-gradient(135deg, rgba(244,162,97,0.14), rgba(72,202,228,0.10))`),
-so the Niouzou logo mark centred on it (`/logo-mark.png` — **white**
-line-art with a transparent interior, same treatment as the README banner;
-116px, `opacity: 0.9`) reads clearly. Never
+so the Niouzou logo mark centred on it (`/logo-mark.png` — the
+white-bodied character with dark line detail, the README-banner treatment,
+rendered raw at 124px) reads clearly. Never
 collapse the block for image-less articles: keeping it present makes every
 slide uniform and, on the Feed, guarantees the title clears the Loupe
 tag-filter chip row (an absolute overlay ~58px from the top, E24-S7) instead
