@@ -415,6 +415,49 @@ bar above. Active state: `border: 1px solid var(--accent)`, background
 background `rgba(255,255,255,0.05)`. Sized at `padding: 5px 12px`,
 `fontSize: 11`, `borderRadius: 16`.
 
+### Loupe control (E24-S7)
+
+A **single-select** row of `FilterChip`s that restricts the flow to the
+sources carrying one tag. Present on two screens, with **independent**
+selections persisted in `localStorage` (`niouzou_loupe_feed` /
+`niouzou_loupe_explore`, keyed to the user's email):
+
+- **Feed** — a top-center overlay row (same slot as the `min_score` reset
+  pill, `zIndex: 30`, safe-area aware): `[All✓] [Rugby] [Tech] …`. Hidden
+  when the user has no tags. When the deck is empty with a Loupe on, the
+  empty state shows a `<name> · clear` pill.
+- **Explore / Search** — a `Loupe :` `ChipRow` (`[Tous✓] [Rugby] …`) above
+  the E11 filter rows. Unlike the score/sources rows it **stays visible while
+  typing**, because the Loupe applies to the search too. The Loupe is
+  screen-level (not per-tab); changing it resets both tabs' cursors and
+  re-runs an active search. The E11 filtered-empty-state reset also clears
+  the Loupe.
+- Single-select semantics mirror the score chips (`onScoreChip`); changing
+  the Loupe always drops the cursor. A backend `422` (tag deleted elsewhere)
+  silently clears the selection — never an error screen.
+
+### Source tag chips + editor (E24-S6)
+
+On each Sources card (`SourceTagsEditor.tsx`), below the article-count line:
+
+- Attached tags render as accent pills (`padding: 3px 8px`,
+  `borderRadius: 20`, `fontSize: 10`, `var(--accent-subtle)` background,
+  `var(--accent-text)` text) with an inline `X` (10px) to detach.
+- A dashed "`+ tag`" ghost chip opens a token input (same pill radius);
+  typing filters the user's existing tags into a suggestion chip row —
+  tapping one attaches it, Enter on an unknown name **creates the tag on the
+  fly** (`POST /tags`) then attaches it. Escape / blur on empty closes.
+- All mutations go through `PUT /sources/{id}/tags` (set-semantics) with the
+  optimistic-override pattern of the Sources screen.
+
+### Tags section — user Settings (E24-S8)
+
+A collapsible `glass-sm` menu row (`Tag` icon) on the Profile screen, listing
+the user's tags. Each row: inline-renamable name, a numeric **percentage**
+input for the per-tag feed threshold (empty = `auto`, i.e. inherits the
+global threshold; an `inherit` ghost button resets it), and a two-tap
+`Trash2 → sure?` delete. Per-user — this never appears in the admin screen.
+
 ---
 
 ## Icons

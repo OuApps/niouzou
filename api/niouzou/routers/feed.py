@@ -28,9 +28,18 @@ async def get_feed(
     # filter (so already-read articles can be re-surfaced) and is placed at
     # the top; the rest of the page continues from its feed_rank.
     start: uuid.UUID | None = None,
+    # E24-S4 — Loupe: restrict the feed to sources carrying this tag and apply
+    # its per-tag threshold (min_score still wins when both are provided).
+    # 422 when the tag isn't the user's.
+    tag: uuid.UUID | None = None,
 ) -> FeedResponse:
     return await service.get_feed(
-        user.id, cursor=cursor, limit=limit, min_score=min_score, start=start
+        user.id,
+        cursor=cursor,
+        limit=limit,
+        min_score=min_score,
+        start=start,
+        tag=tag,
     )
 
 

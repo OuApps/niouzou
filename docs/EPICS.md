@@ -5226,9 +5226,19 @@ haut), l'actu veut de la découverte (seuil bas).
   de sources, (2) le seuil effectif. Le ranking (`feed_rank`, gravité,
   `active_method`, chips de score) est **inchangé**.
 
+> **Livrée 2026-07-21** — implémentation complète S1→S9 (migration
+> `d9f3a6c2e8b1`, `TagsService` + `/tags`, `PUT /sources/{id}/tags`, param
+> `tag` sur `/feed` + Explore/Recherche, éditeur de tags sur Sources, contrôle
+> Loupe Feed + Explore persisté en localStorage par écran, section Tags dans
+> Réglages). Choix d'implémentation : le pull-to-refresh du Feed/Explore
+> **conserve** la Loupe (c'est une lentille persistée, pas un filtre E11) ;
+> le pivot `/feed?start=` ignore la Loupe pour l'article pivoté (demande
+> explicite de l'utilisateur), la suite du deck la respecte. Un `422` sur un
+> tag supprimé nettoie silencieusement la sélection côté client (S7).
+
 ### Stories
 
-#### [ ] E24-S1 — Modèle de données : `tags` + `source_tags`
+#### [x] E24-S1 — Modèle de données : `tags` + `source_tags`
 
 - Nouvelle table `tags` :
   ```sql
@@ -5263,7 +5273,7 @@ haut), l'actu veut de la découverte (seuil bas).
   drop). Modèles ORM `Tag` + association `source_tags` ; relation
   `Source.tags` / `Tag.sources`.
 
-#### [ ] E24-S2 — API : CRUD `/tags` (+ seuil, création à la volée)
+#### [x] E24-S2 — API : CRUD `/tags` (+ seuil, création à la volée)
 
 - `TagsService` (business logic) + `routers/tags.py` (thin). Tout scopé
   `user_id`.
@@ -5284,7 +5294,7 @@ haut), l'actu veut de la découverte (seuil bas).
   inconnu, appelle `POST /tags` puis réassigne (S3). Pas de sur-mécanique
   serveur.
 
-#### [ ] E24-S3 — API : assignation tags ⇄ sources
+#### [x] E24-S3 — API : assignation tags ⇄ sources
 
 - `GET /sources` enrichi : chaque source gagne `tags: [{ id, name }]` (triés
   par `name`). Une seule requête, jointure `source_tags` → pas de N+1.
@@ -5297,7 +5307,7 @@ haut), l'actu veut de la découverte (seuil bas).
   gestion des tags (renommage/seuil via `/tags`) de leur simple rattachement.
   La sensation « à la volée » est portée par le client (S6).
 
-#### [ ] E24-S4 — Feed : filtre Loupe (`?tag=`) + seuil par tag
+#### [x] E24-S4 — Feed : filtre Loupe (`?tag=`) + seuil par tag
 
 - `GET /feed` gagne un query param optionnel `tag` (UUID). Absent = comportement
   actuel (flux complet). Présent :
@@ -5320,7 +5330,7 @@ haut), l'actu veut de la découverte (seuil bas).
 - Le curseur encode déjà `feed_rank`+`id` ; le client doit **droper le curseur**
   quand la Loupe change (doc : même règle que les filtres Explore).
 
-#### [ ] E24-S5 — Recherche & Explore : filtre Loupe
+#### [x] E24-S5 — Recherche & Explore : filtre Loupe
 
 - `GET /explore/search` gagne le même param `tag` (UUID, optionnel) : restreint
   la recherche `ILIKE` aux articles des sources portant le tag. `422` tag
@@ -5334,7 +5344,7 @@ haut), l'actu veut de la découverte (seuil bas).
 - Note doc explicite : le **seuil** par tag ne vit que sur le Feed ; ailleurs le
   tag est un pur filtre de sources.
 
-#### [ ] E24-S6 — PWA : tags sur l'écran Sources (création à la volée)
+#### [x] E24-S6 — PWA : tags sur l'écran Sources (création à la volée)
 
 - Chaque carte source affiche ses tags en **chips** (couleurs du
   `DESIGN_SYSTEM.md`, pas d'improvisation). Un éditeur inline (combobox type
@@ -5348,7 +5358,7 @@ haut), l'actu veut de la découverte (seuil bas).
   (`Tag`, `Source.tags`). `BlobBackground` déjà présent sur l'écran — aucun
   nouvel écran plein.
 
-#### [ ] E24-S7 — PWA : contrôle Loupe sur Feed + Recherche
+#### [x] E24-S7 — PWA : contrôle Loupe sur Feed + Recherche
 
 - Un contrôle **Loupe** (icône loupe lucide `Search`/`Filter` — à cadrer avec
   le design system) en tête du Feed et de l'écran Recherche : une rangée de
@@ -5364,7 +5374,7 @@ haut), l'actu veut de la découverte (seuil bas).
 - Le chip actif affiche le nom du tag ; le seuil appliqué reste transparent
   (pas d'affichage dédié en V1).
 
-#### [ ] E24-S8 — PWA : gestion des tags dans l'écran Réglages (par-user)
+#### [x] E24-S8 — PWA : gestion des tags dans l'écran Réglages (par-user)
 
 - Nouvelle section **« Tags »** dans l'écran **Réglages** de l'utilisateur
   (celui qui expose déjà le profil `GET /me`, `POST /feedback/reset`, etc.) —
@@ -5381,7 +5391,7 @@ haut), l'actu veut de la découverte (seuil bas).
   cet écran Réglages ne gère que le **cycle de vie** des tags (nom, seuil,
   suppression). Les deux écrans partagent les mêmes clients API `/tags`.
 
-#### [ ] E24-S9 — Tests + docs
+#### [x] E24-S9 — Tests + docs
 
 - Backend : CRUD `/tags` (unicité casse-insensible, `409`, `threshold` null vs
   borné) ; `PUT /sources/{id}/tags` (set-semantics, `422` tag étranger, cap 20)

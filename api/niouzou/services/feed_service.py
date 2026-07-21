@@ -38,6 +38,15 @@ from niouzou.services.ranked_query import (
     row_to_article,
 )
 from niouzou.services.settings_service import SettingsService
+from niouzou.services.tags_service import TagsService
+
+# E24-S4 — Loupe: restrict the feed to the sources carrying the selected tag.
+# Injected via ``extra_filters`` so it composes with the score gate: the
+# random-surface draw then happens WITHIN the tagged subset only.
+TAG_FILTER_SQL = (
+    "AND EXISTS (SELECT 1 FROM source_tags st "
+    "WHERE st.source_id = a.source_id AND st.tag_id = :tag_id)"
+)
 
 
 class FeedService:
@@ -51,9 +60,19 @@ class FeedService:
         limit: int | None,
         min_score: float | None = None,
         start: uuid.UUID | None = None,
+        tag: uuid.UUID | None = None,
     ) -> FeedResponse:
         settings = get_settings()
         page_size = clamp_limit(limit)
+
+        # E24-S4 — Loupe. Ownership gate first (422 on unknown/foreign/deleted
+        # tag, so a stale client selection fails loudly and the PWA falls back
+        # to "no Loupe"); the row also carries the per-tag threshold.
+        tag_row = None
+        if tag is not None:
+            tag_row = await TagsService(self.session).require_owned(
+                user_id, tag
+            )
 
         # Cold start (E7-S6): users with little feedback get an unfiltered feed,
         # otherwise they'd see nothing on day one (all weights = 0 → all scores
@@ -66,10 +85,16 @@ class FeedService:
         ) or 0
         cold_start = feedback_count < settings.cold_start_threshold
 
+        # Effective threshold precedence (E24-S4): an explicit ``min_score``
+        # always wins; then the Loupe tag's own threshold; then the global
+        # SCORE_THRESHOLD. Cold start keeps bypassing everything, Loupe
+        # included — the tag threshold only bites for a "warm" user.
         if cold_start:
             threshold = 0.0
         elif min_score is not None:
             threshold = min_score
+        elif tag_row is not None and tag_row.threshold is not None:
+            threshold = tag_row.threshold
         else:
             # Admin can tune the threshold live via PATCH /admin/config; read
             # through SettingsService so the change takes effect on the very
@@ -104,6 +129,11 @@ class FeedService:
             "limit": page_size + 1,  # +1 row tells us whether more remain
             "premium_max_chars": settings.premium_content_max_chars,
         }
+
+        extra_filters = ""
+        if tag_row is not None:
+            params["tag_id"] = tag_row.id
+            extra_filters = TAG_FILTER_SQL
 
         # /feed?start=:id (E9-S3) — only honoured on the first page. When a
         # cursor is provided the user is paginating an existing deck and the
@@ -141,6 +171,7 @@ class FeedService:
             apply_threshold=True,
             apply_random_surface=True,
             keyset=keyset,
+            extra_filters=extra_filters,
         )
         rows = (await self.session.execute(query, params)).mappings().all()
 

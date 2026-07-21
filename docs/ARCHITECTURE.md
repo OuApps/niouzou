@@ -555,6 +555,20 @@ Both scores are computed once when an article is enriched, then refreshed nightl
 **Local embeddings, optional dependency**
 The embedding model (Qwen3-Embedding-0.6B, Apache 2.0) runs locally in the worker process — zero API cost, works without an OpenRouter key, multilingual. `sentence-transformers` is an optional extra (`embeddings`): without it `smart_score` stays NULL and the admin toggle refuses `smart` with an explicit 422. One vector per article, no chunking (the summary already condenses the topic; user multi-modality is handled by the k-NN, not by splitting articles). ⚠️ Changing the model means a full re-backfill — vectors from different models are not comparable.
 
+**The Loupe is a consultation lens, not a second learning model (E24)**
+Per-source tags let a user split their *usage* of Niouzou (tech watch, rugby,
+general news) without forking the personalisation engine: there is **one** set
+of `keyword_weights`, one pair of persisted scores, one feedback history. The
+Loupe (`?tag=` on `/feed`, `/explore/*`, search) only changes (1) the source
+subset and (2) on the Feed only, the effective threshold —
+`COALESCE(min_score, tag.threshold, SCORE_THRESHOLD)`. Ranking, gravity,
+`active_method` and the cold-start bypass are untouched, so flipping the Loupe
+is instant and nothing is duplicated. The per-tag threshold is a **per-user**
+setting on the `tags` row (edited in the user Settings screen), never in
+`app_settings`. Client-side the Loupe is ephemeral UI state (localStorage per
+screen); a stale selection (deleted tag) gets a `422` and silently falls back
+to "no Loupe".
+
 **Synchronous weight update on feedback**
 keyword_weights update immediately on like/dislike so the next enrichment run benefits from fresh weights. The daily `cron_nightly_refresh` is a safety net only.
 

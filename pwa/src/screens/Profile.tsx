@@ -12,6 +12,7 @@ import { BlobBackground } from '../components/BlobBackground'
 import { BottomNav } from '../components/BottomNav'
 import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
+import { TagsSection } from '../components/TagsSection'
 import { useApiData } from '../hooks/useApiData'
 import { formatTimeAgo } from '../hooks/useTimeAgo'
 import { useAuthStore } from '../store/auth'
@@ -231,6 +232,12 @@ export const Profile = () => {
               <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
             </button>
           )}
+
+          {/* Tags (E24-S8) — per-user tag lifecycle: rename, per-tag feed
+              threshold (with inherit), delete. Attaching tags to sources
+              happens on the Sources screen. Hidden while the user has no
+              tags — creation is on-the-fly from Sources. */}
+          {me && <TagsSection />}
 
           {/* Feed freshness (E19-S7, E19-S8) — a light "is new content on its
               way?" pill, shown to everyone. The detailed instance telemetry

@@ -32,14 +32,32 @@ from niouzou.services.ranked_query import (
     row_to_article,
 )
 from niouzou.services.settings_service import SettingsService
+from niouzou.services.tags_service import TagsService
 
 # E17-S3 — below this many characters a search is too broad to be useful.
 MIN_SEARCH_CHARS = 2
+
+# E24-S5 — Loupe on Explore: pure source filter (the per-tag threshold only
+# applies on GET /feed, the one place that gates on a threshold).
+TAG_FILTER_SQL = (
+    "AND EXISTS (SELECT 1 FROM source_tags st "
+    "WHERE st.source_id = a.source_id AND st.tag_id = :tag_id)"
+)
 
 
 class ExploreService:
     def __init__(self, session: SessionDep) -> None:
         self.session = session
+
+    async def _validated_tag(
+        self, user_id: uuid.UUID, tag: uuid.UUID | None
+    ) -> uuid.UUID | None:
+        """Ownership gate for the Loupe param — 422 on unknown/foreign tag,
+        same contract as ``_validated_source_ids``."""
+        if tag is None:
+            return None
+        await TagsService(self.session).require_owned(user_id, tag)
+        return tag
 
     async def _validated_source_ids(
         self,
@@ -82,12 +100,14 @@ class ExploreService:
         *,
         min_score: float = 0.0,
         source_ids: list[uuid.UUID] | None = None,
+        tag: uuid.UUID | None = None,
     ) -> ExploreHistoryResponse:
         """Already-impressed articles, newest seen first. Keyset on (seen_at, id)
         so pages never overlap even when many impressions share a timestamp."""
         validated_source_ids = await self._validated_source_ids(
             user_id, source_ids
         )
+        validated_tag = await self._validated_tag(user_id, tag)
 
         page_size = clamp_limit(limit)
         params: dict = {
@@ -132,6 +152,12 @@ class ExploreService:
             params["source_ids"] = [str(sid) for sid in validated_source_ids]
             source_filter = "AND a.source_id = ANY(CAST(:source_ids AS uuid[]))"
 
+        # E24-S5 — Loupe filter, AND-combined with min_score / source_ids.
+        tag_filter = ""
+        if validated_tag is not None:
+            params["tag_id"] = validated_tag
+            tag_filter = TAG_FILTER_SQL
+
         query = text(
             f"""
             SELECT
@@ -174,6 +200,7 @@ class ExploreService:
                 {keyset}
                 {score_filter}
                 {source_filter}
+                {tag_filter}
             ORDER BY ai.seen_at DESC, a.id DESC
             LIMIT :limit
             """
@@ -229,6 +256,7 @@ class ExploreService:
         *,
         min_score: float = 0.0,
         source_ids: list[uuid.UUID] | None = None,
+        tag: uuid.UUID | None = None,
     ) -> ExploreNewResponse:
         """Enriched articles the user hasn't seen yet, ranked by gravity. No
         score threshold / random-surface gates — the user is explicitly
@@ -236,6 +264,7 @@ class ExploreService:
         validated_source_ids = await self._validated_source_ids(
             user_id, source_ids
         )
+        validated_tag = await self._validated_tag(user_id, tag)
 
         settings = get_settings()
         page_size = clamp_limit(limit)
@@ -276,6 +305,9 @@ class ExploreService:
             explore_filter_parts.append(
                 "AND a.source_id = ANY(CAST(:source_ids AS uuid[]))"
             )
+        if validated_tag is not None:
+            params["tag_id"] = validated_tag
+            explore_filter_parts.append(TAG_FILTER_SQL)
         extra_filters = "\n            ".join(explore_filter_parts)
 
         query = build_ranked_query(
@@ -306,6 +338,8 @@ class ExploreService:
         query_text: str,
         cursor: str | None,
         limit: int | None,
+        *,
+        tag: uuid.UUID | None = None,
     ) -> ExploreSearchResponse:
         """Full-text-ish search over ALL the user's enriched articles (E17-S3).
 
@@ -315,6 +349,10 @@ class ExploreService:
         A query shorter than ``MIN_SEARCH_CHARS`` returns nothing — too broad
         to be useful and cheap to short-circuit.
         """
+        # Validate the Loupe BEFORE the short-query short-circuit so a stale
+        # tag id always fails loudly (422), even on an empty query.
+        validated_tag = await self._validated_tag(user_id, tag)
+
         term = query_text.strip()
         if len(term) < MIN_SEARCH_CHARS:
             return ExploreSearchResponse(articles=[], next_cursor=None, has_more=False)
@@ -330,6 +368,13 @@ class ExploreService:
         }
 
         scoring_mode = str(await SettingsService(self.session).get("scoring_mode"))
+
+        # E24-S5 — Loupe on search: pure source filter, no threshold (search
+        # never applies one).
+        tag_filter = ""
+        if validated_tag is not None:
+            params["tag_id"] = validated_tag
+            tag_filter = TAG_FILTER_SQL
 
         keyset = ""
         if cursor:
@@ -387,6 +432,7 @@ class ExploreService:
                     a.title ILIKE :pattern ESCAPE '\\'
                     OR a.summary_executive ILIKE :pattern ESCAPE '\\'
                 )
+                {tag_filter}
                 {keyset}
             ORDER BY COALESCE(a.published_at, a.created_at) DESC, a.id DESC
             LIMIT :limit

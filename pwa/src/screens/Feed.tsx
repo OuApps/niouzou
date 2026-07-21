@@ -8,8 +8,10 @@ import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { diffForPost, useFeedbackStore } from '../store/feedback'
 import { useShareArticle } from '../hooks/useShareArticle'
-import { getFeed, getSources, getStats, postFeedback, postImpression, ApiError } from '../api'
-import type { FeedArticle, FeedbackState, Reaction } from '../types/api'
+import { useLoupe } from '../hooks/useLoupe'
+import { FilterChip } from '../components/FilterChip'
+import { getFeed, getSources, getStats, listTags, postFeedback, postImpression, ApiError } from '../api'
+import type { FeedArticle, FeedbackState, Reaction, Tag } from '../types/api'
 
 const PAGE_SIZE = 20
 // Prefetch the next page when this many slides remain ahead of the active one.
@@ -74,6 +76,10 @@ export const Feed = () => {
   const [loadingMore, setLoadingMore] = useState(false)
   // null = use server default. Lowered via the empty-state CTA (E7-S8).
   const [minScore, setMinScore] = useState<number | null>(null)
+  // E24-S7 — Loupe: single selected tag (null = full feed), persisted per
+  // screen in localStorage. The user's tags feed the chip row.
+  const [loupeTag, setLoupeTag] = useLoupe('feed')
+  const [tags, setTags] = useState<Tag[]>([])
   // E19-S3 — when the deck is empty, distinguish "fresh account, no sources"
   // from "nothing above the score floor". null = not checked yet.
   const [noSources, setNoSources] = useState<boolean | null>(null)
@@ -104,6 +110,7 @@ export const Feed = () => {
           limit: PAGE_SIZE,
           minScore: minScore ?? undefined,
           start: startId ?? undefined,
+          tag: loupeTag ?? undefined,
         })
         if (!active) return
         setArticles(page.articles)
@@ -122,6 +129,13 @@ export const Feed = () => {
         })
       } catch (e) {
         if (!active) return
+        // E24-S7 — a 422 with a Loupe active means the selected tag was
+        // deleted (stale localStorage). Silently fall back to "no Loupe";
+        // clearing the state retriggers this effect without the tag.
+        if (e instanceof ApiError && e.status === 422 && loupeTag !== null) {
+          setLoupeTag(null)
+          return
+        }
         setErrorMsg(e instanceof ApiError ? e.message : 'Could not load your feed.')
         setStatus('error')
       }
@@ -131,9 +145,9 @@ export const Feed = () => {
       active = false
     }
     // startId only matters on the very first fetch (cleared above). Subsequent
-    // reload triggers (`reloadKey` / `minScore`) don't depend on it.
+    // reload triggers (`reloadKey` / `minScore` / `loupeTag`) don't depend on it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadKey, minScore])
+  }, [reloadKey, minScore, loupeTag])
 
   const refresh = useCallback(() => {
     setStatus('loading')
@@ -172,6 +186,35 @@ export const Feed = () => {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [refresh])
 
+  // E24-S7 — the user's tags feed the Loupe chip row. Best-effort: a failure
+  // simply hides the control.
+  useEffect(() => {
+    let active = true
+    async function loadTags() {
+      try {
+        const res = await listTags()
+        if (active) setTags(res.tags)
+      } catch {
+        // No tags → no Loupe row; the feed itself is unaffected.
+      }
+    }
+    void loadTags()
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Changing the Loupe drops the cursor and refetches the first page (the
+  // load effect depends on `loupeTag`), same rule as the Explore filters.
+  const onLoupeChip = useCallback(
+    (id: string | null) => {
+      if (id === loupeTag) return
+      setStatus('loading')
+      setLoupeTag(id)
+    },
+    [loupeTag, setLoupeTag],
+  )
+
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMore || !cursor) return
     loadingMoreRef.current = true
@@ -181,6 +224,7 @@ export const Feed = () => {
         cursor,
         limit: PAGE_SIZE,
         minScore: minScore ?? undefined,
+        tag: loupeTag ?? undefined,
       })
       setArticles((prev) => [...prev, ...page.articles])
       setCursor(page.next_cursor)
@@ -192,7 +236,7 @@ export const Feed = () => {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [cursor, hasMore, minScore])
+  }, [cursor, hasMore, minScore, loupeTag])
 
   // Infinite scroll — kick in N slides before the end of the loaded list.
   useEffect(() => {
@@ -506,6 +550,25 @@ export const Feed = () => {
 
     return (
       <FullScreenShell>
+        {loupeTag !== null && (
+          <button
+            onClick={() => onLoupeChip(null)}
+            aria-label="Clear the tag filter"
+            style={{
+              marginBottom: 16,
+              padding: '4px 10px',
+              borderRadius: 20,
+              border: '1px solid var(--accent-border)',
+              background: 'var(--accent-subtle)',
+              color: 'var(--accent-text)',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {tags.find((t) => t.id === loupeTag)?.name ?? 'Tag'} · clear
+          </button>
+        )}
         {body}
         <BottomNav />
       </FullScreenShell>
@@ -516,32 +579,71 @@ export const Feed = () => {
     <div className="relative" style={{ height: '100dvh' }}>
       <BlobBackground onRefresh={refresh} />
 
-      {minScore !== null && (
-        <button
-          onClick={() => {
-            setStatus('loading')
-            setMinScore(null)
-          }}
-          aria-label="Reset to default score threshold"
-          style={{
-            position: 'absolute',
-            top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 30,
-            padding: '4px 10px',
-            borderRadius: 20,
-            border: '1px solid var(--accent-border)',
-            background: 'var(--accent-subtle)',
-            color: 'var(--accent-text)',
-            fontSize: 11,
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
-        >
-          Score ≥ {formatScore(minScore)} · reset
-        </button>
-      )}
+      {/* Top-center overlay: Loupe chip row (E24-S7) + minScore pill. */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+          left: 0,
+          right: 0,
+          zIndex: 30,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 6,
+          pointerEvents: 'none',
+        }}
+      >
+        {tags.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 6,
+              overflowX: 'auto',
+              scrollbarWidth: 'none',
+              maxWidth: '100%',
+              padding: '0 16px',
+              pointerEvents: 'auto',
+            }}
+          >
+            <FilterChip
+              label="All"
+              active={loupeTag === null}
+              onClick={() => onLoupeChip(null)}
+            />
+            {tags.map((t) => (
+              <FilterChip
+                key={t.id}
+                label={t.name}
+                active={loupeTag === t.id}
+                onClick={() => onLoupeChip(t.id)}
+              />
+            ))}
+          </div>
+        )}
+        {minScore !== null && (
+          <button
+            onClick={() => {
+              setStatus('loading')
+              setMinScore(null)
+            }}
+            aria-label="Reset to default score threshold"
+            style={{
+              padding: '4px 10px',
+              borderRadius: 20,
+              border: '1px solid var(--accent-border)',
+              background: 'var(--accent-subtle)',
+              color: 'var(--accent-text)',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              pointerEvents: 'auto',
+            }}
+          >
+            Score ≥ {formatScore(minScore)} · reset
+          </button>
+        )}
+      </div>
 
       <div ref={containerRef} className="feed-snap relative z-10" data-no-pull>
         {articles.map((article, index) => (
