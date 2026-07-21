@@ -383,8 +383,8 @@ export const FeedArticleSlide = ({
                 boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
               }}
             >
-              {/* Transparent line-art mark, inverted to white so it reads on
-                  the dark slide (same look as the app icon, minus the badge). */}
+              {/* White line-art mark (transparent interior, same look as the
+                  README banner) — already white, so no filter needed. */}
               <img
                 src="/logo-mark.png"
                 alt=""
@@ -392,7 +392,6 @@ export const FeedArticleSlide = ({
                   width: 116,
                   height: 116,
                   opacity: 0.9,
-                  filter: 'invert(1)',
                 }}
               />
             </div>
