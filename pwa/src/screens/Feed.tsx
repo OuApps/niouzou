@@ -467,9 +467,12 @@ export const Feed = () => {
         // Keep the last known progress; the probe below still runs.
       }
       try {
+        // E24-S7 — the probe must respect the active Loupe, otherwise an
+        // empty tagged deck silently self-populates with unfiltered articles.
         const page = await getFeed({
           limit: PAGE_SIZE,
           minScore: minScore ?? undefined,
+          tag: loupeTag ?? undefined,
         })
         if (!active) return
         if (page.articles.length > 0) {
@@ -489,7 +492,7 @@ export const Feed = () => {
       active = false
       window.clearTimeout(timer)
     }
-  }, [emptyWithSources, minScore])
+  }, [emptyWithSources, minScore, loupeTag])
 
   // ── Render ────────────────────────────────────────────────────────────────
   if (status === 'loading') {
@@ -579,11 +582,13 @@ export const Feed = () => {
     <div className="relative" style={{ height: '100dvh' }}>
       <BlobBackground onRefresh={refresh} />
 
-      {/* Top-center overlay: Loupe chip row (E24-S7) + minScore pill. */}
+      {/* Top-center overlay: Loupe chip row (E24-S7) + minScore pill. Sits
+          BELOW the slide's sticky header (source name + score chips) so the
+          two never collide; the glass bar keeps chips readable over images. */}
       <div
         style={{
           position: 'absolute',
-          top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
+          top: 'calc(env(safe-area-inset-top, 0px) + 58px)',
           left: 0,
           right: 0,
           zIndex: 30,
@@ -601,8 +606,13 @@ export const Feed = () => {
               gap: 6,
               overflowX: 'auto',
               scrollbarWidth: 'none',
-              maxWidth: '100%',
-              padding: '0 16px',
+              maxWidth: 'calc(100% - 32px)',
+              padding: '5px 8px',
+              borderRadius: 22,
+              background: 'rgba(12,16,24,0.55)',
+              backdropFilter: 'blur(10px)',
+              WebkitBackdropFilter: 'blur(10px)',
+              border: '1px solid rgba(255,255,255,0.08)',
               pointerEvents: 'auto',
             }}
           >
