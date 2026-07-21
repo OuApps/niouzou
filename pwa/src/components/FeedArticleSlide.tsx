@@ -383,15 +383,15 @@ export const FeedArticleSlide = ({
                 boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
               }}
             >
-              {/* White line-art mark (transparent interior, same look as the
-                  README banner) — already white, so no filter needed. */}
+              {/* Niouzou mark — white-bodied character with dark line detail,
+                  the README-banner treatment. Rendered raw (no filter) so the
+                  white body reads on the dark placeholder. */}
               <img
                 src="/logo-mark.png"
                 alt=""
                 style={{
-                  width: 116,
-                  height: 116,
-                  opacity: 0.9,
+                  width: 124,
+                  height: 124,
                 }}
               />
             </div>
