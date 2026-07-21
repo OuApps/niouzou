@@ -375,8 +375,10 @@ export const FeedArticleSlide = ({
                 width: '100%',
                 height: 160,
                 borderRadius: 18,
+                // Dark base so the white line-art mark pops, with a faint blob
+                // tint on top for warmth (kept subtle over the dark base).
                 background:
-                  'linear-gradient(135deg, rgba(244,162,97,0.16), rgba(72,202,228,0.12))',
+                  'linear-gradient(135deg, rgba(244,162,97,0.14), rgba(72,202,228,0.10)), #141a26',
                 border: '1px solid rgba(255,255,255,0.06)',
                 boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
               }}
@@ -389,7 +391,7 @@ export const FeedArticleSlide = ({
                 style={{
                   width: 116,
                   height: 116,
-                  opacity: 0.82,
+                  opacity: 0.9,
                   filter: 'invert(1)',
                 }}
               />
