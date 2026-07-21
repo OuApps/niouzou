@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from niouzou.schemas.tags import TagRef
+
 
 class SourceCreate(BaseModel):
     url: str
@@ -46,6 +48,9 @@ class SourceOut(BaseModel):
     # sources alike.
     article_count_total: int = 0
     article_count_24h: int = 0
+    # E24-S3 — tags attached to this source, sorted by name; populated by
+    # SourcesService (single joined query, no N+1).
+    tags: list[TagRef] = []
 
 
 class SourcesListResponse(BaseModel):

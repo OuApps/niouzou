@@ -5,16 +5,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from niouzou.config import get_settings
 from niouzou.deps import SessionDep
-from niouzou.errors import bad_request, conflict, not_found
-from niouzou.models import Article, Source
+from niouzou.errors import APIError, bad_request, conflict, not_found
+from niouzou.models import Article, Source, SourceTag, Tag
 from niouzou.models.article import STATUS_PENDING
 from niouzou.schemas.sources import SourceOut, SourcesListResponse
+from niouzou.schemas.tags import TagRef
 from niouzou.services.miniflux_bootstrap import get_miniflux_token
 from niouzou.services.miniflux_client import MinifluxClient
 
@@ -58,6 +59,9 @@ class SourcesService:
         # query rather than N counts.
         counts = await self._article_counts([s.id for s in rows])
 
+        # E24-S3 — tags per source, one joined query (no N+1).
+        tags_map = await self._tags_map([s.id for s in rows])
+
         sources: list[SourceOut] = []
         for s in rows:
             out = SourceOut.model_validate(s)
@@ -66,8 +70,86 @@ class SourcesService:
             total, last_24h = counts.get(s.id, (0, 0))
             out.article_count_total = total
             out.article_count_24h = last_24h
+            out.tags = tags_map.get(s.id, [])
             sources.append(out)
         return SourcesListResponse(sources=sources)
+
+    async def _tags_map(
+        self, source_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[TagRef]]:
+        """Map source id → its tags sorted by name (case-insensitive)."""
+        if not source_ids:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(SourceTag.source_id, Tag.id, Tag.name)
+                .join(Tag, Tag.id == SourceTag.tag_id)
+                .where(SourceTag.source_id.in_(source_ids))
+                .order_by(func.lower(Tag.name))
+            )
+        ).all()
+        tags_map: dict[uuid.UUID, list[TagRef]] = {}
+        for source_id, tag_id, name in rows:
+            tags_map.setdefault(source_id, []).append(
+                TagRef(id=tag_id, name=name)
+            )
+        return tags_map
+
+    async def set_source_tags(
+        self,
+        user_id: uuid.UUID,
+        source_id: uuid.UUID,
+        tag_ids: list[uuid.UUID],
+    ) -> SourceOut:
+        """Replace the source's tag set (E24-S3, set-semantics).
+
+        The submitted list becomes the complete state — an empty list detaches
+        every tag. 404 when the source isn't the user's; 422 when any tag id
+        isn't (mirroring the Loupe/source_ids ownership contract).
+        """
+        source = await self.session.scalar(
+            select(Source).where(
+                Source.id == source_id, Source.user_id == user_id
+            )
+        )
+        if source is None:
+            raise not_found("Source not found")
+
+        deduped = list(dict.fromkeys(tag_ids))
+        if deduped:
+            owned = set(
+                (
+                    await self.session.scalars(
+                        select(Tag.id).where(
+                            Tag.id.in_(deduped), Tag.user_id == user_id
+                        )
+                    )
+                ).all()
+            )
+            for tid in deduped:
+                if tid not in owned:
+                    raise APIError(
+                        422, "validation_error", f"Unknown tag id: {tid}"
+                    )
+
+        await self.session.execute(
+            delete(SourceTag).where(SourceTag.source_id == source.id)
+        )
+        for tid in deduped:
+            self.session.add(SourceTag(source_id=source.id, tag_id=tid))
+        await self.session.flush()
+
+        crawler_by_feed = await self._crawler_state_map()
+        counts = await self._article_counts([source.id])
+        tags_map = await self._tags_map([source.id])
+        out = SourceOut.model_validate(source)
+        out.fetch_full_content = crawler_by_feed.get(source.miniflux_feed_id, False)
+        out.active = source.deleted_at is None
+        out.article_count_total, out.article_count_24h = counts.get(
+            source.id, (0, 0)
+        )
+        out.tags = tags_map.get(source.id, [])
+        return out
 
     async def _article_counts(
         self, source_ids: list[uuid.UUID]
@@ -283,6 +365,7 @@ class SourcesService:
         out = SourceOut.model_validate(source)
         out.fetch_full_content = crawler
         out.active = source.deleted_at is None
+        out.tags = (await self._tags_map([source.id])).get(source.id, [])
         return out
 
     async def _set_crawler(self, feed_id: int, crawler: bool) -> None:

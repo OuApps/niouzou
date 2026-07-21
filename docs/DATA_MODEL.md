@@ -7,12 +7,16 @@ users
   │
   ├──< sources              (one user → many sources)
   │       │
-  │       └──< articles     (one source → many articles)
-  │               │
-  │               ├──< article_keywords        (one article → many keywords)
-  │               ├──< article_relevance_scores (one article × one user → keyword_score + smart_score)
-  │               ├──< article_feedbacks        (one article × one user → one feedback)
-  │               └──< article_impressions      (one article × one user → seen flag)
+  │       ├──< articles     (one source → many articles)
+  │       │       │
+  │       │       ├──< article_keywords        (one article → many keywords)
+  │       │       ├──< article_relevance_scores (one article × one user → keyword_score + smart_score)
+  │       │       ├──< article_feedbacks        (one article × one user → one feedback)
+  │       │       └──< article_impressions      (one article × one user → seen flag)
+  │       │
+  │       └──< source_tags  (N–N link source ⇄ tag, E24)
+  │
+  ├──< tags                 (one user → many tags; per-tag feed threshold, E24)
   │
   └──< keyword_weights      (one user → many keyword weights)
 ```
@@ -67,6 +71,47 @@ CREATE TABLE sources (
 > Sources are per-user. Two users following the same RSS feed = two source rows.
 > `miniflux_feed_id` scoped to the user's Miniflux instance.
 > Deleted sources are soft-deleted (`deleted_at` set) so existing articles keep a valid FK.
+
+---
+
+### tags
+```sql
+CREATE TABLE tags (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  threshold  FLOAT CHECK (threshold IS NULL OR (threshold >= 0.0 AND threshold <= 1.0)),
+             -- per-tag feed relevance threshold; NULL = inherit the global SCORE_THRESHOLD
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uq_tags_user_lower_name ON tags (user_id, lower(name));
+CREATE INDEX idx_tags_user_id ON tags (user_id);
+```
+
+> E24 — per-user source tags powering the Loupe (Feed + Explore filter).
+> Name uniqueness is **case-insensitive per user** (`lower(name)`): "Rugby"
+> and "rugby" cannot coexist. `threshold` is a **per-user setting** carried by
+> this row — it never lives in `app_settings` (instance-flat, admin-only) and
+> only applies on `GET /feed?tag=` (everywhere else the tag is a pure source
+> filter).
+
+---
+
+### source_tags
+```sql
+CREATE TABLE source_tags (
+  source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  tag_id    UUID NOT NULL REFERENCES tags(id)    ON DELETE CASCADE,
+  PRIMARY KEY (source_id, tag_id)
+);
+CREATE INDEX idx_source_tags_tag_id ON source_tags (tag_id);
+```
+
+> N–N link source ⇄ tag (E24-S1). Sources are **soft-deleted** (`deleted_at`),
+> so pausing a source never fires the CASCADE — the link stays, inert (the
+> source produces no feed articles anyway). The CASCADE serves
+> `DELETE /tags/{id}` (clears the links; articles are never touched) and a
+> hard source purge.
 
 ---
 

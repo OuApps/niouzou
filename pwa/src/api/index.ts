@@ -11,6 +11,7 @@ import type {
   Reaction,
   SavedArticle,
   SourceFull,
+  Tag,
 } from '../types/api'
 
 export { ApiError, tokens } from './http'
@@ -63,12 +64,15 @@ export interface GetFeedOptions {
   minScore?: number
   /** E9-S3 — pivot the first page on this article (Explore / Saved → Feed). */
   start?: string
+  /** E24-S4 — Loupe: restrict to sources carrying this tag + apply its
+   *  per-tag threshold. 422 when the tag isn't the user's (stale selection). */
+  tag?: string
 }
 
 export function getFeed(opts: GetFeedOptions = {}): Promise<FeedPage> {
-  const { cursor, limit = 20, minScore, start } = opts
+  const { cursor, limit = 20, minScore, start, tag } = opts
   return request<FeedPage>('/feed', {
-    query: { cursor, limit, min_score: minScore, start },
+    query: { cursor, limit, min_score: minScore, start, tag },
   })
 }
 
@@ -106,18 +110,21 @@ export interface ExploreOptions {
   minScore?: number
   /** E11-S1 — restrict to these source UUIDs (must belong to the user). */
   sourceIds?: string[]
+  /** E24-S5 — Loupe: pure source filter (no threshold outside /feed). */
+  tag?: string
 }
 
 export function getExploreHistory(
   opts: ExploreOptions = {},
 ): Promise<ExploreHistoryPage> {
-  const { cursor, limit = 20, minScore, sourceIds } = opts
+  const { cursor, limit = 20, minScore, sourceIds, tag } = opts
   return request<ExploreHistoryPage>('/explore/history', {
     query: {
       cursor,
       limit,
       min_score: minScore,
       source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : undefined,
+      tag,
     },
   })
 }
@@ -125,13 +132,14 @@ export function getExploreHistory(
 export function getExploreNew(
   opts: ExploreOptions = {},
 ): Promise<ExploreNewPage> {
-  const { cursor, limit = 20, minScore, sourceIds } = opts
+  const { cursor, limit = 20, minScore, sourceIds, tag } = opts
   return request<ExploreNewPage>('/explore/new', {
     query: {
       cursor,
       limit,
       min_score: minScore,
       source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : undefined,
+      tag,
     },
   })
 }
@@ -141,9 +149,10 @@ export function getExploreSearch(
   q: string,
   cursor?: string,
   limit = 20,
+  tag?: string,
 ): Promise<ExploreSearchPage> {
   return request<ExploreSearchPage>('/explore/search', {
-    query: { q, cursor, limit },
+    query: { q, cursor, limit, tag },
   })
 }
 
@@ -345,6 +354,43 @@ export function updateSource(
   body: { fetch_full_content?: boolean; active?: boolean },
 ): Promise<SourceFull> {
   return request<SourceFull>(`/sources/${id}`, { method: 'PATCH', body })
+}
+
+// ── Tags (E24) ───────────────────────────────────────────────────────────────
+
+export function listTags(): Promise<{ tags: Tag[] }> {
+  return request<{ tags: Tag[] }>('/tags')
+}
+
+export function createTag(
+  name: string,
+  threshold: number | null = null,
+): Promise<Tag> {
+  return request<Tag>('/tags', { method: 'POST', body: { name, threshold } })
+}
+
+// An explicit `threshold: null` reverts the tag to inheriting the global
+// SCORE_THRESHOLD — only include the key when the caller means to change it.
+export function updateTag(
+  id: string,
+  body: { name?: string; threshold?: number | null },
+): Promise<Tag> {
+  return request<Tag>(`/tags/${id}`, { method: 'PATCH', body })
+}
+
+export function deleteTag(id: string): Promise<void> {
+  return request<void>(`/tags/${id}`, { method: 'DELETE' })
+}
+
+// E24-S3 — set-semantics: the submitted list replaces the source's tags.
+export function setSourceTags(
+  sourceId: string,
+  tagIds: string[],
+): Promise<SourceFull> {
+  return request<SourceFull>(`/sources/${sourceId}/tags`, {
+    method: 'PUT',
+    body: { tag_ids: tagIds },
+  })
 }
 
 // ── Me ───────────────────────────────────────────────────────────────────────

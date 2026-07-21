@@ -31,6 +31,7 @@ from niouzou.routers import (
     saved,
     sources,
     stats,
+    tags,
 )
 
 # ``mcp_lifespan`` runs the FastMCP Streamable HTTP session manager for the
@@ -71,6 +72,7 @@ for module in (
     saved,
     explore,
     keywords,
+    tags,
     me,
     stats,
     admin,

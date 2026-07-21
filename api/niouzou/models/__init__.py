@@ -11,6 +11,7 @@ from niouzou.models.llm_usage_log import LLMUsageLog
 from niouzou.models.pipeline_run import PipelineRun
 from niouzou.models.service_account_key import ServiceAccountKey
 from niouzou.models.source import Source
+from niouzou.models.tag import SourceTag, Tag
 from niouzou.models.user import User
 
 __all__ = [
@@ -27,5 +28,7 @@ __all__ = [
     "PipelineRun",
     "ServiceAccountKey",
     "Source",
+    "SourceTag",
+    "Tag",
     "User",
 ]

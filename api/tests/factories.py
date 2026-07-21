@@ -11,6 +11,8 @@ from niouzou.models import (
     ArticleKeyword,
     ArticleRelevanceScore,
     Source,
+    SourceTag,
+    Tag,
     User,
 )
 from niouzou.models.article import STATUS_ENRICHED
@@ -38,6 +40,26 @@ async def make_source(
     session.add(source)
     await session.flush()
     return source
+
+
+async def make_tag(
+    session: AsyncSession,
+    user: User,
+    name: str = "Rugby",
+    *,
+    threshold: float | None = None,
+) -> Tag:
+    tag = Tag(user_id=user.id, name=name, threshold=threshold)
+    session.add(tag)
+    await session.flush()
+    return tag
+
+
+async def tag_source(
+    session: AsyncSession, source: Source, tag: Tag
+) -> None:
+    session.add(SourceTag(source_id=source.id, tag_id=tag.id))
+    await session.flush()
 
 
 async def make_article(

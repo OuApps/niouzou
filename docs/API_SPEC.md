@@ -121,6 +121,7 @@ This ensures a natural mix of highly relevant older articles and fresh recent on
 | `limit` | integer | No | Number of articles to return. Default: `20`, max: `50`. |
 | `min_score` | float | No | Per-request override of `SCORE_THRESHOLD` (0.0–1.0). |
 | `start` | UUID | No | **E9-S3** — pivot the first page on this article. The article is placed at slot 0 (even if already impressed), and the remaining slots continue ranking from that article's `feed_rank`. Only honoured when `cursor` is omitted. Returns `404` if the article doesn't belong to the user or isn't enriched. |
+| `tag` | UUID | No | **E24-S4** — Loupe. Restricts the feed to articles whose source carries this tag, and swaps the effective threshold to `COALESCE(min_score, tag.threshold, SCORE_THRESHOLD)` (an explicit `min_score` always wins; a NULL `tag.threshold` inherits the global). Ranking, gravity, `active_method`, cold-start bypass and `RANDOM_SURFACE_RATE` are unchanged — the random draw just happens within the tagged subset. Returns `422` when the tag doesn't belong to the user (or was deleted); the client drops the Loupe. The client must drop the cursor when the Loupe changes. |
 
 **Response `200`**
 ```json
@@ -498,6 +499,7 @@ the user can scan the queue without consuming articles from their feed.
 | `limit` | integer | No | Default: `20`, max: `50`. |
 | `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Articles whose **active** score (per `scoring_mode`, E16-S9) is `< min_score` are dropped unless the active cold flag is `true` or the active score is NULL. Articles without a score row are dropped when `min_score > 0`. |
 | `source_ids` | UUID list | No | Repeatable query param (`?source_ids=A&source_ids=B`). Max 20 values. Each UUID must belong to the current user — an unknown / foreign UUID returns `422`. |
+| `tag` | UUID | No | **E24-S5** — Loupe: restricts to articles whose source carries this tag. Pure source filter (no threshold — the per-tag threshold only applies on `GET /feed`). AND-combined with `min_score` / `source_ids`. `422` on a foreign/unknown tag. |
 
 **Response `200`**
 ```json
@@ -550,6 +552,7 @@ formula as the Feed, but `SCORE_THRESHOLD` and `RANDOM_SURFACE_RATE` are
 | `limit` | integer | No | Default: `20`, max: `50`. |
 | `min_score` | float | No | `0.0`–`1.0`. Default `0.0` (no filter). Same semantic as on `/explore/history`: filters on the active score; cold-start / NULL active scores bypass the cap (consistent with E10-S4 + E16-S9). |
 | `source_ids` | UUID list | No | Repeatable query param (`?source_ids=A&source_ids=B`). Max 20 values. Each UUID must belong to the current user — an unknown / foreign UUID returns `422`. |
+| `tag` | UUID | No | **E24-S5** — Loupe: pure source filter, same contract as on `/explore/history`. `422` on a foreign/unknown tag. |
 
 **Response `200`**
 ```json
@@ -591,6 +594,7 @@ literals). Newest first; keyset on `(COALESCE(published_at, created_at), id)`.
 | `q` | string | **Yes** | Search query (1–200 chars). A trimmed query shorter than 2 chars returns an empty result set (too broad). |
 | `cursor` | string | No | Opaque cursor; keyset on `(sort_ts, id)`. |
 | `limit` | integer | No | Default: `20`, max: `50`. |
+| `tag` | UUID | No | **E24-S5** — Loupe: restricts the search to articles whose source carries this tag. Pure source filter — search never applies a relevance threshold. `422` on a foreign/unknown tag (validated even when the query is too short to run). |
 
 **Response `200`** — same article shape as `GET /feed`, plus `seen_at`
 (`null` when the article hasn't been impressed yet):
@@ -654,7 +658,8 @@ Returns all RSS sources for the authenticated user.
       "fetch_full_content": false,
       "active": true,
       "article_count_total": 128,
-      "article_count_24h": 4
+      "article_count_24h": 4,
+      "tags": [{ "id": "uuid", "name": "Tech" }]
     }
   ]
 }
@@ -668,6 +673,9 @@ Returns all RSS sources for the authenticated user.
 > `article_count_total` / `article_count_24h` (E17-S6) count every ingested
 > article for the source (status-agnostic, keyed on `created_at` for the 24h
 > window). Reported for paused sources too.
+>
+> `tags` (E24-S3) — the source's tags, sorted by name (case-insensitive).
+> One joined query server-side, no N+1.
 
 ---
 
@@ -737,10 +745,97 @@ the same URL — the PWA surfaces this warning before the toggle.
 
 ---
 
+### PUT /sources/{id}/tags
+
+**E24-S3** — replace the source's tag set (set-semantics: the submitted list
+becomes the complete state; an empty list detaches every tag). Max 20 tags per
+source.
+
+**Request**
+```json
+{ "tag_ids": ["uuid", "uuid"] }
+```
+
+**Response `200`** — the updated source, same shape as a `GET /sources` entry.
+
+> `404` when the source doesn't belong to the user; `422` when any `tag_id`
+> doesn't. The "on-the-fly" feel is client-side: the Sources screen combobox
+> calls `POST /tags` for an unknown name, then re-assigns here.
+
+---
+
 ### DELETE /sources/{id}
 Remove a source. Does not delete already-collected articles.
 
 **Response `204`** — no content
+
+---
+
+## Tags (E24)
+
+Per-user source tags powering the **Loupe** — a consultation lens that
+restricts the Feed / Explore / Search to the sources carrying one tag.
+`threshold` is the tag's own feed relevance threshold (`null` = inherit the
+global `SCORE_THRESHOLD`); it is a **per-user** setting edited from the user
+Settings screen — never through `/admin/config`.
+
+### GET /tags
+
+**Response `200`** — sorted by name (case-insensitive):
+```json
+{
+  "tags": [
+    { "id": "uuid", "name": "Rugby", "threshold": 0.4, "source_count": 3 }
+  ]
+}
+```
+
+> `source_count` counts **active** sources only (paused excluded).
+
+---
+
+### POST /tags
+
+**Request**
+```json
+{ "name": "Rugby", "threshold": null }
+```
+
+`name` is trimmed, 1–40 chars. `threshold` is optional, `0.0`–`1.0` or `null`.
+
+**Response `201`**
+```json
+{ "id": "uuid", "name": "Rugby", "threshold": null, "source_count": 0 }
+```
+
+> `409` when the name already exists for this user (case-insensitive:
+> "Rugby" vs "rugby" collide).
+
+---
+
+### PATCH /tags/{id}
+
+**Request** — both fields optional:
+```json
+{ "name": "Rugby XV", "threshold": null }
+```
+
+An **explicit** `threshold: null` reverts to inheriting the global
+`SCORE_THRESHOLD` (distinct from omitting the key, which leaves it untouched).
+
+**Response `200`** — same shape as a `GET /tags` entry.
+
+> `404` when the tag isn't the user's; `409` when renaming to an existing
+> name (case-insensitive).
+
+---
+
+### DELETE /tags/{id}
+
+**Response `204`** — deletes the tag and its `source_tags` links (FK CASCADE).
+**No article is ever touched.** If the deleted tag was a client's active
+Loupe, the next `?tag=` request returns `422` and the client falls back to
+"no Loupe".
 
 ---
 

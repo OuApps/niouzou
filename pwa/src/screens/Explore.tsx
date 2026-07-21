@@ -9,6 +9,7 @@ import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { FilterChip } from '../components/FilterChip'
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll'
+import { useLoupe } from '../hooks/useLoupe'
 import {
   ApiError,
   getExploreHistory,
@@ -16,11 +17,12 @@ import {
   getExploreSearch,
   getSources,
   getStats,
+  listTags,
   type ExploreHistoryArticle,
   type ExploreOptions,
 } from '../api'
 import { tokens } from '../api/http'
-import type { FeedArticle, SourceFull } from '../types/api'
+import type { FeedArticle, SourceFull, Tag } from '../types/api'
 
 const PAGE_SIZE = 20
 // E17-S3 — search below this many characters is too broad (mirrors the API).
@@ -190,6 +192,10 @@ export const Explore = () => {
   // chip bar renders even before /stats has resolved (chip simply hides).
   const [sources, setSources] = useState<SourceFull[] | null>(null)
   const [scoreThreshold, setScoreThreshold] = useState<number | null>(null)
+  // E24-S7 — Loupe: single-select tag applied to the tabs AND the search,
+  // persisted per screen (independent from the Feed's) in localStorage.
+  const [loupeTag, setLoupeTag] = useLoupe('explore')
+  const [userTags, setUserTags] = useState<Tag[]>([])
 
   const active = tabs[mode]
 
@@ -229,13 +235,14 @@ export const Explore = () => {
   }, [])
 
   const fetchFirstPage = useCallback(
-    async (target: Mode, filters: Filters) => {
+    async (target: Mode, filters: Filters, tag: string | null = loupeTag) => {
       patch(target, { status: 'loading', filters })
       try {
         const page = await FETCHERS[target]({
           limit: PAGE_SIZE,
           minScore: resolveMinScore(filters, scoreThreshold),
           sourceIds: filters.sourceIds,
+          tag: tag ?? undefined,
         })
         patch(target, {
           status: 'ready',
@@ -245,6 +252,13 @@ export const Explore = () => {
           errorMsg: '',
         })
       } catch (e) {
+        // E24-S7 — 422 with a Loupe on = the selected tag was deleted (stale
+        // localStorage). Silently drop the Loupe and retry without it.
+        if (e instanceof ApiError && e.status === 422 && tag !== null) {
+          setLoupeTag(null)
+          void fetchFirstPage(target, filters, null)
+          return
+        }
         patch(target, {
           status: 'error',
           errorMsg:
@@ -252,7 +266,7 @@ export const Explore = () => {
         })
       }
     },
-    [patch, scoreThreshold],
+    [patch, scoreThreshold, loupeTag, setLoupeTag],
   )
 
   // Mount-time fetches. Sources is a one-shot lookup; stats is read once for
@@ -268,6 +282,23 @@ export const Explore = () => {
       } catch {
         // Filter bar still works without these — the threshold chip just
         // stays hidden and the sources row shows nothing extra.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // E24-S7 — the user's tags for the Loupe row. Separate fetch with its own
+  // catch: a failure only hides the Loupe, never the other filters.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await listTags()
+        if (!cancelled) setUserTags(res.tags)
+      } catch {
+        // No tags → no Loupe row.
       }
     })()
     return () => {
@@ -323,6 +354,23 @@ export const Explore = () => {
     [active.filters, applyFilters],
   )
 
+  // E24-S7 — single-select Loupe (like the score chips). Changing it resets
+  // BOTH tabs' cursors (the Loupe is screen-level, not per-tab) and re-runs
+  // the search when one is active.
+  const onLoupeChip = useCallback(
+    (id: string | null) => {
+      if (id === loupeTag) return
+      setLoupeTag(id)
+      setTabs((prev) => ({
+        history: { ...EMPTY, filters: prev.history.filters },
+        new: { ...EMPTY, filters: prev.new.filters },
+      }))
+      void fetchFirstPage(mode, active.filters, id)
+      if (searching) setSearchNonce((n) => n + 1)
+    },
+    [loupeTag, setLoupeTag, fetchFirstPage, mode, active.filters, searching],
+  )
+
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !active.hasMore || !active.cursor) return
     loadingMoreRef.current = true
@@ -333,6 +381,7 @@ export const Explore = () => {
         limit: PAGE_SIZE,
         minScore: resolveMinScore(active.filters, scoreThreshold),
         sourceIds: active.filters.sourceIds,
+        tag: loupeTag ?? undefined,
       })
       setTabs((prev) => ({
         ...prev,
@@ -349,7 +398,7 @@ export const Explore = () => {
     } finally {
       loadingMoreRef.current = false
     }
-  }, [active.cursor, active.filters, active.hasMore, mode, patch, scoreThreshold])
+  }, [active.cursor, active.filters, active.hasMore, mode, patch, scoreThreshold, loupeTag])
 
   // E17-S3 — debounced search. Refetches the first page whenever the (trimmed)
   // query changes; a query under MIN_SEARCH_CHARS resets to the idle tab view.
@@ -363,7 +412,12 @@ export const Explore = () => {
     setSearch((s) => ({ ...s, status: 'loading' }))
     const timer = setTimeout(async () => {
       try {
-        const page = await getExploreSearch(q, undefined, PAGE_SIZE)
+        const page = await getExploreSearch(
+          q,
+          undefined,
+          PAGE_SIZE,
+          loupeTag ?? undefined,
+        )
         if (cancelled) return
         setSearch({
           status: 'ready',
@@ -376,6 +430,12 @@ export const Explore = () => {
         })
       } catch (e) {
         if (cancelled) return
+        // E24-S7 — stale Loupe (deleted tag): drop it silently; the dep
+        // change re-runs this effect without the tag.
+        if (e instanceof ApiError && e.status === 422 && loupeTag !== null) {
+          setLoupeTag(null)
+          return
+        }
         setSearch((s) => ({
           ...s,
           status: 'error',
@@ -387,7 +447,7 @@ export const Explore = () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [searchQuery, searchNonce])
+  }, [searchQuery, searchNonce, loupeTag, setLoupeTag])
 
   const searchLoadMore = useCallback(async () => {
     if (loadingMoreRef.current || !search.hasMore || !search.cursor) return
@@ -398,6 +458,7 @@ export const Explore = () => {
         searchQuery.trim(),
         search.cursor,
         PAGE_SIZE,
+        loupeTag ?? undefined,
       )
       setSearch((s) => ({
         ...s,
@@ -411,7 +472,7 @@ export const Explore = () => {
     } finally {
       loadingMoreRef.current = false
     }
-  }, [search.cursor, search.hasMore, searchQuery])
+  }, [search.cursor, search.hasMore, searchQuery, loupeTag])
 
   // The view actually rendered: search results take over when searching.
   const view = searching ? search : active
@@ -433,7 +494,9 @@ export const Explore = () => {
   )
 
   const hasActiveFilters =
-    active.filters.scoreKind !== 'gte0' || active.filters.sourceIds.length > 0
+    active.filters.scoreKind !== 'gte0' ||
+    active.filters.sourceIds.length > 0 ||
+    loupeTag !== null
   // Disabled sources no longer feed articles — don't clutter the filter bar.
   const activeSources = sources?.filter((s) => s.active) ?? null
   // The sources row is suppressed entirely when the user has 0 or 1 source —
@@ -462,6 +525,28 @@ export const Explore = () => {
         />
         {!typing && <Tabs mode={mode} onChange={setMode} />}
       </header>
+
+      {/* E24-S7 — Loupe row: stays visible while typing, because the Loupe
+          applies to the search too (pure source filter server-side). */}
+      {userTags.length > 0 && (
+        <div className="relative z-10" style={{ padding: '8px 0 4px' }}>
+          <ChipRow label="Loupe :">
+            <FilterChip
+              label="Tous"
+              active={loupeTag === null}
+              onClick={() => onLoupeChip(null)}
+            />
+            {userTags.map((t) => (
+              <FilterChip
+                key={t.id}
+                label={t.name.length > 18 ? `${t.name.slice(0, 17)}…` : t.name}
+                active={loupeTag === t.id}
+                onClick={() => onLoupeChip(t.id)}
+              />
+            ))}
+          </ChipRow>
+        </div>
+      )}
 
       {!typing && (
       <div
@@ -520,7 +605,15 @@ export const Explore = () => {
             />
           ) : hasActiveFilters ? (
             <FilteredEmptyState
-              onReset={() => applyFilters(DEFAULT_FILTERS)}
+              onReset={() => {
+                // Filters back to defaults AND Loupe off (E24-S7).
+                setLoupeTag(null)
+                setTabs((prev) => ({
+                  history: { ...EMPTY, filters: prev.history.filters },
+                  new: { ...EMPTY, filters: prev.new.filters },
+                }))
+                void fetchFirstPage(mode, DEFAULT_FILTERS, null)
+              }}
             />
           ) : (
             <EmptyState

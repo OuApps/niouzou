@@ -72,7 +72,7 @@ async def db_session():
                 "article_relevance_scores, article_impressions, "
                 "article_feedbacks, keyword_weights, app_settings, "
                 "pipeline_runs, compaction_runs, llm_usage_log, "
-                "service_account_keys "
+                "service_account_keys, tags, source_tags "
                 "RESTART IDENTITY CASCADE"
             )
         )

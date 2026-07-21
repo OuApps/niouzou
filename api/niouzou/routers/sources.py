@@ -12,6 +12,7 @@ from niouzou.schemas.sources import (
     SourcesListResponse,
     SourceUpdate,
 )
+from niouzou.schemas.tags import SourceTagsUpdate
 from niouzou.services.sources_service import SourcesService
 from niouzou.services.worker_client import trigger_pipeline_run
 
@@ -58,6 +59,17 @@ async def update_source(
         fetch_full_content=body.fetch_full_content,
         active=body.active,
     )
+
+
+@router.put("/{source_id}/tags", response_model=SourceOut)
+async def set_source_tags(
+    source_id: uuid.UUID,
+    body: SourceTagsUpdate,
+    user: CurrentUser,
+    service: SourcesServiceDep,
+) -> SourceOut:
+    # E24-S3 — set-semantics: the submitted list replaces the source's tags.
+    return await service.set_source_tags(user.id, source_id, body.tag_ids)
 
 
 @router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)

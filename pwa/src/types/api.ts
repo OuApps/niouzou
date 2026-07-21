@@ -12,6 +12,21 @@ export interface SourceRef {
   name: string
 }
 
+// E24 — compact tag shape embedded in SourceFull.tags.
+export interface TagRef {
+  id: string
+  name: string
+}
+
+// E24 — per-user source tag; `threshold` is the tag's own feed relevance
+// threshold (null = inherit the global SCORE_THRESHOLD).
+export interface Tag {
+  id: string
+  name: string
+  threshold: number | null
+  source_count: number
+}
+
 export interface SourceFull {
   id: string
   name: string
@@ -22,6 +37,8 @@ export interface SourceFull {
   // E17-S6 — article volume for this source (total + last 24h).
   article_count_total: number
   article_count_24h: number
+  // E24-S3 — tags attached to this source, sorted by name.
+  tags: TagRef[]
 }
 
 // E16-S9 — the two persisted scoring methods; `scoring_mode` selects which

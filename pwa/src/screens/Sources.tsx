@@ -6,12 +6,15 @@ import { EmptyState } from '../components/EmptyState'
 import { Spinner } from '../components/Spinner'
 import { ErrorState } from '../components/ErrorState'
 import { useApiData } from '../hooks/useApiData'
-import { addSource, getSources, updateSource, ApiError } from '../api'
-import type { SourceFull } from '../types/api'
+import { SourceTagsEditor } from '../components/SourceTagsEditor'
+import { addSource, getSources, listTags, updateSource, ApiError } from '../api'
+import type { SourceFull, Tag, TagRef } from '../types/api'
 
 export const Sources = () => {
   const navigate = useNavigate()
   const { data, loading, error, reload } = useApiData(() => getSources(), [])
+  // E24-S6 — the user's tags, for the per-source token-input editor.
+  const tagsData = useApiData(() => listTags(), [])
   const [newUrl, setNewUrl] = useState('')
   const [urlError, setUrlError] = useState('')
   const [adding, setAdding] = useState(false)
@@ -21,12 +24,22 @@ export const Sources = () => {
   // Per-id active override so a toggle reflects immediately without waiting
   // on a list reload. `undefined` → fall back to server value.
   const [activeOverride, setActiveOverride] = useState<Record<string, boolean>>({})
+  // E24-S6 — per-id tags override (server response of PUT /sources/{id}/tags)
+  // and tags created on the fly, merged over the fetched tag list.
+  const [tagsOverride, setTagsOverride] = useState<Record<string, TagRef[]>>({})
+  const [createdTags, setCreatedTags] = useState<Tag[]>([])
 
-  const sources: SourceFull[] = [...(data?.sources ?? []), ...added].map((s) =>
-    activeOverride[s.id] === undefined
-      ? s
-      : { ...s, active: activeOverride[s.id] },
-  )
+  const allTags: Tag[] = [...(tagsData.data?.tags ?? []), ...createdTags]
+
+  const sources: SourceFull[] = [...(data?.sources ?? []), ...added]
+    .map((s) =>
+      activeOverride[s.id] === undefined
+        ? s
+        : { ...s, active: activeOverride[s.id] },
+    )
+    .map((s) =>
+      tagsOverride[s.id] === undefined ? s : { ...s, tags: tagsOverride[s.id] },
+    )
 
   const handleAdd = async () => {
     setUrlError('')
@@ -218,6 +231,21 @@ export const Sources = () => {
                         </span>
                       )}
                     </p>
+                    {/* E24-S6 — tag chips + on-the-fly token input. */}
+                    <SourceTagsEditor
+                      sourceId={source.id}
+                      tags={source.tags ?? []}
+                      allTags={allTags}
+                      onSaved={(updated) =>
+                        setTagsOverride((prev) => ({
+                          ...prev,
+                          [updated.id]: updated.tags,
+                        }))
+                      }
+                      onTagCreated={(tag) =>
+                        setCreatedTags((prev) => [...prev, tag])
+                      }
+                    />
                   </div>
                   <label
                     className="flex items-center"

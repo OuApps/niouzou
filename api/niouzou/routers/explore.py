@@ -25,6 +25,12 @@ ExploreServiceDep = Annotated[ExploreService, Depends()]
 MinScoreQuery = Annotated[float, Query(ge=0.0, le=1.0)]
 SourceIdsQuery = Annotated[list[uuid.UUID] | None, Query(max_length=20)]
 
+# E24-S5 — Loupe: single optional tag, AND-combined with min_score /
+# source_ids. Pure source filter here (the per-tag threshold only applies on
+# GET /feed). Ownership checked in the service — a foreign / unknown tag
+# returns 422.
+TagQuery = Annotated[uuid.UUID | None, Query()]
+
 
 @router.get("/history", response_model=ExploreHistoryResponse)
 async def list_history(
@@ -34,6 +40,7 @@ async def list_history(
     limit: Annotated[int | None, Query(ge=1, le=50)] = None,
     min_score: MinScoreQuery = 0.0,
     source_ids: SourceIdsQuery = None,
+    tag: TagQuery = None,
 ) -> ExploreHistoryResponse:
     return await service.list_history(
         user.id,
@@ -41,6 +48,7 @@ async def list_history(
         limit=limit,
         min_score=min_score,
         source_ids=source_ids,
+        tag=tag,
     )
 
 
@@ -52,6 +60,7 @@ async def list_new(
     limit: Annotated[int | None, Query(ge=1, le=50)] = None,
     min_score: MinScoreQuery = 0.0,
     source_ids: SourceIdsQuery = None,
+    tag: TagQuery = None,
 ) -> ExploreNewResponse:
     return await service.list_new(
         user.id,
@@ -59,6 +68,7 @@ async def list_new(
         limit=limit,
         min_score=min_score,
         source_ids=source_ids,
+        tag=tag,
     )
 
 
@@ -69,6 +79,7 @@ async def search(
     q: Annotated[str, Query(min_length=1, max_length=200)],
     cursor: str | None = None,
     limit: Annotated[int | None, Query(ge=1, le=50)] = None,
+    tag: TagQuery = None,
 ) -> ExploreSearchResponse:
     """E17-S3 — text search across all the user's enriched articles."""
-    return await service.search(user.id, q, cursor=cursor, limit=limit)
+    return await service.search(user.id, q, cursor=cursor, limit=limit, tag=tag)
