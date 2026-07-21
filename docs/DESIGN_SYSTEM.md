@@ -266,11 +266,12 @@ Match — so the user can compare the methods at a glance
 The rounded hero (`[og:image hero, rounded]` in the diagram) always occupies
 its slot: when the article has an `og_image_url` it shows the image
 (`maxHeight: 240`, `borderRadius: 18`), otherwise a same-footprint
-**placeholder** (`height: 160`, same radius) — a soft orange→cyan blob
-gradient (`linear-gradient(135deg, rgba(244,162,97,0.16),
-rgba(72,202,228,0.12))`) with the transparent Niouzou logo mark centred on it
-(`/logo-mark.png`, 116px, `filter: invert(1)` → white line-art, `opacity:
-0.82`). Never
+**placeholder** (`height: 160`, same radius) — a **dark** base (`#141a26`)
+with a faint orange→cyan blob tint on top
+(`linear-gradient(135deg, rgba(244,162,97,0.14), rgba(72,202,228,0.10))`),
+so the transparent Niouzou logo mark centred on it (`/logo-mark.png`, 116px,
+`filter: invert(1)` → **white** line-art, `opacity: 0.9`) reads clearly.
+Never
 collapse the block for image-less articles: keeping it present makes every
 slide uniform and, on the Feed, guarantees the title clears the Loupe
 tag-filter chip row (an absolute overlay ~58px from the top, E24-S7) instead
